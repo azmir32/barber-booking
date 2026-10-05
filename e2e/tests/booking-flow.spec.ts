@@ -91,6 +91,9 @@ test.describe.serial('booking flow', () => {
     await expect(field(page, 'Barber name')).toBeVisible();
     await snap(page, '07-hours');
     await button(page, 'Open').last().click(); // Sunday is listed last
+    await button(page, '+ Add break (e.g. Friday prayers)').click();
+    await field(page, 'Break from').fill('13:00');
+    await field(page, 'Break to').fill('14:30');
     await button(page, 'Save hours').click();
     await expect(page.getByText('Every day · 10:00–20:00')).toBeVisible();
 

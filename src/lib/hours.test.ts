@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatClock, shopWeek, summarizeWeek } from './hours.ts';
+import { dayPlanFrom, formatClock, rangesFromPlan, shopWeek, summarizeWeek } from './hours.ts';
 
 const range = (weekday: number, opens_at: string, closes_at: string) => ({ weekday, opens_at, closes_at });
 
@@ -31,4 +31,34 @@ test('shopWeek spans all barbers per day', () => {
   assert.deepEqual(week[1], { opens: '09:30', closes: '20:00' });
   assert.deepEqual(week[2], { opens: '11:00', closes: '15:00' });
   assert.equal(week[0], null);
+});
+
+test('summarizeWeek ignores breaks', () => {
+  const withBreak = [1, 2, 3, 4, 5, 6].flatMap((d) =>
+    d === 5 ? [range(d, '10:00', '13:00'), range(d, '14:30', '20:00')] : [range(d, '10:00', '20:00')],
+  );
+  assert.equal(summarizeWeek(withBreak), 'Mon–Sat · 10:00–20:00');
+});
+
+test('day plans round-trip with a break', () => {
+  const plan = dayPlanFrom([
+    { opens_at: '14:30:00', closes_at: '20:00:00' },
+    { opens_at: '10:00:00', closes_at: '13:00:00' },
+  ]);
+  assert.deepEqual(plan, { open: true, opens: '10:00', closes: '20:00', hasBreak: true, breakFrom: '13:00', breakTo: '14:30' });
+  assert.deepEqual(rangesFromPlan(plan), [
+    { opens_at: '10:00', closes_at: '13:00' },
+    { opens_at: '14:30', closes_at: '20:00' },
+  ]);
+  assert.deepEqual(rangesFromPlan({ ...plan, hasBreak: false }), [{ opens_at: '10:00', closes_at: '20:00' }]);
+  assert.deepEqual(rangesFromPlan({ ...plan, open: false }), []);
+  assert.equal(dayPlanFrom([]).open, false);
+});
+
+test('rangesFromPlan explains mistakes', () => {
+  const base = { open: true, opens: '10:00', closes: '20:00', hasBreak: true, breakFrom: '13:00', breakTo: '14:00' };
+  assert.equal(rangesFromPlan({ ...base, closes: '09:00' }), 'closing time must be after opening time.');
+  assert.equal(rangesFromPlan({ ...base, breakFrom: '09:00' }), 'the break must sit inside opening hours.');
+  assert.equal(rangesFromPlan({ ...base, opens: 'ten' }), 'use times like 09:00 or 21:30.');
+  assert.equal(rangesFromPlan({ ...base, breakTo: '2pm' }), 'use times like 13:00 for the break.');
 });

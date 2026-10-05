@@ -5,16 +5,13 @@ import { View } from 'react-native';
 import { Button, Chip, ErrorText, Field, Loading, Row, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { errorMessage, supabase } from '@/lib/supabase';
-import { WEEK_ORDER } from '@/lib/hours';
-import { normalizeTime } from '@/lib/time';
+import { dayPlanFrom, rangesFromPlan, WEEK_ORDER, type DayPlan } from '@/lib/hours';
 import { WEEKDAYS, type WorkingHours } from '@/lib/types';
-
-type DayHours = { open: boolean; opens: string; closes: string };
 
 export default function Hours() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [name, setName] = useState('');
-  const [week, setWeek] = useState<DayHours[] | null>(null);
+  const [week, setWeek] = useState<DayPlan[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,37 +21,27 @@ export default function Hours() {
       if (error) return setError(errorMessage(error));
       const hours = (data.working_hours ?? []) as WorkingHours[];
       setName(data.name);
-      setWeek(
-        WEEKDAYS.map((_, weekday) => {
-          const h = hours.find((x) => x.weekday === weekday);
-          return h
-            ? { open: true, opens: h.opens_at.slice(0, 5), closes: h.closes_at.slice(0, 5) }
-            : { open: false, opens: '10:00', closes: '20:00' };
-        }),
-      );
+      setWeek(WEEKDAYS.map((_, weekday) => dayPlanFrom(hours.filter((h) => h.weekday === weekday))));
     })();
   }, [id]);
 
-  function update(weekday: number, patch: Partial<DayHours>) {
+  function update(weekday: number, patch: Partial<DayPlan>) {
     setWeek((w) => w && w.map((d, i) => (i === weekday ? { ...d, ...patch } : d)));
   }
 
-  // Most barbers keep the same hours all week: copy Monday to every open day.
+  // Most barbers keep the same hours all week: copy Monday (and its break)
+  // to every open day.
   function copyMondayToAll() {
-    setWeek((w) => w && w.map((d, weekday) => (weekday === 1 || !d.open ? d : { ...d, opens: w[1].opens, closes: w[1].closes })));
+    setWeek((w) => w && w.map((d, weekday) => (weekday === 1 || !d.open ? d : { ...w[1] })));
   }
 
   async function save() {
     if (!week) return;
     const rows = [];
     for (const weekday of WEEK_ORDER) {
-      const d = week[weekday];
-      if (!d.open) continue;
-      const opens = normalizeTime(d.opens);
-      const closes = normalizeTime(d.closes);
-      if (!opens || !closes) return setError(`${WEEKDAYS[weekday]}: use times like 09:00 or 21:30.`);
-      if (closes <= opens) return setError(`${WEEKDAYS[weekday]}: closing time must be after opening time.`);
-      rows.push({ weekday, opens_at: opens, closes_at: closes });
+      const ranges = rangesFromPlan(week[weekday]);
+      if (typeof ranges === 'string') return setError(`${WEEKDAYS[weekday]}: ${ranges}`);
+      rows.push(...ranges.map((r) => ({ weekday, ...r })));
     }
     setBusy(true);
     setError(null);
@@ -94,6 +81,24 @@ export default function Hours() {
                   <Field label="To" value={d.closes} onChangeText={(v) => update(weekday, { closes: v })} placeholder="20:00" />
                 </View>
               </Row>
+            ) : null}
+            {d.open && d.hasBreak ? (
+              <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-end' }}>
+                <View style={{ flex: 1 }}>
+                  <Field label="Break from" value={d.breakFrom} onChangeText={(v) => update(weekday, { breakFrom: v })} placeholder="13:00" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Field label="Break to" value={d.breakTo} onChangeText={(v) => update(weekday, { breakTo: v })} placeholder="14:00" />
+                </View>
+              </Row>
+            ) : null}
+            {d.open ? (
+              <Button
+                title={d.hasBreak ? 'Remove break' : weekday === 5 ? '+ Add break (e.g. Friday prayers)' : '+ Add break'}
+                variant="ghost"
+                style={{ alignSelf: 'flex-start' }}
+                onPress={() => update(weekday, { hasBreak: !d.hasBreak })}
+              />
             ) : null}
           </View>
         );

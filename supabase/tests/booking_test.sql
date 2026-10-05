@@ -215,6 +215,17 @@ do $$ begin
       {"weekday": 1, "opens_at": "14:00", "closes_at": "18:00"}]');
   assert (select count(*) from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2') = 2,
     'set_barber_hours should replace the week';
+  -- A Monday with a 13:00-14:00 break: 15 slots before, 15 after, none at 13:00.
+  declare
+    mon date := (now() at time zone 'Asia/Kuala_Lumpur')::date
+                + (8 - extract(isodow from (now() at time zone 'Asia/Kuala_Lumpur')::date))::int;
+  begin
+    assert (select count(*) from available_slots('00000000-0000-0000-0000-0000000000e1', mon,
+            '00000000-0000-0000-0000-0000000000a2')) = 30, 'a break should split the day''s slots';
+    assert not exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', mon,
+            '00000000-0000-0000-0000-0000000000a2')
+            where starts_at = (mon + time '13:00') at time zone 'Asia/Kuala_Lumpur'), 'no slot inside the break';
+  end;
   begin
     perform set_barber_hours('00000000-0000-0000-0000-0000000000a2',
       '[{"weekday": 2, "opens_at": "09:00", "closes_at": "13:00"},
