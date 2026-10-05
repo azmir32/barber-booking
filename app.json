@@ -8,7 +8,7 @@
     "scheme": "potongku",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/images/icon.png",
       "bundleIdentifier": "app.potongku"
     },
     "android": {
@@ -32,7 +32,7 @@
         {
           "backgroundColor": "#C8283C",
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "imageWidth": 160
         }
       ]
     ],
