@@ -94,6 +94,7 @@ export function Field({ label, hint, ...props }: TextInputProps & { label: strin
     <View style={styles.field}>
       <T variant="label">{label}</T>
       <TextInput
+        accessibilityLabel={label}
         placeholderTextColor={theme.textSecondary}
         style={[
           styles.input,

@@ -1,10 +1,7 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
-import { Redirect } from 'expo-router';
-import { Tabs } from 'expo-router/js-tabs';
+import { Redirect, Stack } from 'expo-router';
 
 import { ShopForm } from '@/components/shop-form';
 import { Loading, Screen, T } from '@/components/ui';
-import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import { MyShopProvider, useMyShop } from '@/lib/my-shop';
 
@@ -15,13 +12,12 @@ export default function BarberLayout() {
   if (profile?.role !== 'barber') return <Redirect href="/customer" />;
   return (
     <MyShopProvider>
-      <BarberTabs />
+      <BarberStack />
     </MyShopProvider>
   );
 }
 
-function BarberTabs() {
-  const theme = useTheme();
+function BarberStack() {
   const { shop, loading, reload } = useMyShop();
 
   if (loading) return <Loading />;
@@ -36,42 +32,9 @@ function BarberTabs() {
   }
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: theme.accent,
-        tabBarInactiveTintColor: theme.textSecondary,
-        tabBarStyle: { backgroundColor: theme.card, borderTopColor: theme.border },
-      }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Bookings',
-          tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="services"
-        options={{
-          title: 'Services',
-          tabBarIcon: ({ color, size }) => <Ionicons name="pricetags-outline" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="team"
-        options={{
-          title: 'Barbers',
-          tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen
-        name="shop"
-        options={{
-          title: 'My shop',
-          tabBarIcon: ({ color, size }) => <Ionicons name="storefront-outline" color={color} size={size} />,
-        }}
-      />
-      <Tabs.Screen name="hours/[id]" options={{ href: null }} />
-    </Tabs>
+    <Stack screenOptions={{ headerBackTitle: 'Back' }}>
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="hours/[id]" options={{ title: 'Working hours' }} />
+    </Stack>
   );
 }

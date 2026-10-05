@@ -1,7 +1,8 @@
-import { router, useLocalSearchParams, type Href } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 
 import { Button, ErrorText, Field, Screen, T } from '@/components/ui';
+import { returnAfterAuth } from '@/lib/navigation';
 import { errorMessage, supabase } from '@/lib/supabase';
 
 export default function SignIn() {
@@ -17,7 +18,7 @@ export default function SignIn() {
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
     if (error) return setError(errorMessage(error));
-    router.replace((next || '/') as Href);
+    returnAfterAuth(next);
   }
 
   return (

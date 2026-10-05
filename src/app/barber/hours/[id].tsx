@@ -67,8 +67,7 @@ export default function Hours() {
   if (!week) return error ? <Screen><ErrorText message={error} /></Screen> : <Loading />;
 
   return (
-    <Screen>
-      <T variant="title">Working hours</T>
+    <Screen edges={[]}>
       <Field label="Barber name" value={name} onChangeText={setName} />
       {ORDER.map((weekday) => {
         const d = week[weekday];

@@ -1,9 +1,10 @@
-import { router, useLocalSearchParams, type Href } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { View } from 'react-native';
 
 import { Button, Chip, ErrorText, Field, Row, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { returnAfterAuth } from '@/lib/navigation';
 import { errorMessage, supabase } from '@/lib/supabase';
 import type { Role } from '@/lib/types';
 
@@ -32,7 +33,7 @@ export default function SignUp() {
     if (error) return setError(errorMessage(error));
     // With email confirmation on, there is no session until they click the link.
     if (!data.session) return setCheckEmail(true);
-    router.replace((params.next || '/') as Href);
+    returnAfterAuth(params.next);
   }
 
   if (checkEmail) {
