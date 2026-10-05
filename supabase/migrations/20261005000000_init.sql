@@ -500,8 +500,9 @@ begin
   end if;
 
   v_minutes := coalesce(p_duration_min, v_service.duration_min);
-  if v_minutes is null or v_minutes not between 5 and 720 then
-    raise exception 'Pick a service or a length between 5 minutes and 12 hours.' using errcode = '22023';
+  if v_minutes is null or v_minutes < 5 or v_minutes > (case when p_is_block then 1440 else 720 end) then
+    raise exception 'Pick a service, or a length between 5 minutes and 12 hours (a whole day for blocks).'
+      using errcode = '22023';
   end if;
   if not p_is_block and nullif(trim(p_guest_name), '') is null then
     raise exception 'Add the customer''s name.' using errcode = '22023';
@@ -518,7 +519,7 @@ begin
       case when p_is_block then null else nullif(trim(p_guest_name), '') end,
       case when p_is_block then null else nullif(trim(p_guest_phone), '') end,
       p_is_block,
-      case when p_is_block then coalesce(nullif(trim(p_note), ''), 'Blocked')
+      case when p_is_block then coalesce(left(nullif(trim(p_note), ''), 80), 'Blocked')
            else coalesce(v_service.name, 'Appointment') end,
       case when p_is_block then 0 else coalesce(v_service.price, 0) end,
       v_starts, v_starts + make_interval(mins => v_minutes),

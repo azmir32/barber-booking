@@ -140,13 +140,13 @@ export default function Services() {
       ) : null}
 
       <Section title={editing ? `Edit ${editing.name}` : 'Add a service'}>
-        <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. Skin fade + beard" />
+        <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. Skin fade + beard" maxLength={60} />
         <Row style={{ flexWrap: 'nowrap' }}>
           <View style={{ flex: 1 }}>
-            <Field label="Minutes" value={duration} onChangeText={setDuration} keyboardType="number-pad" />
+            <Field label="Minutes" value={duration} onChangeText={setDuration} keyboardType="number-pad" maxLength={3} />
           </View>
           <View style={{ flex: 1 }}>
-            <Field label="Price (RM)" value={price} onChangeText={setPrice} keyboardType="decimal-pad" />
+            <Field label="Price (RM)" value={price} onChangeText={setPrice} keyboardType="decimal-pad" maxLength={8} />
           </View>
         </Row>
         <ErrorText message={error} />

@@ -115,7 +115,7 @@ export default function BarberBookings() {
               <Card key={b.id} style={b.status === 'cancelled' ? { opacity: 0.6 } : undefined}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <T variant="heading">
-                    {formatTime(b.starts_at, tz)} – {formatTime(b.ends_at, tz)}
+                    {isWholeDay(b) ? 'Whole day' : `${formatTime(b.starts_at, tz)} – ${formatTime(b.ends_at, tz)}`}
                   </T>
                   {b.is_block ? <Badge label="Blocked" /> : <BookingStatusBadge booking={b} />}
                 </Row>
@@ -170,6 +170,9 @@ export default function BarberBookings() {
     </Screen>
   );
 }
+
+const isWholeDay = (b: Booking) =>
+  b.is_block && new Date(b.ends_at).getTime() - new Date(b.starts_at).getTime() >= 24 * 60 * 60 * 1000;
 
 function whoFor(b: ShopBooking): string {
   return b.customer?.full_name || b.guest_name || 'Customer';

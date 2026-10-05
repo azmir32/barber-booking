@@ -28,6 +28,7 @@ if (Platform.OS !== 'web') {
 export function errorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
     if ('code' in error && error.code === '23505') return 'That name or link is already taken.';
+    if ('code' in error && error.code === '23514') return 'Something there is too long or not allowed. Please check and try again.';
     return error.message;
   }
   return 'Something went wrong. Please try again.';

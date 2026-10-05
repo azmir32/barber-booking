@@ -10,7 +10,8 @@ import { formatDay, formatDuration, formatPrice, localDateString, normalizeTime 
 import type { Barber, Service } from '@/lib/types';
 
 type Kind = 'booking' | 'block';
-const BLOCK_LENGTHS = [15, 30, 60, 90, 120, 240];
+const WHOLE_DAY = 24 * 60;
+const BLOCK_LENGTHS = [15, 30, 60, 90, 120, 240, WHOLE_DAY];
 
 /** Barber adds a walk-in / WhatsApp / phone booking, or blocks time. */
 export default function NewBooking() {
@@ -45,8 +46,10 @@ export default function NewBooking() {
     });
   }, [shop]);
 
+  const wholeDay = kind === 'block' && blockMinutes === WHOLE_DAY;
+
   async function save() {
-    const clock = normalizeTime(time);
+    const clock = wholeDay ? '00:00' : normalizeTime(time);
     if (!barberId) return setError('Pick a barber.');
     if (!clock) return setError('Enter the start time, e.g. 14:30.');
     if (kind === 'booking' && !serviceId) return setError('Pick a service.');
@@ -65,6 +68,9 @@ export default function NewBooking() {
       p_is_block: kind === 'block',
     });
     setBusy(false);
+    if (error && wholeDay && error.code === 'P0001') {
+      return setError('There are bookings on this day. Cancel them first (and let the customers know), then block the day.');
+    }
     if (error) return setError(errorMessage(error));
     router.back();
   }
@@ -80,7 +86,7 @@ export default function NewBooking() {
       <T variant="small">
         {kind === 'booking'
           ? 'For walk-ins and bookings that came by WhatsApp or phone. Online customers can no longer take this time.'
-          : 'For breaks, prayers or errands. Online customers can’t book this time.'}
+          : 'For breaks, errands or a day off. Online customers can’t book this time.'}
       </T>
 
       {barbers.length > 1 ? (
@@ -111,26 +117,55 @@ export default function NewBooking() {
         <Section title="How long">
           <Row>
             {BLOCK_LENGTHS.map((m) => (
-              <Chip key={m} label={formatDuration(m)} selected={blockMinutes === m} onPress={() => setBlockMinutes(m)} />
+              <Chip
+                key={m}
+                label={m === WHOLE_DAY ? 'Whole day' : formatDuration(m)}
+                selected={blockMinutes === m}
+                onPress={() => setBlockMinutes(m)}
+              />
             ))}
           </Row>
         </Section>
       )}
 
-      <Field label="Start time" value={time} onChangeText={setTime} placeholder="14:30" hint="24-hour time." />
+      {wholeDay ? null : (
+        <Field label="Start time" value={time} onChangeText={setTime} placeholder="14:30" hint="24-hour time." />
+      )}
 
       {kind === 'booking' ? (
         <View style={{ gap: Spacing.lg }}>
-          <Field label="Customer name" value={name} onChangeText={setName} placeholder="e.g. Pak Abu" />
-          <Field label="Customer phone (optional)" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
-          <Field label="Note (optional)" value={note} onChangeText={setNote} placeholder="e.g. booked on WhatsApp" />
+          <Field label="Customer name" value={name} onChangeText={setName} placeholder="e.g. Pak Abu" maxLength={80} />
+          <Field
+            label="Customer phone (optional)"
+            value={phone}
+            onChangeText={setPhone}
+            keyboardType="phone-pad"
+            maxLength={20}
+          />
+          <Field
+            label="Note (optional)"
+            value={note}
+            onChangeText={setNote}
+            placeholder="e.g. booked on WhatsApp"
+            maxLength={280}
+          />
         </View>
       ) : (
-        <Field label="Reason (optional)" value={note} onChangeText={setNote} placeholder="e.g. Friday prayers, lunch" />
+        <Field
+          label="Reason (optional)"
+          value={note}
+          onChangeText={setNote}
+          placeholder={wholeDay ? 'e.g. Hari Raya, day off' : 'e.g. lunch, errand'}
+          maxLength={80}
+        />
       )}
 
       <ErrorText message={error} />
-      <Button title={kind === 'booking' ? 'Add booking' : 'Block time'} onPress={save} loading={busy} />
+      <Button
+        title={kind === 'booking' ? 'Add booking' : wholeDay ? 'Block the day' : 'Block time'}
+        onPress={save}
+        loading={busy}
+      />
     </Screen>
   );
 }

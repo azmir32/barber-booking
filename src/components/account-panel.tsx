@@ -46,8 +46,8 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
   return (
     <Card>
       <T variant="muted">{email}</T>
-      <Field label="Full name" value={fullName} onChangeText={setFullName} />
-      <Field label="Phone (WhatsApp)" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
+      <Field label="Full name" value={fullName} onChangeText={setFullName} maxLength={80} />
+      <Field label="Phone (WhatsApp)" value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={20} />
       <ErrorText message={error} />
       {saved ? <T variant="small">Saved.</T> : null}
       <Button title="Save" variant="secondary" onPress={save} loading={busy} />

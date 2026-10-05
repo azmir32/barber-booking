@@ -31,6 +31,10 @@ export default function RootLayout() {
             <Stack.Screen name="shop/[slug]" options={{ headerShown: true, title: '', headerBackTitle: 'Back' }} />
             <Stack.Screen name="sign-in" options={{ headerShown: true, title: 'Sign in', headerBackTitle: 'Back' }} />
             <Stack.Screen name="sign-up" options={{ headerShown: true, title: 'Create account', headerBackTitle: 'Back' }} />
+            <Stack.Screen
+              name="forgot-password"
+              options={{ headerShown: true, title: 'Reset password', headerBackTitle: 'Back' }}
+            />
           </Stack>
         </AuthProvider>
       ) : (

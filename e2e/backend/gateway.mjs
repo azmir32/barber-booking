@@ -1,7 +1,9 @@
 // A tiny stand-in for the Supabase API gateway, for end-to-end tests only.
 //
 //   /auth/v1/*  a minimal email + password auth (sign up, sign in, refresh,
-//               user, sign out) that issues the same kind of JWTs Supabase does
+//               user, sign out, password reset by code) that issues the same
+//               kind of JWTs Supabase does
+//   /__test/recovery-code?email=  the last reset code "emailed" to someone
 //   /rest/v1/*  proxied to a local PostgREST
 //   anything else  the exported web app (dist/), with SPA fallback
 //
@@ -28,6 +30,7 @@ const verifyJwt = (token) => verify(token, JWT_SECRET);
 // Auth -----------------------------------------------------------------------
 
 const refreshTokens = new Map(); // token -> user id
+const recoveryCodes = new Map(); // email -> 6-digit code
 
 function toUser(row) {
   return {
@@ -122,9 +125,33 @@ async function handleAuth(req, route, body) {
     }
   }
 
-  if (route === '/user' && req.method === 'GET') {
+  // Like Supabase, answers the same whether or not the email has an account.
+  if (req.method === 'POST' && route === '/recover') {
+    const email = String(body.email ?? '').trim().toLowerCase();
+    const { rows } = await db.query('select id from auth.users where email = $1', [email]);
+    if (rows[0]) recoveryCodes.set(email, String(crypto.randomInt(0, 1_000_000)).padStart(6, '0'));
+    return [200, {}];
+  }
+
+  if (req.method === 'POST' && route === '/verify' && body.type === 'recovery') {
+    const email = String(body.email ?? '').trim().toLowerCase();
+    if (!recoveryCodes.has(email) || recoveryCodes.get(email) !== String(body.token ?? '')) {
+      return authError(403, 'otp_expired', 'Token has expired or is invalid');
+    }
+    recoveryCodes.delete(email);
+    const { rows } = await db.query('select * from auth.users where email = $1', [email]);
+    return [200, session(rows[0])];
+  }
+
+  if (route === '/user' && (req.method === 'GET' || req.method === 'PUT')) {
     const claims = verifyJwt(req.headers.authorization?.replace(/^Bearer /i, ''));
     if (!claims?.sub) return authError(401, 'bad_jwt', 'invalid JWT');
+    if (req.method === 'PUT' && body.password !== undefined) {
+      if (String(body.password).length < 6) {
+        return authError(422, 'weak_password', 'Password should be at least 6 characters.');
+      }
+      await db.query('update auth.passwords set hash = $2 where user_id = $1', [claims.sub, hashPassword(body.password)]);
+    }
     const { rows } = await db.query('select * from auth.users where id = $1', [claims.sub]);
     return rows[0] ? [200, toUser(rows[0])] : authError(404, 'user_not_found', 'User not found');
   }
@@ -194,6 +221,12 @@ http
     for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v);
 
     if (pathname.startsWith('/rest/v1')) return proxyRest(req, res, pathname.slice('/rest/v1'.length) || '/');
+
+    if (pathname === '/__test/recovery-code') {
+      const email = new URL(req.url, 'http://x').searchParams.get('email')?.toLowerCase() ?? '';
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ code: recoveryCodes.get(email) ?? null }));
+    }
 
     if (pathname.startsWith('/auth/v1')) {
       try {

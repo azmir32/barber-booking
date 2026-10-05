@@ -42,6 +42,16 @@ export default function SignIn() {
       />
       <ErrorText message={error} />
       <Button title="Sign in" onPress={submit} loading={busy} disabled={!email || !password} />
+      <Button
+        title="Forgot password?"
+        variant="ghost"
+        onPress={() =>
+          router.replace({
+            pathname: '/forgot-password',
+            params: { ...(email.trim() ? { email: email.trim() } : {}), ...(next ? { next } : {}) },
+          })
+        }
+      />
       <T variant="muted" style={{ textAlign: 'center' }}>
         New here?
       </T>

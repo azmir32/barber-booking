@@ -68,6 +68,7 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
           if (!slugEdited) setSlug(slugify(v));
         }}
         placeholder="e.g. Kemas Barber Kajang"
+        maxLength={80}
       />
       <Field
         label="Booking link"
@@ -77,13 +78,14 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
           setSlug(v);
         }}
         autoCapitalize="none"
+        maxLength={40}
         hint={cleanSlug ? bookingLink(cleanSlug) : 'Letters, numbers and dashes.'}
       />
-      <Field label="About" value={about} onChangeText={setAbout} multiline placeholder="Fades, beard trims, kids cuts…" />
-      <Field label="Address" value={address} onChangeText={setAddress} placeholder="No. 12, Jalan Reko, Kajang" />
-      <Field label="Area" value={area} onChangeText={setArea} />
-      <Field label="Shop phone (WhatsApp)" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />
-      <Field label="Instagram" value={instagram} onChangeText={setInstagram} autoCapitalize="none" placeholder="@yourshop" />
+      <Field label="About" value={about} onChangeText={setAbout} multiline placeholder="Fades, beard trims, kids cuts…" maxLength={500} />
+      <Field label="Address" value={address} onChangeText={setAddress} placeholder="No. 12, Jalan Reko, Kajang" maxLength={200} />
+      <Field label="Area" value={area} onChangeText={setArea} maxLength={60} />
+      <Field label="Shop phone (WhatsApp)" value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={20} />
+      <Field label="Instagram" value={instagram} onChangeText={setInstagram} autoCapitalize="none" placeholder="@yourshop" maxLength={60} />
       <ErrorText message={error} />
       <Button
         title={shop ? 'Save changes' : 'Create my shop'}

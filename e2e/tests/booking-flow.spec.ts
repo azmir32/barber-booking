@@ -36,6 +36,14 @@ async function signIn(page: Page, who: typeof barber) {
   await button(page, 'Sign in').click();
 }
 
+/** Matches the day-picker chip `offset` days from today in Kuala Lumpur, e.g. "Wed 7 Oct". */
+function dayChip(offset: number) {
+  const day = new Date(Date.now() + offset * 24 * 60 * 60 * 1000);
+  const part = (opts: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat('en-MY', { timeZone: 'Asia/Kuala_Lumpur', ...opts }).format(day);
+  return new RegExp(`^${part({ weekday: 'short' })}\\s?${part({ day: 'numeric' })} ${part({ month: 'short' })}`);
+}
+
 async function signOut(page: Page) {
   await page.evaluate(() => window.localStorage.clear());
 }
@@ -179,6 +187,16 @@ test.describe.serial('booking flow', () => {
     await button(page, 'Add booking').click();
     await expect(page.getByText('Pak Abu (added by you)')).toBeVisible();
     await snap(page, '15-barber-day-with-guest');
+
+    await button(page, dayChip(2)).click();
+    await button(page, '+ Add booking or block time').click();
+    await button(page, 'Block time').first().click();
+    await button(page, 'Whole day').click();
+    await expect(field(page, 'Start time')).toHaveCount(0);
+    await field(page, 'Reason (optional)').fill('Day off');
+    await button(page, 'Block the day').click();
+    await expect(page.getByText('Whole day', { exact: true })).toBeVisible();
+    await expect(page.getByText(`Day off · ${barber.name}`)).toBeVisible();
     await signOut(page);
   });
 
@@ -190,6 +208,8 @@ test.describe.serial('booking flow', () => {
     for (const taken of ['12:00 pm', '12:30 pm', '3:00 pm']) {
       await expect(page.getByRole('button', { name: taken, exact: true })).toHaveCount(0);
     }
+    await button(page, dayChip(2)).click();
+    await expect(page.getByText(/^No free times this day/)).toBeVisible();
     await signOut(page);
   });
 
@@ -199,5 +219,29 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Past')).toBeVisible();
     await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
     await expect(page.getByText('Upcoming')).toHaveCount(0);
+  });
+
+  test('customer who forgot their password resets it with an emailed code', async ({ page, request }) => {
+    await page.goto('/sign-in');
+    await field(page, 'Email').fill(customer2.email);
+    await button(page, 'Forgot password?').click();
+    await expect(field(page, 'Email')).toHaveValue(customer2.email);
+    await button(page, 'Send code').click();
+    await expect(field(page, 'Code from the email')).toBeVisible();
+
+    await field(page, 'Code from the email').fill('000000');
+    await field(page, 'New password').fill('new-password-456');
+    await button(page, 'Set new password').click();
+    await expect(page.getByText('That code is wrong or has expired', { exact: false })).toBeVisible();
+
+    const { code } = await (await request.get(`/__test/recovery-code?email=${encodeURIComponent(customer2.email)}`)).json();
+    await field(page, 'Code from the email').fill(code);
+    await snap(page, '16-reset-password');
+    await button(page, 'Set new password').click();
+    await expect(page.getByText('Find a barber')).toBeVisible();
+    await signOut(page);
+
+    await signIn(page, { ...customer2, password: 'new-password-456' });
+    await expect(page.getByText('Find a barber')).toBeVisible();
   });
 });

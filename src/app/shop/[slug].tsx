@@ -262,6 +262,7 @@ export default function ShopPage() {
                 value={note}
                 onChangeText={setNote}
                 placeholder="e.g. low fade, keep the top long"
+                maxLength={280}
               />
               <ErrorText message={error} />
               <Button

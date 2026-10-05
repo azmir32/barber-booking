@@ -75,7 +75,7 @@ export default function Team() {
       </Section>
 
       <Section title="Add a barber">
-        <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. Danial" onSubmitEditing={add} />
+        <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. Danial" onSubmitEditing={add} maxLength={40} />
         <T variant="small">New barbers start with 10am–8pm, Monday to Saturday. Tap Hours to change.</T>
         <ErrorText message={error} />
         <Button title="Add barber" onPress={add} loading={busy} disabled={!name.trim()} />

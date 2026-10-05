@@ -57,7 +57,7 @@ export default function Hours() {
 
   return (
     <Screen edges={[]}>
-      <Field label="Barber name" value={name} onChangeText={setName} />
+      <Field label="Barber name" value={name} onChangeText={setName} maxLength={40} />
       {week[1].open ? (
         <Button title="Copy Monday's hours to all open days" variant="secondary" onPress={copyMondayToAll} />
       ) : null}

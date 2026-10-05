@@ -287,6 +287,50 @@ begin
     where starts_at in ((d + time '10:00') at time zone 'Asia/Kuala_Lumpur',
                         (d + time '13:30') at time zone 'Asia/Kuala_Lumpur')
   ), 'guest bookings and blocks should hide those slots';
+
+  -- A whole day off can't be blocked over existing bookings.
+  begin
+    perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '00:00', 1440, p_is_block => true);
+    raise exception 'a day off must not cover existing bookings';
+  exception when sqlstate 'P0001' then null;
+  end;
+  begin
+    perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d + 1, '00:00', 1441, p_is_block => true);
+    raise exception 'blocks are at most a day';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d + 1, '09:00', 721, p_guest_name => 'Long');
+    raise exception 'bookings are at most 12 hours';
+  exception when sqlstate '22023' then null;
+  end;
+end $$;
+
+-- A whole day off hides every slot that day; removing it brings them back.
+do $$
+declare
+  d date;
+  b bookings;
+begin
+  select day into d
+  from generate_series(1, 7) k, lateral (select (now() at time zone 'Asia/Kuala_Lumpur')::date + k as day) x
+  where exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', x.day, '00000000-0000-0000-0000-0000000000a1'))
+    and not exists (select 1 from bookings where barber_id = '00000000-0000-0000-0000-0000000000a1'
+                    and status <> 'cancelled' and (starts_at at time zone 'Asia/Kuala_Lumpur')::date = x.day)
+  order by day limit 1;
+  assert d is not null, 'need an open day without bookings';
+
+  b := add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '00:00', 1440,
+    p_note => repeat('Hari Raya ', 20), p_is_block => true);
+  assert length(b.service_name) = 80, 'a long reason should be shortened, not rejected';
+  assert not exists (
+    select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d, '00000000-0000-0000-0000-0000000000a1')
+  ), 'a day off should hide every slot';
+
+  perform set_booking_status(b.id, 'cancelled');
+  assert exists (
+    select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d, '00000000-0000-0000-0000-0000000000a1')
+  ), 'removing the day off should bring the slots back';
 end $$;
 
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';

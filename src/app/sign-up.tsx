@@ -60,13 +60,14 @@ export default function SignUp() {
           <T variant="small">Your first month is free. You can set up your shop right after this.</T>
         ) : null}
       </View>
-      <Field label="Full name" value={fullName} onChangeText={setFullName} autoComplete="name" />
+      <Field label="Full name" value={fullName} onChangeText={setFullName} autoComplete="name" maxLength={80} />
       <Field
         label="Phone (WhatsApp)"
         value={phone}
         onChangeText={setPhone}
         keyboardType="phone-pad"
         autoComplete="tel"
+        maxLength={20}
         placeholder="012-345 6789"
         hint={role === 'barber' ? 'Customers will see this to contact you.' : 'Your barber can reach you here if plans change.'}
       />

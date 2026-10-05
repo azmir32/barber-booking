@@ -6,24 +6,32 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 
 ## What's in phase 1
 
+**Everyone**
+- Email and password sign-in, with password reset by emailed code
+
 **Customers**
 - Browse live barbershops and search by name or area
-- Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days
+- Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
+- Pick a time first and sign up after; the chosen slot is kept
 - See upcoming and past bookings, cancel, WhatsApp the shop, book again
 
 **Barbers and shop owners**
 - Create a shop with a booking link (`/shop/your-shop`)
 - Services menu with prices and durations, plus quick-add suggestions
-- Barbers (one per chair) with weekly working hours; a solo barber is a shop with one chair
-- Bookings by day with expected takings; mark done, no-show or cancelled; WhatsApp the customer
+- Barbers (one per chair) with weekly working hours and an optional daily break (e.g. Friday prayers); a solo barber is a shop with one chair
+- Bookings by day with expected takings; mark done or no-show once the time has started, cancel, WhatsApp the customer
+- Add walk-in, WhatsApp or phone bookings, and block time or a whole day off, so online customers can't take those times
 - Go live / pause, share or copy the booking link
 - One-month free trial on every new shop
 
 **Rules enforced in the database**
 - A barber can never be double-booked (Postgres exclusion constraint)
-- Bookings are only created through `book_appointment`, which re-checks the slot is free and inside working hours
+- Bookings are only created through `book_appointment` (customers) and `add_shop_booking` (owners), which re-check the slot is free and inside working hours
 - Customers only see their own bookings; owners only see their own shop's bookings and customers
 - Shops are only visible while published and paid up or inside the free trial
+- Owners can't change their own trial or subscription status
+- Limits against abuse: bookings at most 60 days ahead, at most 4 upcoming bookings per customer per shop, notes up to 280 characters
+- Barbers with booking history can't be deleted (mark them away instead), so past bookings keep their barber
 
 ## Tech
 
@@ -49,6 +57,13 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 
 Tip for testing: in Supabase under Authentication > Sign In / Providers > Email, you can turn off "Confirm email" so new accounts can sign in straight away.
 
+### Emails (password reset)
+
+"Forgot password?" emails a 6-digit code instead of a link, so it works the same in the app and on the web. Two settings in Supabase under Authentication > Emails:
+
+1. In the **Reset password** template, add the code, for example: `<p>Your PotongKu code is <strong>{{ .Token }}</strong></p>`.
+2. Before launch, set up **SMTP settings** with an email provider (Resend, Brevo, etc.). Supabase's built-in sender only delivers to your own team's addresses and a few emails an hour.
+
 ## Checks
 
 ```bash
@@ -56,9 +71,14 @@ npm run typecheck   # TypeScript
 npm run lint        # ESLint
 npm test            # date, money and phone helpers
 npm run test:db     # schema + booking rules against a throwaway local Postgres 16+
+npm run test:e2e    # the whole app in a browser: barber sets up, customers book
 ```
 
 `test:db` needs `initdb`, `pg_ctl` and `psql` installed locally (it does not need Supabase or Docker).
+
+`test:e2e` builds the web app and runs it against a local stand-in for Supabase (Postgres, [PostgREST](https://github.com/PostgREST/postgrest/releases) 12 and a small auth gateway in `e2e/backend`). It needs Postgres 16+, the PostgREST binary on your `PATH` (or `POSTGREST=/path/to/postgrest`) and Playwright's Chromium (`npx playwright install chromium`). Set `SCREENSHOTS=<folder>` to save a screenshot of each step there, and `COLOR_SCHEME=dark` to run in dark mode.
+
+GitHub Actions runs all of these on every push (`.github/workflows/ci.yml`).
 
 ## Running the business side by hand (until payments are built)
 
@@ -68,7 +88,7 @@ npm run test:db     # schema + booking rules against a throwaway local Postgres 
 
 ## Renaming the app
 
-The name shown in the app comes from `name` in `app.json`. Also update `slug`, `scheme`, `ios.bundleIdentifier` and `android.package` there before the first store release.
+The name shown in the app comes from `name` in `app.json`. Also update `slug`, `scheme`, `ios.bundleIdentifier` and `android.package` there before the first store release. The icon, splash and favicon are drawn by `node scripts/make-icons.mjs` (a scissors on the brand red); change `BRAND` there and re-run it.
 
 ## Next phases
 
@@ -76,6 +96,6 @@ The name shown in the app comes from `name` in `app.json`. Also update `slug`, `
 - Online subscription payments for barbers (FPX and cards)
 - Optional deposits at booking
 - Reviews and a photo gallery of cuts
-- Time off and breaks for barbers
+- Shop-wide holidays (e.g. closing every chair for Hari Raya in one step)
 - "Find a barber near me" with a map
 - Walk-in queue mode
