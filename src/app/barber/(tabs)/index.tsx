@@ -5,6 +5,8 @@ import { Linking, ScrollView } from 'react-native';
 import { BookingStatusBadge } from '@/components/booking-status';
 import { Button, Card, Empty, ErrorText, Row, Chip, Screen, Section, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { useNow } from '@/hooks/use-now';
+import { confirmAction } from '@/lib/confirm';
 import { useMyShop } from '@/lib/my-shop';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -20,9 +22,11 @@ type Setup = { services: number; barbers: number; hours: number };
 
 export default function BarberBookings() {
   const { shop } = useMyShop();
+  const now = useNow();
   const tz = shop!.time_zone;
-  const days = useMemo(() => upcomingDays(14, tz), [tz]);
-  const [day, setDay] = useState(days[0].date);
+  // Yesterday is included so last-minute no-shows can still be marked.
+  const days = useMemo(() => upcomingDays(15, tz, new Date(), -1), [tz]);
+  const [day, setDay] = useState(days[1].date);
   const [bookings, setBookings] = useState<ShopBooking[]>([]);
   const [setup, setSetup] = useState<Setup | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +59,14 @@ export default function BarberBookings() {
   );
 
   async function setStatus(b: ShopBooking, status: BookingStatus) {
+    if (status === 'cancelled') {
+      const ok = await confirmAction(
+        'Cancel this booking?',
+        `${b.customer?.full_name || 'The customer'} · ${b.service_name} at ${formatTime(b.starts_at, tz)}. Let them know on WhatsApp.`,
+        'Cancel booking',
+      );
+      if (!ok) return;
+    }
     const { error } = await supabase.rpc('set_booking_status', { p_booking_id: b.id, p_status: status });
     if (error) return setError(errorMessage(error));
     load();
@@ -115,8 +127,12 @@ export default function BarberBookings() {
               {b.customer_note ? <T variant="muted">“{b.customer_note}”</T> : null}
               {b.status === 'confirmed' ? (
                 <Row>
-                  <Button title="Done" variant="secondary" onPress={() => setStatus(b, 'completed')} />
-                  <Button title="No-show" variant="ghost" onPress={() => setStatus(b, 'no_show')} />
+                  {new Date(b.starts_at).getTime() <= now ? (
+                    <>
+                      <Button title="Done" variant="secondary" onPress={() => setStatus(b, 'completed')} />
+                      <Button title="No-show" variant="ghost" onPress={() => setStatus(b, 'no_show')} />
+                    </>
+                  ) : null}
                   <Button title="Cancel" variant="ghost" onPress={() => setStatus(b, 'cancelled')} />
                   {b.customer?.phone ? (
                     <Button

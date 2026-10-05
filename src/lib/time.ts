@@ -31,17 +31,28 @@ export function addDays(date: string, days: number): string {
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
-/** The next `count` days starting today in the shop's zone. */
-export function upcomingDays(count: number, timeZone = DEFAULT_TIME_ZONE, now = new Date()): DayOption[] {
+const RELATIVE_LABELS: Record<number, string> = { [-1]: 'Yesterday', 0: 'Today', 1: 'Tomorrow' };
+
+/**
+ * `count` consecutive days in the shop's zone, starting `startOffset` days
+ * from today (use -1 to include yesterday).
+ */
+export function upcomingDays(
+  count: number,
+  timeZone = DEFAULT_TIME_ZONE,
+  now = new Date(),
+  startOffset = 0,
+): DayOption[] {
   const today = localDateString(now, timeZone);
   return Array.from({ length: count }, (_, i) => {
-    const date = addDays(today, i);
+    const offset = i + startOffset;
+    const date = addDays(today, offset);
     const asUtc = new Date(`${date}T00:00:00Z`);
     const fmt = (opts: Intl.DateTimeFormatOptions) =>
       new Intl.DateTimeFormat(LOCALE, { timeZone: 'UTC', ...opts }).format(asUtc);
     return {
       date,
-      label: i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : fmt({ weekday: 'short' }),
+      label: RELATIVE_LABELS[offset] ?? fmt({ weekday: 'short' }),
       dayOfMonth: fmt({ day: 'numeric' }),
       month: fmt({ month: 'short' }),
     };

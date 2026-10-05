@@ -20,8 +20,21 @@ end $$;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 set role authenticated;
 
-insert into shops (id, owner_id, name, slug)
-values ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000b1', 'Ali Cuts', 'ali-cuts');
+insert into shops (owner_id, name, slug)
+values ('00000000-0000-0000-0000-0000000000b1', 'Ali Cuts', 'ali-cuts');
+
+-- Billing fields can't be chosen at sign-up either.
+do $$ begin
+  insert into shops (owner_id, name, slug, subscription_status)
+  values ('00000000-0000-0000-0000-0000000000b1', 'Free Forever', 'free-forever', 'active');
+  raise exception 'owner should not be able to set billing fields on insert';
+exception when insufficient_privilege then null;
+end $$;
+
+-- Give the shop a fixed id so the rest of the script can refer to it.
+reset role;
+update shops set id = '00000000-0000-0000-0000-00000000005a' where slug = 'ali-cuts';
+set role authenticated;
 insert into barbers (id, shop_id, name) values
   ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-00000000005a', 'Ali'),
   ('00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-00000000005a', 'Danial');
@@ -168,8 +181,49 @@ begin
   assert (select count(*) from profiles where id = '00000000-0000-0000-0000-0000000000c2') = 0,
     'owner should not see unrelated customers';
   select id into v_id from bookings where status = 'confirmed';
+  begin
+    perform set_booking_status(v_id, 'no_show');
+    raise exception 'no-show should wait until the appointment has started';
+  exception when sqlstate '42501' then null;
+  end;
+end $$;
+
+-- Once the appointment time has passed, the owner can mark a no-show.
+reset role;
+update bookings set starts_at = now() - interval '1 hour', ends_at = now() - interval '30 minutes'
+where status = 'confirmed';
+set role authenticated;
+do $$
+declare v_id uuid;
+begin
+  select id into v_id from bookings where status = 'confirmed';
   perform set_booking_status(v_id, 'no_show');
   assert (select status from bookings where id = v_id) = 'no_show', 'owner should mark no-shows';
+end $$;
+
+-- Barbers with booking history can't be deleted, only marked away.
+do $$ begin
+  delete from barbers where id = '00000000-0000-0000-0000-0000000000a2';
+  raise exception 'deleting a barber with bookings should fail';
+exception when foreign_key_violation then null;
+end $$;
+
+-- Hours are saved as a whole week, and overlapping ranges are rejected.
+do $$ begin
+  perform set_barber_hours('00000000-0000-0000-0000-0000000000a2',
+    '[{"weekday": 1, "opens_at": "09:00", "closes_at": "13:00"},
+      {"weekday": 1, "opens_at": "14:00", "closes_at": "18:00"}]');
+  assert (select count(*) from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2') = 2,
+    'set_barber_hours should replace the week';
+  begin
+    perform set_barber_hours('00000000-0000-0000-0000-0000000000a2',
+      '[{"weekday": 2, "opens_at": "09:00", "closes_at": "13:00"},
+        {"weekday": 2, "opens_at": "12:00", "closes_at": "18:00"}]');
+    raise exception 'overlapping hours should fail';
+  exception when sqlstate 'P0001' then null;
+  end;
+  assert (select count(*) from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2') = 2,
+    'a failed save should keep the old hours';
 end $$;
 
 -- An expired trial hides the shop ---------------------------------------------
@@ -185,6 +239,42 @@ update shops set subscription_status = 'active';
 set role authenticated;
 do $$ begin
   assert (select count(*) from shops) = 1, 'paid shop should be visible again';
+end $$;
+
+-- Limits on what one customer can do ---------------------------------------
+reset role;
+delete from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2';
+update working_hours set opens_at = '08:00', closes_at = '22:00';
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+set role authenticated;
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 2;
+  t timestamptz;
+  i int;
+begin
+  -- Too far ahead: no slots, and booking is refused.
+  assert (select count(*) from available_slots('00000000-0000-0000-0000-0000000000e1',
+          (now() at time zone 'Asia/Kuala_Lumpur')::date + 61)) = 0,
+    'no slots beyond the booking horizon';
+
+  begin
+    perform book_appointment('00000000-0000-0000-0000-0000000000e1',
+      (d + time '09:00') at time zone 'Asia/Kuala_Lumpur', null, repeat('x', 281));
+    raise exception 'over-long notes should be refused';
+  exception when sqlstate '22001' then null;
+  end;
+
+  for i in 0..3 loop
+    t := (d + time '09:00' + make_interval(hours => i)) at time zone 'Asia/Kuala_Lumpur';
+    perform book_appointment('00000000-0000-0000-0000-0000000000e1', t);
+  end loop;
+  begin
+    perform book_appointment('00000000-0000-0000-0000-0000000000e1',
+      (d + time '15:00') at time zone 'Asia/Kuala_Lumpur');
+    raise exception 'a fifth upcoming booking at one shop should be refused';
+  exception when sqlstate 'P0001' then null;
+  end;
 end $$;
 
 reset role;

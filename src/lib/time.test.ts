@@ -36,6 +36,14 @@ test('upcomingDays labels today and tomorrow', () => {
   );
 });
 
+test('upcomingDays can start from yesterday', () => {
+  const days = upcomingDays(3, 'Asia/Kuala_Lumpur', new Date('2026-10-05T20:00:00Z'), -1);
+  assert.deepEqual(
+    days.map((d) => d.label),
+    ['Yesterday', 'Today', 'Tomorrow'],
+  );
+});
+
 test('dayBounds gives the local midnight instants', () => {
   const { start, end } = dayBounds('2026-10-06');
   assert.equal(start.toISOString(), '2026-10-05T16:00:00.000Z');

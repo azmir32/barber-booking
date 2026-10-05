@@ -1,11 +1,12 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Alert, Linking, Platform } from 'react-native';
+import { Linking } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { useNow } from '@/hooks/use-now';
 import { useAuth } from '@/lib/auth';
+import { confirmAction } from '@/lib/confirm';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay, formatPrice, formatTime } from '@/lib/time';
@@ -60,20 +61,16 @@ export default function MyBookings() {
   const past = bookings.filter((b) => !upcoming.includes(b));
 
   async function cancel(b: MyBooking) {
-    const doCancel = async () => {
-      const { error } = await supabase.rpc('set_booking_status', { p_booking_id: b.id, p_status: 'cancelled' });
-      if (error) return setError(errorMessage(error));
-      load();
-    };
-    const message = `Cancel ${b.service_name} on ${formatDay(b.starts_at, b.shops?.time_zone)} at ${formatTime(b.starts_at, b.shops?.time_zone)}?`;
-    if (Platform.OS === 'web') {
-      if (window.confirm(message)) doCancel();
-      return;
-    }
-    Alert.alert('Cancel booking', message, [
-      { text: 'Keep it', style: 'cancel' },
-      { text: 'Cancel booking', style: 'destructive', onPress: doCancel },
-    ]);
+    const tz = b.shops?.time_zone;
+    const ok = await confirmAction(
+      'Cancel booking?',
+      `${b.service_name} on ${formatDay(b.starts_at, tz)} at ${formatTime(b.starts_at, tz)}`,
+      'Cancel booking',
+    );
+    if (!ok) return;
+    const { error } = await supabase.rpc('set_booking_status', { p_booking_id: b.id, p_status: 'cancelled' });
+    if (error) return setError(errorMessage(error));
+    load();
   }
 
   return (

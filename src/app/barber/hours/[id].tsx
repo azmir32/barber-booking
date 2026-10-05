@@ -51,15 +51,14 @@ export default function Hours() {
       const closes = normalizeTime(d.closes);
       if (!opens || !closes) return setError(`${WEEKDAYS[weekday]}: use times like 09:00 or 21:30.`);
       if (closes <= opens) return setError(`${WEEKDAYS[weekday]}: closing time must be after opening time.`);
-      rows.push({ barber_id: id, weekday, opens_at: opens, closes_at: closes });
+      rows.push({ weekday, opens_at: opens, closes_at: closes });
     }
     setBusy(true);
     setError(null);
     const nameUpdate = await supabase.from('barbers').update({ name: name.trim() }).eq('id', id);
-    const cleared = await supabase.from('working_hours').delete().eq('barber_id', id);
-    const inserted = rows.length ? await supabase.from('working_hours').insert(rows) : { error: null };
+    const hours = await supabase.rpc('set_barber_hours', { p_barber_id: id, p_hours: rows });
     setBusy(false);
-    const failed = nameUpdate.error || cleared.error || inserted.error;
+    const failed = nameUpdate.error || hours.error;
     if (failed) return setError(errorMessage(failed));
     router.back();
   }

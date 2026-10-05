@@ -13,8 +13,8 @@ create type public.booking_status as enum ('confirmed', 'cancelled', 'completed'
 create table public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   role public.user_role not null default 'customer',
-  full_name text not null default '',
-  phone text,
+  full_name text not null default '' check (length(full_name) <= 80),
+  phone text check (length(phone) <= 20),
   created_at timestamptz not null default now()
 );
 
@@ -32,8 +32,8 @@ begin
     new.id,
     case when new.raw_user_meta_data ->> 'role' = 'barber' then 'barber'::public.user_role
          else 'customer'::public.user_role end,
-    coalesce(new.raw_user_meta_data ->> 'full_name', ''),
-    nullif(new.raw_user_meta_data ->> 'phone', '')
+    left(trim(coalesce(new.raw_user_meta_data ->> 'full_name', '')), 80),
+    nullif(left(trim(coalesce(new.raw_user_meta_data ->> 'phone', '')), 20), '')
   );
   return new;
 end;
@@ -48,13 +48,14 @@ create trigger on_auth_user_created
 create table public.shops (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null unique references public.profiles (id) on delete cascade,
-  name text not null check (length(trim(name)) > 0),
-  slug text not null unique check (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'),
-  about text,
-  address text,
-  area text not null default 'Kajang',
-  phone text,
-  instagram text,
+  name text not null check (length(trim(name)) between 1 and 80),
+  slug text not null unique
+    check (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' and length(slug) between 3 and 40),
+  about text check (length(about) <= 500),
+  address text check (length(address) <= 200),
+  area text not null default 'Kajang' check (length(area) between 1 and 60),
+  phone text check (length(phone) <= 20),
+  instagram text check (length(instagram) <= 60),
   time_zone text not null default 'Asia/Kuala_Lumpur',
   is_published boolean not null default false,
   -- Billing: every shop starts with a one-month free trial. Until payments are
@@ -105,7 +106,7 @@ $$;
 create table public.barbers (
   id uuid primary key default gen_random_uuid(),
   shop_id uuid not null references public.shops (id) on delete cascade,
-  name text not null check (length(trim(name)) > 0),
+  name text not null check (length(trim(name)) between 1 and 40),
   is_active boolean not null default true,
   sort_order int not null default 0,
   created_at timestamptz not null default now()
@@ -117,9 +118,9 @@ create index barbers_shop_id_idx on public.barbers (shop_id);
 create table public.services (
   id uuid primary key default gen_random_uuid(),
   shop_id uuid not null references public.shops (id) on delete cascade,
-  name text not null check (length(trim(name)) > 0),
+  name text not null check (length(trim(name)) between 1 and 60),
   duration_min int not null check (duration_min between 5 and 480),
-  price numeric(10, 2) not null check (price >= 0),
+  price numeric(10, 2) not null check (price between 0 and 10000),
   is_active boolean not null default true,
   sort_order int not null default 0,
   created_at timestamptz not null default now()
@@ -134,16 +135,22 @@ create table public.working_hours (
   weekday smallint not null check (weekday between 0 and 6),
   opens_at time not null,
   closes_at time not null,
-  check (closes_at > opens_at)
+  check (closes_at > opens_at),
+  -- Ranges for the same barber and day may not overlap.
+  constraint working_hours_no_overlap exclude using gist (
+    barber_id with =,
+    weekday with =,
+    tsrange(date '2000-01-01' + opens_at, date '2000-01-01' + closes_at) with &&
+  )
 );
-create index working_hours_barber_id_idx on public.working_hours (barber_id);
 
 -- Bookings ------------------------------------------------------------------
 
 create table public.bookings (
   id uuid primary key default gen_random_uuid(),
   shop_id uuid not null references public.shops (id) on delete cascade,
-  barber_id uuid not null references public.barbers (id) on delete cascade,
+  -- Barbers with booking history can't be deleted, only marked away.
+  barber_id uuid not null references public.barbers (id),
   service_id uuid references public.services (id) on delete set null,
   customer_id uuid not null references public.profiles (id) on delete cascade,
   -- Snapshot of the service at booking time, so later price edits don't
@@ -153,7 +160,7 @@ create table public.bookings (
   starts_at timestamptz not null,
   ends_at timestamptz not null,
   status public.booking_status not null default 'confirmed',
-  customer_note text,
+  customer_note text check (length(customer_note) <= 280),
   created_at timestamptz not null default now(),
   check (ends_at > starts_at),
   -- A barber can never be double-booked.
@@ -224,16 +231,24 @@ create policy "customers and shop owners read bookings" on public.bookings
 -- Users can't change their own role or billing fields from the app.
 revoke update on public.profiles from anon, authenticated;
 grant update (full_name, phone) on public.profiles to authenticated;
-revoke update on public.shops from anon, authenticated;
+revoke insert, update on public.shops from anon, authenticated;
+grant insert (owner_id, name, slug, about, address, area, phone, instagram, is_published)
+  on public.shops to authenticated;
 grant update (name, slug, about, address, area, phone, instagram, is_published)
   on public.shops to authenticated;
 revoke insert, update, delete on public.bookings from anon, authenticated;
 
--- Availability --------------------------------------------------------------
+-- Booking rules ------------------------------------------------------------
+
+-- How far ahead customers can book, and how many upcoming bookings one
+-- customer may hold at one shop (stops a single account blocking a day).
+create function public.booking_horizon_days() returns int language sql immutable as $$ select 60 $$;
+create function public.max_upcoming_per_shop() returns int language sql immutable as $$ select 4 $$;
 
 -- Free start times for a service on a given local day, per barber.
 -- Slots start every 15 minutes inside each barber's working hours, skip
--- anything already booked, and skip times that have already passed.
+-- anything already booked, skip times that have passed, and stop at the
+-- booking horizon.
 create function public.available_slots(
   p_service_id uuid,
   p_day date,
@@ -252,9 +267,11 @@ as $$
     where s.id = p_service_id
       and s.is_active
       and (public.shop_is_live(sh) or sh.owner_id = auth.uid())
+      and p_day <= (now() at time zone sh.time_zone)::date + public.booking_horizon_days()
   ),
   candidates as (
-    select b.id as barber_id,
+    select distinct
+           b.id as barber_id,
            t at time zone svc.time_zone as starts_at,
            svc.duration_min
     from svc
@@ -311,6 +328,21 @@ begin
     raise exception 'This service is no longer available.' using errcode = 'P0002';
   end if;
 
+  if length(p_note) > 280 then
+    raise exception 'Please keep your note under 280 characters.' using errcode = '22001';
+  end if;
+
+  if (
+    select count(*) from bookings
+    where customer_id = v_uid
+      and shop_id = v_service.shop_id
+      and status = 'confirmed'
+      and starts_at > now()
+  ) >= public.max_upcoming_per_shop() then
+    raise exception 'You already have % upcoming bookings here. Cancel one to book another.',
+      public.max_upcoming_per_shop() using errcode = 'P0001';
+  end if;
+
   select time_zone into v_tz from shops where id = v_service.shop_id;
   v_day := (p_starts_at at time zone v_tz)::date;
 
@@ -348,7 +380,8 @@ end;
 $$;
 
 -- Change a booking's status. Customers may cancel their own upcoming
--- bookings; shop owners may set any status on their shop's bookings.
+-- bookings. Shop owners may cancel, and once the appointment has started,
+-- mark it done or a no-show (or undo that by confirming it again).
 create function public.set_booking_status(
   p_booking_id uuid,
   p_status public.booking_status
@@ -367,7 +400,9 @@ begin
   end if;
 
   if public.owns_shop(v_booking.shop_id) then
-    null;
+    if p_status in ('completed', 'no_show') and v_booking.starts_at > now() then
+      raise exception 'You can mark this once the appointment has started.' using errcode = '42501';
+    end if;
   elsif v_booking.customer_id = auth.uid() then
     if p_status <> 'cancelled' or v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
       raise exception 'You can only cancel an upcoming booking.' using errcode = '42501';
@@ -376,12 +411,49 @@ begin
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
 
-  update bookings set status = p_status where id = p_booking_id returning * into v_booking;
+  begin
+    update bookings set status = p_status where id = p_booking_id returning * into v_booking;
+  exception when exclusion_violation then
+    raise exception 'That time has been booked by someone else since.' using errcode = 'P0001';
+  end;
   return v_booking;
+end;
+$$;
+
+-- Replace a barber's whole week in one go, so a failed save never leaves
+-- them with no hours. p_hours: [{"weekday": 1, "opens_at": "10:00", "closes_at": "20:00"}, ...]
+create function public.set_barber_hours(p_barber_id uuid, p_hours jsonb)
+returns setof public.working_hours
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (
+    select 1 from barbers b where b.id = p_barber_id and public.owns_shop(b.shop_id)
+  ) then
+    raise exception 'Barber not found.' using errcode = 'P0002';
+  end if;
+
+  delete from working_hours where barber_id = p_barber_id;
+  begin
+    insert into working_hours (barber_id, weekday, opens_at, closes_at)
+    select p_barber_id, (h ->> 'weekday')::smallint, (h ->> 'opens_at')::time, (h ->> 'closes_at')::time
+    from jsonb_array_elements(coalesce(p_hours, '[]'::jsonb)) h;
+  exception
+    when exclusion_violation then
+      raise exception 'Some of those hours overlap on the same day.' using errcode = 'P0001';
+    when check_violation then
+      raise exception 'Closing time must be after opening time.' using errcode = 'P0001';
+  end;
+
+  return query select * from working_hours where barber_id = p_barber_id order by weekday, opens_at;
 end;
 $$;
 
 revoke execute on function public.book_appointment(uuid, timestamptz, uuid, text) from public, anon;
 revoke execute on function public.set_booking_status(uuid, public.booking_status) from public, anon;
+revoke execute on function public.set_barber_hours(uuid, jsonb) from public, anon;
 grant execute on function public.book_appointment(uuid, timestamptz, uuid, text) to authenticated;
 grant execute on function public.set_booking_status(uuid, public.booking_status) to authenticated;
+grant execute on function public.set_barber_hours(uuid, jsonb) to authenticated;

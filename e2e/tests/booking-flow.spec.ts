@@ -44,6 +44,11 @@ async function pickHaircutTomorrow(page: Page) {
 test.describe.serial('booking flow', () => {
   let bookedTime = '';
 
+  // Cancelling asks first; say yes.
+  test.beforeEach(({ page }) => {
+    page.on('dialog', (dialog) => dialog.accept());
+  });
+
   test('barber signs up, sets up the shop and goes live', async ({ page }) => {
     await page.goto('/');
     await button(page, 'Set up my shop').click();
