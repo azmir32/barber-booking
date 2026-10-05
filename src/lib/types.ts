@@ -57,7 +57,11 @@ export type Booking = {
   shop_id: string;
   barber_id: string;
   service_id: string | null;
-  customer_id: string;
+  /** Null for bookings the shop added itself and for blocked time. */
+  customer_id: string | null;
+  guest_name: string | null;
+  guest_phone: string | null;
+  is_block: boolean;
   service_name: string;
   price: number;
   starts_at: string;

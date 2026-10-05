@@ -4,7 +4,7 @@ import { Linking } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { DayPicker } from '@/components/day-picker';
-import { Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
+import { Badge, Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { useNow } from '@/hooks/use-now';
 import { confirmAction } from '@/lib/confirm';
 import { useMyShop } from '@/lib/my-shop';
@@ -60,11 +60,13 @@ export default function BarberBookings() {
 
   async function setStatus(b: ShopBooking, status: BookingStatus) {
     if (status === 'cancelled') {
-      const ok = await confirmAction(
-        'Cancel this booking?',
-        `${b.customer?.full_name || 'The customer'} · ${b.service_name} at ${formatTime(b.starts_at, tz)}. Let them know on WhatsApp.`,
-        'Cancel booking',
-      );
+      const ok = b.is_block
+        ? await confirmAction('Remove this block?', 'Customers will be able to book this time again.', 'Remove')
+        : await confirmAction(
+            'Cancel this booking?',
+            `${whoFor(b)} · ${b.service_name} at ${formatTime(b.starts_at, tz)}. Let them know on WhatsApp.`,
+            'Cancel booking',
+          );
       if (!ok) return;
     }
     const { error } = await supabase.rpc('set_booking_status', { p_booking_id: b.id, p_status: status });
@@ -74,7 +76,7 @@ export default function BarberBookings() {
 
   if (!shop) return null;
 
-  const active = bookings.filter((b) => b.status !== 'cancelled');
+  const active = bookings.filter((b) => b.status !== 'cancelled' && !b.is_block);
   const expected = active.reduce((sum, b) => sum + Number(b.price), 0);
   const ready = setup && setup.services > 0 && setup.barbers > 0 && setup.hours > 0 && shop.is_published;
 
@@ -98,54 +100,79 @@ export default function BarberBookings() {
       <Section
         title={formatDay(dayBounds(day, tz).start, tz)}
         action={active.length ? <T variant="muted">{active.length} · {formatPrice(expected)}</T> : undefined}>
+        <Button
+          title="+ Add booking or block time"
+          variant="secondary"
+          onPress={() => router.push({ pathname: '/barber/new-booking', params: { day } })}
+        />
         {bookings.length === 0 ? (
           <Empty title="No bookings" body={shop.is_published ? 'Share your booking link to fill this day.' : undefined} />
         ) : (
-          bookings.map((b) => (
-            <Card key={b.id} style={b.status === 'cancelled' ? { opacity: 0.6 } : undefined}>
-              <Row style={{ justifyContent: 'space-between' }}>
-                <T variant="heading">
-                  {formatTime(b.starts_at, tz)} – {formatTime(b.ends_at, tz)}
-                </T>
-                <BookingStatusBadge booking={b} />
-              </Row>
-              <T variant="label">{b.customer?.full_name || 'Customer'}</T>
-              <T>
-                {b.service_name} · {formatPrice(b.price)}
-                {b.barbers ? ` · ${b.barbers.name}` : ''}
-              </T>
-              {b.customer_note ? <T variant="muted">“{b.customer_note}”</T> : null}
-              {b.status === 'confirmed' ? (
-                <Row>
-                  {new Date(b.starts_at).getTime() <= now ? (
-                    <>
-                      <Button title="Done" variant="secondary" onPress={() => setStatus(b, 'completed')} />
-                      <Button title="No-show" variant="ghost" onPress={() => setStatus(b, 'no_show')} />
-                    </>
-                  ) : null}
-                  <Button title="Cancel" variant="ghost" onPress={() => setStatus(b, 'cancelled')} />
-                  {b.customer?.phone ? (
-                    <Button
-                      title="WhatsApp"
-                      variant="ghost"
-                      onPress={() =>
-                        Linking.openURL(
-                          whatsappUrl(
-                            b.customer!.phone!,
-                            `Hi ${b.customer!.full_name}, this is ${shop.name} about your ${b.service_name} on ${formatDay(b.starts_at, tz)} at ${formatTime(b.starts_at, tz)}.`,
-                          ),
-                        )
-                      }
-                    />
-                  ) : null}
+          bookings.map((b) => {
+            const phone = b.customer?.phone ?? b.guest_phone;
+            const live = b.status === 'confirmed';
+            return (
+              <Card key={b.id} style={b.status === 'cancelled' ? { opacity: 0.6 } : undefined}>
+                <Row style={{ justifyContent: 'space-between' }}>
+                  <T variant="heading">
+                    {formatTime(b.starts_at, tz)} – {formatTime(b.ends_at, tz)}
+                  </T>
+                  {b.is_block ? <Badge label="Blocked" /> : <BookingStatusBadge booking={b} />}
                 </Row>
-              ) : null}
-            </Card>
-          ))
+                {b.is_block ? (
+                  <T>
+                    {b.service_name}
+                    {b.barbers ? ` · ${b.barbers.name}` : ''}
+                  </T>
+                ) : (
+                  <>
+                    <T variant="label">
+                      {whoFor(b)}
+                      {b.customer_id ? '' : ' (added by you)'}
+                    </T>
+                    <T>
+                      {b.service_name} · {formatPrice(b.price)}
+                      {b.barbers ? ` · ${b.barbers.name}` : ''}
+                    </T>
+                  </>
+                )}
+                {b.customer_note ? <T variant="muted">“{b.customer_note}”</T> : null}
+                {live ? (
+                  <Row>
+                    {!b.is_block && new Date(b.starts_at).getTime() <= now ? (
+                      <>
+                        <Button title="Done" variant="secondary" onPress={() => setStatus(b, 'completed')} />
+                        <Button title="No-show" variant="ghost" onPress={() => setStatus(b, 'no_show')} />
+                      </>
+                    ) : null}
+                    <Button title={b.is_block ? 'Remove' : 'Cancel'} variant="ghost" onPress={() => setStatus(b, 'cancelled')} />
+                    {phone && !b.is_block ? (
+                      <Button
+                        title="WhatsApp"
+                        variant="ghost"
+                        onPress={() =>
+                          Linking.openURL(
+                            whatsappUrl(
+                              phone,
+                              `Hi ${whoFor(b)}, this is ${shop.name} about your ${b.service_name} on ${formatDay(b.starts_at, tz)} at ${formatTime(b.starts_at, tz)}.`,
+                            ),
+                          )
+                        }
+                      />
+                    ) : null}
+                  </Row>
+                ) : null}
+              </Card>
+            );
+          })
         )}
       </Section>
     </Screen>
   );
+}
+
+function whoFor(b: ShopBooking): string {
+  return b.customer?.full_name || b.guest_name || 'Customer';
 }
 
 function SetupStep({ done, label, onPress }: { done: boolean; label: string; onPress: () => void }) {

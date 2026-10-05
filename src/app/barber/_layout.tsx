@@ -35,6 +35,7 @@ function BarberStack() {
     <Stack screenOptions={{ headerBackTitle: 'Back' }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="hours/[id]" options={{ title: 'Working hours' }} />
+      <Stack.Screen name="new-booking" options={{ title: 'Add to the day' }} />
     </Stack>
   );
 }

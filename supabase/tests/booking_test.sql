@@ -241,6 +241,51 @@ do $$ begin
   assert (select count(*) from shops) = 1, 'paid shop should be visible again';
 end $$;
 
+-- The owner adds a WhatsApp booking and blocks time ----------------------
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 3;
+  b bookings;
+begin
+  b := add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '10:00', null,
+    '00000000-0000-0000-0000-0000000000e1', 'Pak Abu', '019-111 2222', 'Booked on WhatsApp');
+  assert b.guest_name = 'Pak Abu' and b.customer_id is null and b.price = 25,
+    'guest booking should take the service name and price';
+  assert b.ends_at - b.starts_at = interval '30 minutes', 'guest booking should last the service time';
+  assert b.starts_at = (d + time '10:00') at time zone 'Asia/Kuala_Lumpur', 'time is shop-local';
+
+  b := add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '13:00', 90,
+    p_note => 'Friday prayers', p_is_block => true);
+  assert b.is_block and b.service_name = 'Friday prayers' and b.price = 0, 'block should keep its reason';
+
+  begin
+    perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '10:15', 30, p_guest_name => 'Clash');
+    raise exception 'owner bookings must not overlap';
+  exception when sqlstate 'P0001' then null;
+  end;
+  begin
+    perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '16:00', 30);
+    raise exception 'a non-block booking needs a name';
+  exception when sqlstate '22023' then null;
+  end;
+
+  -- Online customers can't take those times.
+  assert not exists (
+    select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d, '00000000-0000-0000-0000-0000000000a1')
+    where starts_at in ((d + time '10:00') at time zone 'Asia/Kuala_Lumpur',
+                        (d + time '13:30') at time zone 'Asia/Kuala_Lumpur')
+  ), 'guest bookings and blocks should hide those slots';
+end $$;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1',
+    (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '18:00', 30, p_guest_name => 'Sneaky');
+  raise exception 'customers should not add shop bookings';
+exception when sqlstate 'P0002' then null;
+end $$;
+
 -- Limits on what one customer can do ---------------------------------------
 reset role;
 delete from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2';

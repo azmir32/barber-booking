@@ -155,6 +155,41 @@ test.describe.serial('booking flow', () => {
     await signOut(page);
   });
 
+  test('barber blocks lunch and adds a WhatsApp booking', async ({ page }) => {
+    await signIn(page, barber);
+    await button(page, /^Tomorrow/).click();
+
+    await button(page, '+ Add booking or block time').click();
+    await button(page, 'Block time').first().click();
+    await button(page, /^1 hr$/).click();
+    await field(page, 'Start time').fill('12:00');
+    await field(page, 'Reason (optional)').fill('Lunch');
+    await button(page, 'Block time').last().click();
+    await expect(page.getByText(`Lunch · ${barber.name}`)).toBeVisible();
+
+    await button(page, '+ Add booking or block time').click();
+    await button(page, /^Haircut/).click();
+    await field(page, 'Start time').fill('15:00');
+    await field(page, 'Customer name').fill('Pak Abu');
+    await field(page, 'Customer phone (optional)').fill('019-111 2222');
+    await snap(page, '14-add-booking');
+    await button(page, 'Add booking').click();
+    await expect(page.getByText('Pak Abu (added by you)')).toBeVisible();
+    await snap(page, '15-barber-day-with-guest');
+    await signOut(page);
+  });
+
+  test('online customers cannot book blocked or taken times', async ({ page }) => {
+    await signIn(page, customer2);
+    await page.getByText(shopName).click();
+    await pickHaircutTomorrow(page);
+    await expect(page.getByRole('button', { name: '11:00 am', exact: true })).toBeVisible();
+    for (const taken of ['12:00 pm', '12:30 pm', '3:00 pm']) {
+      await expect(page.getByRole('button', { name: taken, exact: true })).toHaveCount(0);
+    }
+    await signOut(page);
+  });
+
   test('customer sees the cancellation', async ({ page }) => {
     await signIn(page, customer);
     await page.getByRole('tab', { name: /My bookings/ }).click();

@@ -152,10 +152,16 @@ create table public.bookings (
   -- Barbers with booking history can't be deleted, only marked away.
   barber_id uuid not null references public.barbers (id),
   service_id uuid references public.services (id) on delete set null,
-  customer_id uuid not null references public.profiles (id) on delete cascade,
+  -- Online bookings have a customer account. Bookings the shop adds itself
+  -- (walk-ins, WhatsApp, phone calls) carry a guest name instead, and
+  -- blocked time (breaks, errands) has neither.
+  customer_id uuid references public.profiles (id) on delete cascade,
+  guest_name text check (length(guest_name) <= 80),
+  guest_phone text check (length(guest_phone) <= 20),
+  is_block boolean not null default false,
   -- Snapshot of the service at booking time, so later price edits don't
-  -- rewrite history.
-  service_name text not null,
+  -- rewrite history. For blocked time this is the reason.
+  service_name text not null check (length(service_name) <= 80),
   price numeric(10, 2) not null,
   starts_at timestamptz not null,
   ends_at timestamptz not null,
@@ -163,6 +169,7 @@ create table public.bookings (
   customer_note text check (length(customer_note) <= 280),
   created_at timestamptz not null default now(),
   check (ends_at > starts_at),
+  check (is_block or customer_id is not null or guest_name is not null),
   -- A barber can never be double-booked.
   constraint bookings_no_overlap exclude using gist (
     barber_id with =,
@@ -451,6 +458,83 @@ begin
 end;
 $$;
 
+-- Shop owners add bookings that came in another way (walk-in, WhatsApp,
+-- phone) or block time, so online customers can't take those slots.
+-- Times are the shop's local day and clock time. Working hours are not
+-- enforced here: the owner may squeeze someone in.
+create function public.add_shop_booking(
+  p_barber_id uuid,
+  p_day date,
+  p_time time,
+  p_duration_min int default null,
+  p_service_id uuid default null,
+  p_guest_name text default null,
+  p_guest_phone text default null,
+  p_note text default null,
+  p_is_block boolean default false
+)
+returns public.bookings
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_service services;
+  v_minutes int;
+  v_starts timestamptz;
+  v_booking bookings;
+begin
+  select s.* into v_shop
+  from barbers b join shops s on s.id = b.shop_id
+  where b.id = p_barber_id and s.owner_id = auth.uid();
+  if not found then
+    raise exception 'Barber not found.' using errcode = 'P0002';
+  end if;
+
+  if p_service_id is not null then
+    select * into v_service from services where id = p_service_id and shop_id = v_shop.id;
+    if not found then
+      raise exception 'Service not found.' using errcode = 'P0002';
+    end if;
+  end if;
+
+  v_minutes := coalesce(p_duration_min, v_service.duration_min);
+  if v_minutes is null or v_minutes not between 5 and 720 then
+    raise exception 'Pick a service or a length between 5 minutes and 12 hours.' using errcode = '22023';
+  end if;
+  if not p_is_block and nullif(trim(p_guest_name), '') is null then
+    raise exception 'Add the customer''s name.' using errcode = '22023';
+  end if;
+
+  v_starts := (p_day + p_time) at time zone v_shop.time_zone;
+
+  begin
+    insert into bookings (
+      shop_id, barber_id, service_id, guest_name, guest_phone, is_block,
+      service_name, price, starts_at, ends_at, customer_note
+    ) values (
+      v_shop.id, p_barber_id, v_service.id,
+      case when p_is_block then null else nullif(trim(p_guest_name), '') end,
+      case when p_is_block then null else nullif(trim(p_guest_phone), '') end,
+      p_is_block,
+      case when p_is_block then coalesce(nullif(trim(p_note), ''), 'Blocked')
+           else coalesce(v_service.name, 'Appointment') end,
+      case when p_is_block then 0 else coalesce(v_service.price, 0) end,
+      v_starts, v_starts + make_interval(mins => v_minutes),
+      case when p_is_block then null else nullif(trim(p_note), '') end
+    )
+    returning * into v_booking;
+  exception when exclusion_violation then
+    raise exception 'That barber already has a booking at that time.' using errcode = 'P0001';
+  end;
+
+  return v_booking;
+end;
+$$;
+
+revoke execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) from public, anon;
+grant execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) to authenticated;
 revoke execute on function public.book_appointment(uuid, timestamptz, uuid, text) from public, anon;
 revoke execute on function public.set_booking_status(uuid, public.booking_status) from public, anon;
 revoke execute on function public.set_barber_hours(uuid, jsonb) from public, anon;
