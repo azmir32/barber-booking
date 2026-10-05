@@ -10,6 +10,14 @@ const customer = { name: 'Ben Lim', phone: '013-222 3333', email: `ben-${run}@te
 const customer2 = { name: 'Chong Wei', phone: '014-555 6666', email: `chong-${run}@test.my`, password: 'password123' };
 const shopName = `Kemas Barber ${run}`;
 
+/** Saves a screenshot when SCREENSHOTS=<dir> is set (handy for reviewing UI). */
+async function snap(page: Page, name: string) {
+  const dir = process.env.SCREENSHOTS;
+  if (!dir) return;
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${dir}/${name}.png`, fullPage: true });
+}
+
 const button = (page: Page, name: string | RegExp) => page.getByRole('button', { name, exact: typeof name === 'string' });
 const field = (page: Page, label: string) => page.getByLabel(label, { exact: true });
 
@@ -51,30 +59,37 @@ test.describe.serial('booking flow', () => {
 
   test('barber signs up, sets up the shop and goes live', async ({ page }) => {
     await page.goto('/');
+    await snap(page, '01-welcome');
     await button(page, 'Set up my shop').click();
     await expect(page.getByText('Your first month is free.', { exact: false })).toBeVisible();
+    await snap(page, '02-sign-up-barber');
     await signUp(page, barber);
 
     await expect(page.getByText('Set up your shop')).toBeVisible();
+    await snap(page, '03-shop-setup');
     await field(page, 'Shop name').fill(shopName);
     await field(page, 'Address').fill('No. 12, Jalan Reko, Kajang');
     await button(page, 'Create my shop').click();
 
     // Onboarding checklist on the bookings tab.
     await expect(page.getByText('Get ready for bookings')).toBeVisible();
+    await snap(page, '04-barber-bookings-empty');
 
     // Services: quick add a haircut.
     await page.getByRole('tab', { name: /Services/ }).click();
     await button(page, '+ Haircut RM20').click();
     await expect(page.getByText('Your menu')).toBeVisible();
     await expect(page.getByText('30 min', { exact: true })).toBeVisible();
+    await snap(page, '05-services');
 
     // Barbers: the owner got the first chair; open Sundays too.
     await page.getByRole('tab', { name: /Barbers/ }).click();
     await expect(page.getByText(barber.name, { exact: true })).toBeVisible();
     await expect(page.getByText('Mon–Sat · 10:00–20:00')).toBeVisible();
+    await snap(page, '06-barbers');
     await button(page, 'Hours').click();
     await expect(field(page, 'Barber name')).toBeVisible();
+    await snap(page, '07-hours');
     await button(page, 'Open').last().click(); // Sunday is listed last
     await button(page, 'Save hours').click();
     await expect(page.getByText('Every day · 10:00–20:00')).toBeVisible();
@@ -85,18 +100,21 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText(/Free trial: 30 days left/)).toBeVisible();
     await button(page, 'Go live').click();
     await expect(page.getByText('You are live')).toBeVisible();
+    await snap(page, '08-my-shop');
     await signOut(page);
   });
 
   test('customer finds the shop and books', async ({ page }) => {
     await page.goto('/');
     await button(page, 'Find a barber').click();
+    await snap(page, '09-explore');
     await page.getByText(shopName).click();
     await expect(page.getByText('1. Pick a service')).toBeVisible();
 
     const time = await pickHaircutTomorrow(page);
     bookedTime = (await time.textContent()) ?? '';
     await time.click();
+    await snap(page, '10-shop-page');
     await button(page, 'Sign in to book').click();
 
     // Not signed in yet: sign up and land back on the shop with the slot still picked.
@@ -107,9 +125,11 @@ test.describe.serial('booking flow', () => {
     await button(page, 'Confirm booking').click();
 
     await expect(page.getByText("You're booked!")).toBeVisible();
+    await snap(page, '11-booked');
     await button(page, 'See my bookings').click();
     await expect(page.getByText('Upcoming')).toBeVisible();
     await expect(page.getByText(`Haircut with ${barber.name} · RM20`)).toBeVisible();
+    await snap(page, '12-my-bookings');
     await signOut(page);
   });
 
@@ -129,6 +149,7 @@ test.describe.serial('booking flow', () => {
     await button(page, /^Tomorrow/).click();
     await expect(page.getByText(customer.name, { exact: true })).toBeVisible();
     await expect(page.getByText('“Low fade please”')).toBeVisible();
+    await snap(page, '13-barber-day');
     await button(page, 'Cancel').click();
     await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
     await signOut(page);

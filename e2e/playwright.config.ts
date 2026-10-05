@@ -14,6 +14,7 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${process.env.GATEWAY_PORT ?? 54321}`,
     ...devices['Pixel 7'],
     timezoneId: 'Asia/Kuala_Lumpur',
+    colorScheme: process.env.COLOR_SCHEME === 'dark' ? 'dark' : 'light',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

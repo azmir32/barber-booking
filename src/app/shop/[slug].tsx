@@ -1,15 +1,19 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { Linking, ScrollView, View } from 'react-native';
+import { Linking, View } from 'react-native';
 
+import { DayPicker } from '@/components/day-picker';
 import { Button, Card, Chip, Empty, ErrorText, Field, Loading, Row, Screen, Section, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
-import { formatDay, formatDuration, formatPrice, formatTime, upcomingDays } from '@/lib/time';
-import type { Barber, Booking, Service, Shop, Slot } from '@/lib/types';
+import { formatClock, shopWeek, WEEK_ORDER } from '@/lib/hours';
+import { formatDay, formatDuration, formatPrice, formatTime, groupByPartOfDay, localDateString, upcomingDays } from '@/lib/time';
+import { WEEKDAYS, type Barber, type Booking, type Service, type Shop, type Slot, type WorkingHours } from '@/lib/types';
+
+type BarberWithHours = Barber & { working_hours: Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>[] };
 
 const DAYS_AHEAD = 14;
 
@@ -20,7 +24,7 @@ export default function ShopPage() {
 
   const [shop, setShop] = useState<Shop | null>(null);
   const [services, setServices] = useState<Service[]>([]);
-  const [barbers, setBarbers] = useState<Barber[]>([]);
+  const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,11 +53,17 @@ export default function ShopPage() {
       }
       const [svc, brb] = await Promise.all([
         supabase.from('services').select('*').eq('shop_id', shopRow.id).eq('is_active', true).order('sort_order').order('name'),
-        supabase.from('barbers').select('*').eq('shop_id', shopRow.id).eq('is_active', true).order('sort_order').order('name'),
+        supabase
+          .from('barbers')
+          .select('*, working_hours(weekday, opens_at, closes_at)')
+          .eq('shop_id', shopRow.id)
+          .eq('is_active', true)
+          .order('sort_order')
+          .order('name'),
       ]);
       setShop(shopRow as Shop);
       setServices((svc.data ?? []) as Service[]);
-      setBarbers((brb.data ?? []) as Barber[]);
+      setBarbers((brb.data ?? []) as BarberWithHours[]);
       setLoading(false);
     })();
   }, [slug]);
@@ -93,6 +103,8 @@ export default function ShopPage() {
 
   // With "any barber", several barbers can share a start time; show it once.
   const times = useMemo(() => [...new Set(slots.map((s) => s.starts_at))], [slots]);
+  const timeGroups = useMemo(() => groupByPartOfDay(times, shop?.time_zone), [times, shop?.time_zone]);
+  const week = useMemo(() => shopWeek(barbers.flatMap((b) => b.working_hours ?? [])), [barbers]);
   const service = services.find((s) => s.id === serviceId);
   const barberName = barbers.find((b) => b.id === barberId)?.name;
 
@@ -145,6 +157,9 @@ export default function ShopPage() {
           <T variant="label">{shop.name}</T>
           {shop.address ? <T variant="muted">{shop.address}</T> : null}
           <T variant="small">{"Can't make it? Cancel from My bookings so someone else can take the slot."}</T>
+          {shop.phone ? (
+            <Button title="WhatsApp the shop" variant="secondary" onPress={() => Linking.openURL(whatsappUrl(shop.phone!))} />
+          ) : null}
         </Card>
         <Button title="See my bookings" onPress={() => router.replace('/customer/bookings')} />
       </Screen>
@@ -205,32 +220,27 @@ export default function ShopPage() {
               ) : null}
 
               <Section title={barbers.length > 1 ? '3. Pick a time' : '2. Pick a time'}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.sm }}>
-                  {days.map((d) => (
-                    <Chip
-                      key={d.date}
-                      label={d.label}
-                      sublabel={`${d.dayOfMonth} ${d.month}`}
-                      selected={day === d.date}
-                      onPress={() => pickDay(d.date)}
-                    />
-                  ))}
-                </ScrollView>
+                <DayPicker days={days} selected={day} onSelect={pickDay} />
                 {slotsLoading ? (
                   <T variant="muted">Checking free times…</T>
                 ) : times.length === 0 ? (
                   <T variant="muted">No free times this day. Try another day{barberId ? ' or any barber' : ''}.</T>
                 ) : (
-                  <Row>
-                    {times.map((t) => (
-                      <Chip
-                        key={t}
-                        label={formatTime(t, shop.time_zone)}
-                        selected={startsAt === t}
-                        onPress={() => setStartsAt(t)}
-                      />
-                    ))}
-                  </Row>
+                  timeGroups.map(([part, list]) => (
+                    <View key={part} style={{ gap: Spacing.sm }}>
+                      <T variant="small">{part}</T>
+                      <Row>
+                        {list.map((t) => (
+                          <Chip
+                            key={t}
+                            label={formatTime(t, shop.time_zone)}
+                            selected={startsAt === t}
+                            onPress={() => setStartsAt(t)}
+                          />
+                        ))}
+                      </Row>
+                    </View>
+                  ))
                 )}
               </Section>
             </>
@@ -265,6 +275,24 @@ export default function ShopPage() {
           )}
         </>
       )}
+
+      {week.some(Boolean) ? (
+        <Card>
+          <T variant="label">Opening hours</T>
+          {WEEK_ORDER.map((weekday) => {
+            const d = week[weekday];
+            const isToday = weekday === new Date(`${localDateString(new Date(), shop.time_zone)}T00:00:00Z`).getUTCDay();
+            return (
+              <Row key={weekday} style={{ justifyContent: 'space-between' }}>
+                <T variant={isToday ? 'label' : 'muted'}>{WEEKDAYS[weekday]}</T>
+                <T variant={isToday ? 'label' : 'muted'}>
+                  {d ? `${formatClock(d.opens)} – ${formatClock(d.closes)}` : 'Closed'}
+                </T>
+              </Row>
+            );
+          })}
+        </Card>
+      ) : null}
     </Screen>
   );
 }

@@ -1,10 +1,10 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Linking, ScrollView } from 'react-native';
+import { Linking } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
-import { Button, Card, Empty, ErrorText, Row, Chip, Screen, Section, T } from '@/components/ui';
-import { Spacing } from '@/constants/theme';
+import { DayPicker } from '@/components/day-picker';
+import { Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { useNow } from '@/hooks/use-now';
 import { confirmAction } from '@/lib/confirm';
 import { useMyShop } from '@/lib/my-shop';
@@ -91,17 +91,7 @@ export default function BarberBookings() {
         </Card>
       ) : null}
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: Spacing.sm }}>
-        {days.map((d) => (
-          <Chip
-            key={d.date}
-            label={d.label}
-            sublabel={`${d.dayOfMonth} ${d.month}`}
-            selected={day === d.date}
-            onPress={() => setDay(d.date)}
-          />
-        ))}
-      </ScrollView>
+      <DayPicker days={days} selected={day} onSelect={setDay} />
 
       <ErrorText message={error} />
 

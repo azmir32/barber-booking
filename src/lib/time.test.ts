@@ -8,6 +8,7 @@ import {
   formatDuration,
   formatPrice,
   formatTime,
+  groupByPartOfDay,
   localDateString,
   normalizeTime,
   slugify,
@@ -72,4 +73,18 @@ test('normalizeTime', () => {
 test('slugify', () => {
   assert.equal(slugify("Ali's Cuts!"), 'alis-cuts');
   assert.equal(slugify('  Kemas  Barber Kajang '), 'kemas-barber-kajang');
+});
+
+test('groupByPartOfDay uses shop-local hours', () => {
+  // 02:00Z = 10am, 05:00Z = 1pm, 10:00Z = 6pm in Kajang.
+  const groups = groupByPartOfDay(['2026-10-06T02:00:00Z', '2026-10-06T05:00:00Z', '2026-10-06T10:00:00Z']);
+  assert.deepEqual(
+    groups.map(([name, list]) => [name, list.length]),
+    [
+      ['Morning', 1],
+      ['Afternoon', 1],
+      ['Evening', 1],
+    ],
+  );
+  assert.deepEqual(groupByPartOfDay([]), []);
 });

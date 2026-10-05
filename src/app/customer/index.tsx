@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { RefreshControl, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Card, Empty, ErrorText, Field, Row, T } from '@/components/ui';
+import { Button, Card, Empty, Field, Row, T } from '@/components/ui';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -66,8 +66,13 @@ export default function Explore() {
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}>
         <T variant="title">Find a barber</T>
         <Field label="Search" value={query} onChangeText={setQuery} placeholder="Shop name or area, e.g. Sungai Chua" />
-        <ErrorText message={error} />
-        {!loading && visible.length === 0 ? (
+        {error ? (
+          <Empty title="Couldn't load barbers" body="Check your connection and try again.">
+            <Button title="Try again" variant="secondary" onPress={load} />
+          </Empty>
+        ) : null}
+        {loading && shops.length === 0 && !error ? <T variant="muted">Loading barbers…</T> : null}
+        {!loading && !error && visible.length === 0 ? (
           <Empty
             title={query ? 'No matches' : 'No barbers yet'}
             body={query ? 'Try another name or area.' : 'Barbers in your area are joining soon. Check back shortly.'}

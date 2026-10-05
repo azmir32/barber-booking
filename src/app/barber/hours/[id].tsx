@@ -5,13 +5,11 @@ import { View } from 'react-native';
 import { Button, Chip, ErrorText, Field, Loading, Row, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { WEEK_ORDER } from '@/lib/hours';
 import { normalizeTime } from '@/lib/time';
 import { WEEKDAYS, type WorkingHours } from '@/lib/types';
 
 type DayHours = { open: boolean; opens: string; closes: string };
-
-// Monday first, the way most people read a week.
-const ORDER = [1, 2, 3, 4, 5, 6, 0];
 
 export default function Hours() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -41,10 +39,15 @@ export default function Hours() {
     setWeek((w) => w && w.map((d, i) => (i === weekday ? { ...d, ...patch } : d)));
   }
 
+  // Most barbers keep the same hours all week: copy Monday to every open day.
+  function copyMondayToAll() {
+    setWeek((w) => w && w.map((d, weekday) => (weekday === 1 || !d.open ? d : { ...d, opens: w[1].opens, closes: w[1].closes })));
+  }
+
   async function save() {
     if (!week) return;
     const rows = [];
-    for (const weekday of ORDER) {
+    for (const weekday of WEEK_ORDER) {
       const d = week[weekday];
       if (!d.open) continue;
       const opens = normalizeTime(d.opens);
@@ -68,7 +71,10 @@ export default function Hours() {
   return (
     <Screen edges={[]}>
       <Field label="Barber name" value={name} onChangeText={setName} />
-      {ORDER.map((weekday) => {
+      {week[1].open ? (
+        <Button title="Copy Monday's hours to all open days" variant="secondary" onPress={copyMondayToAll} />
+      ) : null}
+      {WEEK_ORDER.map((weekday) => {
         const d = week[weekday];
         return (
           <View key={weekday} style={{ gap: Spacing.sm }}>

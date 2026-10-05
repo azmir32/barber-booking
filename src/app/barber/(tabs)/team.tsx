@@ -2,26 +2,12 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 
 import { Button, Card, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
+import { summarizeWeek } from '@/lib/hours';
 import { addBarber, useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
-import { WEEKDAYS, type Barber, type WorkingHours } from '@/lib/types';
+import type { Barber, WorkingHours } from '@/lib/types';
 
 type BarberWithHours = Barber & { working_hours: WorkingHours[] };
-
-/** "Mon–Sat 10:00–20:00" style summary of a barber's week. */
-function summarize(hours: WorkingHours[]): string {
-  if (hours.length === 0) return 'No hours set, so not bookable';
-  const days = [...new Set(hours.map((h) => h.weekday))].sort();
-  const ranges = [...new Set(hours.map((h) => `${h.opens_at.slice(0, 5)}–${h.closes_at.slice(0, 5)}`))];
-  const consecutive = days.every((d, i) => i === 0 || d === days[i - 1] + 1);
-  const dayText =
-    days.length === 7
-      ? 'Every day'
-      : consecutive && days.length > 2
-        ? `${WEEKDAYS[days[0]]}–${WEEKDAYS[days[days.length - 1]]}`
-        : days.map((d) => WEEKDAYS[d]).join(', ');
-  return `${dayText} · ${ranges.length === 1 ? ranges[0] : 'varied hours'}`;
-}
 
 export default function Team() {
   const { shop } = useMyShop();
@@ -75,7 +61,7 @@ export default function Team() {
         {barbers.map((b) => (
           <Card key={b.id} style={b.is_active ? undefined : { opacity: 0.6 }}>
             <T variant="label">{b.name}</T>
-            <T variant="small">{b.is_active ? summarize(b.working_hours) : 'Away, not taking bookings'}</T>
+            <T variant="small">{b.is_active ? summarizeWeek(b.working_hours) : 'Away, not taking bookings'}</T>
             <Row>
               <Button
                 title="Hours"

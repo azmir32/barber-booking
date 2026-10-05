@@ -92,6 +92,20 @@ export function formatTime(at: string | Date, timeZone = DEFAULT_TIME_ZONE): str
   );
 }
 
+export type PartOfDay = 'Morning' | 'Afternoon' | 'Evening';
+
+/** Groups start times into morning (before 12), afternoon (before 5pm) and evening. */
+export function groupByPartOfDay(times: string[], timeZone = DEFAULT_TIME_ZONE): [PartOfDay, string[]][] {
+  const hourOf = (at: string) =>
+    Number(new Intl.DateTimeFormat('en-US', { timeZone, hour: 'numeric', hourCycle: 'h23' }).format(new Date(at)));
+  const groups: Record<PartOfDay, string[]> = { Morning: [], Afternoon: [], Evening: [] };
+  for (const t of times) {
+    const h = hourOf(t);
+    groups[h < 12 ? 'Morning' : h < 17 ? 'Afternoon' : 'Evening'].push(t);
+  }
+  return (Object.entries(groups) as [PartOfDay, string[]][]).filter(([, list]) => list.length > 0);
+}
+
 /** "Tue, 6 Oct" in the shop's zone. */
 export function formatDay(at: string | Date, timeZone = DEFAULT_TIME_ZONE): string {
   return new Intl.DateTimeFormat(LOCALE, {

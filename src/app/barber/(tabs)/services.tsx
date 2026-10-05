@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react';
 import { View } from 'react-native';
 
 import { Button, Card, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
+import { confirmAction } from '@/lib/confirm';
 import { useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDuration, formatPrice } from '@/lib/time';
@@ -83,6 +84,12 @@ export default function Services() {
   }
 
   async function remove(s: Service) {
+    const ok = await confirmAction(
+      `Delete ${s.name}?`,
+      'Customers will no longer see it. Past bookings keep their details. To bring it back later, use Hide instead.',
+      'Delete',
+    );
+    if (!ok) return;
     const { error } = await supabase.from('services').delete().eq('id', s.id);
     if (error) return setError(errorMessage(error));
     if (editing?.id === s.id) startEdit(null);
