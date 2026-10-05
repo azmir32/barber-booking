@@ -1,9 +1,10 @@
 // Small set of shared building blocks so every screen looks the same.
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -22,17 +23,39 @@ export function Screen({
   children,
   scroll = true,
   edges = ['top'],
+  onRefresh,
 }: {
   children: ReactNode;
   scroll?: boolean;
   edges?: ('top' | 'bottom')[];
+  /** Enables pull to refresh. */
+  onRefresh?: () => Promise<unknown>;
 }) {
   const theme = useTheme();
+  const [refreshing, setRefreshing] = useState(false);
   const inner = <View style={styles.content}>{children}</View>;
+  const refreshControl = onRefresh ? (
+    <RefreshControl
+      refreshing={refreshing}
+      tintColor={theme.accent}
+      colors={[theme.accent]}
+      onRefresh={async () => {
+        setRefreshing(true);
+        try {
+          await onRefresh();
+        } finally {
+          setRefreshing(false);
+        }
+      }}
+    />
+  ) : undefined;
   return (
     <SafeAreaView edges={edges} style={[styles.screen, { backgroundColor: theme.background }]}>
       {scroll ? (
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}>
           {inner}
         </ScrollView>
       ) : (

@@ -377,5 +377,44 @@ begin
   end;
 end $$;
 
+-- Deleting an account ------------------------------------------------------
+reset role;
+set role anon;
+do $$ begin
+  perform delete_my_account();
+  raise exception 'guests must not call delete_my_account';
+exception when insufficient_privilege then null;
+end $$;
+
+-- The second customer still has four upcoming bookings from above.
+set role authenticated;
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert not exists (select 1 from auth.users where id = '00000000-0000-0000-0000-0000000000c2'),
+    'the account should be gone';
+  assert not exists (select 1 from profiles where id = '00000000-0000-0000-0000-0000000000c2'),
+    'the profile should be gone';
+  assert (select count(*) from bookings where guest_name = 'Deleted account' and status = 'cancelled'
+          and customer_id is null and guest_phone is null) = 4,
+    'their upcoming bookings should be cancelled and kept without their details';
+  assert exists (select 1 from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'),
+    'other customers'' bookings are untouched';
+end $$;
+
+-- The owner deletes their account: the shop and everything in it goes.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert (select count(*) from shops) = 0, 'the shop should be gone';
+  assert (select count(*) from barbers) = 0 and (select count(*) from services) = 0
+     and (select count(*) from working_hours) = 0 and (select count(*) from bookings) = 0,
+    'everything in the shop should be gone';
+  assert exists (select 1 from profiles where id = '00000000-0000-0000-0000-0000000000c1'),
+    'customers keep their accounts';
+end $$;
+
 reset role;
 \echo 'All booking tests passed.'

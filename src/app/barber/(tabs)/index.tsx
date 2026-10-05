@@ -55,6 +55,9 @@ export default function BarberBookings() {
   useFocusEffect(
     useCallback(() => {
       load();
+      // New online bookings show up while the screen stays open at the counter.
+      const timer = setInterval(load, 60_000);
+      return () => clearInterval(timer);
     }, [load]),
   );
 
@@ -81,7 +84,7 @@ export default function BarberBookings() {
   const ready = setup && setup.services > 0 && setup.barbers > 0 && setup.hours > 0 && shop.is_published;
 
   return (
-    <Screen>
+    <Screen onRefresh={load}>
       <T variant="title">Bookings</T>
 
       {setup && !ready ? (

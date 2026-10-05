@@ -3,10 +3,11 @@ import { useState } from 'react';
 
 import { Button, Card, ErrorText, Field, T } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
+import { confirmAction } from '@/lib/confirm';
 import { errorMessage, supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/types';
 
-/** Name, phone and sign out. Shared by the customer and barber apps. */
+/** Name, phone, sign out and delete account. Shared by the customer and barber apps. */
 export function AccountPanel() {
   const { session, profile } = useAuth();
   if (!session || !profile) {
@@ -43,6 +44,23 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
     refreshProfile();
   }
 
+  async function deleteAccount() {
+    const ok = await confirmAction(
+      'Delete your account?',
+      profile.role === 'barber'
+        ? 'This deletes your shop, booking link, services and all its bookings. Let customers with upcoming bookings know first. This can’t be undone.'
+        : 'Your upcoming bookings will be cancelled. This can’t be undone.',
+      'Delete account',
+    );
+    if (!ok) return;
+    setBusy(true);
+    const { error } = await supabase.rpc('delete_my_account');
+    setBusy(false);
+    if (error) return setError(errorMessage(error));
+    await signOut();
+    router.replace('/welcome');
+  }
+
   return (
     <Card>
       <T variant="muted">{email}</T>
@@ -59,6 +77,7 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
           router.replace('/welcome');
         }}
       />
+      <Button title="Delete account" variant="ghost" onPress={deleteAccount} disabled={busy} />
     </Card>
   );
 }

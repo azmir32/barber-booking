@@ -244,4 +244,14 @@ test.describe.serial('booking flow', () => {
     await signIn(page, { ...customer2, password: 'new-password-456' });
     await expect(page.getByText('Find a barber')).toBeVisible();
   });
+
+  test('customer deletes their account', async ({ page }) => {
+    await signIn(page, { ...customer2, password: 'new-password-456' });
+    await page.getByRole('tab', { name: /Account/ }).click();
+    await button(page, 'Delete account').click();
+    await expect(page.getByText('Are you a barber?')).toBeVisible();
+
+    await signIn(page, { ...customer2, password: 'new-password-456' });
+    await expect(page.getByText('Invalid login credentials')).toBeVisible();
+  });
 });

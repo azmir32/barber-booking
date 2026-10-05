@@ -534,6 +534,36 @@ begin
 end;
 $$;
 
+-- People can delete their own account (the app stores require it).
+-- A customer's upcoming bookings are cancelled, and their past ones stay in
+-- the shop's history without their name or phone. An owner's shop goes
+-- with them, along with its barbers, services and bookings.
+create function public.delete_my_account()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not signed in.' using errcode = '42501';
+  end if;
+
+  update bookings set
+    status = case when status = 'confirmed' and starts_at > now()
+                  then 'cancelled'::booking_status else status end,
+    customer_id = null,
+    guest_name = 'Deleted account',
+    guest_phone = null,
+    customer_note = null
+  where customer_id = auth.uid();
+
+  delete from auth.users where id = auth.uid();
+end;
+$$;
+
+revoke execute on function public.delete_my_account() from public, anon;
+grant execute on function public.delete_my_account() to authenticated;
 revoke execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) from public, anon;
 grant execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) to authenticated;
 revoke execute on function public.book_appointment(uuid, timestamptz, uuid, text) from public, anon;

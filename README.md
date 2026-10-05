@@ -8,6 +8,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 
 **Everyone**
 - Email and password sign-in, with password reset by emailed code
+- Delete account from the Account screen (required by the App Store and Google Play)
 
 **Customers**
 - Browse live barbershops and search by name or area
@@ -19,7 +20,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Create a shop with a booking link (`/shop/your-shop`)
 - Services menu with prices and durations, plus quick-add suggestions
 - Barbers (one per chair) with weekly working hours and an optional daily break (e.g. Friday prayers); a solo barber is a shop with one chair
-- Bookings by day with expected takings; mark done or no-show once the time has started, cancel, WhatsApp the customer
+- Bookings by day with expected takings, refreshed every minute and by pulling down; mark done or no-show once the time has started, cancel, WhatsApp the customer
 - Add walk-in, WhatsApp or phone bookings, and block time or a whole day off, so online customers can't take those times
 - Go live / pause, share or copy the booking link
 - One-month free trial on every new shop

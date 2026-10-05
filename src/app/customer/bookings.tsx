@@ -74,7 +74,7 @@ export default function MyBookings() {
   }
 
   return (
-    <Screen>
+    <Screen onRefresh={load}>
       <T variant="title">My bookings</T>
       <ErrorText message={error} />
       {!loading && bookings.length === 0 ? (
