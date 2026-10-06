@@ -12,6 +12,7 @@ import {
   ownsShop,
   parseTime,
   PgError,
+  pgTrim,
   shopIsLive,
   tables,
   toColumnValue,
@@ -39,7 +40,7 @@ function localInstant(day: string, time: string, tz: string): number {
 }
 
 const weekdayOf = (day: string) => new Date(`${day}T00:00:00Z`).getUTCDay();
-const trimmed = (v: unknown) => (v == null ? null : String(v).trim() || null);
+const trimmed = (v: unknown) => (v == null ? null : pgTrim(String(v)) || null);
 const clash = (bk: Row, barberId: unknown, start: number, end: number) =>
   bk.barber_id === barberId && bk.status !== 'cancelled' && ms(bk.starts_at) < end && start < ms(bk.ends_at);
 
@@ -55,6 +56,7 @@ function guarded<T>(fn: () => T, overlapMessage: string, checkMessage?: string):
 }
 
 export function availableSlots(c: Caller, serviceId: unknown, dayArg: unknown, barberId: unknown = null) {
+  if (dayArg == null) return [];
   const day = parseDate(dayArg);
   const service = findById('services', serviceId);
   const shop = service && findById('shops', service.shop_id);
@@ -91,7 +93,7 @@ export function availableSlots(c: Caller, serviceId: unknown, dayArg: unknown, b
 export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown, barberId: unknown = null, note: unknown = null) {
   if (c.uid == null) throw new PgError('28000', 'Please sign in to book.', 403);
   const service = findById('services', serviceId);
-  if (!service) throw new PgError('P0002', 'This service is no longer available.', 400);
+  if (!service) throw new PgError('P0002', 'This service is no longer available.', 500);
   if (note != null && [...String(note)].length > 280) {
     throw new PgError('22001', 'Please keep your note under 280 characters.', 400);
   }
@@ -106,6 +108,7 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
     );
   }
   const tz = String(findById('shops', service.shop_id)!.time_zone);
+  if (startsAt == null) throw new PgError('P0001', 'Sorry, that time was just taken. Please pick another.', 400);
   const at = ms(toColumnValue('bookings', 'starts_at', startsAt));
   const day = localDateString(new Date(at), tz);
   const busyThatDay = (id: string) =>
@@ -136,7 +139,7 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
 
 export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown) {
   const booking = findById('bookings', bookingId);
-  if (!booking) throw new PgError('P0002', 'Booking not found.', 400);
+  if (!booking) throw new PgError('P0002', 'Booking not found.', 500);
   const next = toColumnValue('bookings', 'status', status);
   if (ownsShop(booking.shop_id, c.uid)) {
     if ((next === 'completed' || next === 'no_show') && ms(booking.starts_at) > now()) {
@@ -147,7 +150,7 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
       throw new PgError('42501', 'You can only cancel an upcoming booking.', 403);
     }
   } else {
-    throw new PgError('P0002', 'Booking not found.', 400);
+    throw new PgError('P0002', 'Booking not found.', 500);
   }
   return guarded(
     () => updateRows('bookings', [booking], { status: next })[0],
@@ -157,7 +160,14 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
 
 export function setBarberHours(c: Caller, barberId: unknown, hours: unknown) {
   const barber = findById('barbers', barberId);
-  if (!barber || !ownsShop(barber.shop_id, c.uid)) throw new PgError('P0002', 'Barber not found.', 400);
+  if (!barber || !ownsShop(barber.shop_id, c.uid)) throw new PgError('P0002', 'Barber not found.', 500);
+  if (hours != null && !Array.isArray(hours)) {
+    throw new PgError(
+      '22023',
+      typeof hours === 'object' ? 'cannot extract elements from an object' : 'cannot extract elements from a scalar',
+      400,
+    );
+  }
 
   deleteRows(
     'working_hours',
@@ -207,12 +217,12 @@ export function addShopBooking(c: Caller, args: ShopBookingArgs) {
   const barber = findById('barbers', args.p_barber_id);
   const shop = barber && findById('shops', barber.shop_id);
   if (!barber || !shop || c.uid == null || shop.owner_id !== c.uid) {
-    throw new PgError('P0002', 'Barber not found.', 400);
+    throw new PgError('P0002', 'Barber not found.', 500);
   }
   let service: Row | undefined;
   if (args.p_service_id != null) {
     service = tables().services.find((s) => s.id === args.p_service_id && s.shop_id === shop.id);
-    if (!service) throw new PgError('P0002', 'Service not found.', 400);
+    if (!service) throw new PgError('P0002', 'Service not found.', 500);
   }
   const minutes =
     args.p_duration_min != null

@@ -3,6 +3,8 @@
 // in a browser with no server. Rows live in memory and are saved to
 // localStorage, so a demo survives a reload on the same phone.
 
+import { localDateString } from '../lib/time.ts';
+
 export type Row = Record<string, unknown>;
 export type TableName = 'users' | 'profiles' | 'shops' | 'barbers' | 'services' | 'working_hours' | 'bookings';
 export type Tables = Record<TableName, Row[]>;
@@ -132,6 +134,8 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
   },
 };
 
+/** Postgres trim(): spaces only, unlike String.prototype.trim. */
+export const pgTrim = (s: string) => s.replace(/^ +| +$/g, '');
 const len = (v: unknown) => (v == null ? null : [...String(v)].length);
 const between = (n: number | null, lo: number, hi: number) => n == null || (n >= lo && n <= hi);
 const atMost = (v: unknown, max: number) => v == null || (len(v) as number) <= max;
@@ -143,7 +147,7 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['profiles_phone_check', (r) => atMost(r.phone, 20)],
   ],
   shops: [
-    ['shops_name_check', (r) => between(len(String(r.name).trim()), 1, 80)],
+    ['shops_name_check', (r) => between(len(pgTrim(String(r.name))), 1, 80)],
     [
       'shops_slug_check',
       (r) => /^[a-z0-9]+(-[a-z0-9]+)*$/.test(String(r.slug)) && between(len(r.slug), 3, 40),
@@ -154,9 +158,9 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['shops_phone_check', (r) => atMost(r.phone, 20)],
     ['shops_instagram_check', (r) => atMost(r.instagram, 60)],
   ],
-  barbers: [['barbers_name_check', (r) => between(len(String(r.name).trim()), 1, 40)]],
+  barbers: [['barbers_name_check', (r) => between(len(pgTrim(String(r.name))), 1, 40)]],
   services: [
-    ['services_name_check', (r) => between(len(String(r.name).trim()), 1, 60)],
+    ['services_name_check', (r) => between(len(pgTrim(String(r.name))), 1, 60)],
     ['services_duration_min_check', (r) => between(r.duration_min as number, 5, 480)],
     ['services_price_check', (r) => between(r.price as number, 0, 10000)],
   ],
@@ -318,7 +322,10 @@ export function compareValues(table: TableName, column: string, a: unknown, b: u
 // The tables -----------------------------------------------------------------
 
 const STORAGE_KEY = 'potongku.demo.v1';
+const TZ = 'Asia/Kuala_Lumpur';
 let current: Tables | null = null;
+/** The Kajang date the sample data was laid out for. */
+let seededOn = '';
 let seedFn: (() => void) | null = null;
 
 /** Registered by seed.ts, so the database can fill itself on first use. */
@@ -334,19 +341,45 @@ function storage(): Storage | null {
   }
 }
 
+const today = () => localDateString(new Date(clock()), TZ);
+
 function seeded(): Tables {
   current = { users: [], profiles: [], shops: [], barbers: [], services: [], working_hours: [], bookings: [] };
+  seededOn = today();
   seedFn?.();
   save();
   return current;
+}
+
+/**
+ * Moves every date forward by the days since the demo was last opened, so
+ * "today" keeps its bookings and the sample trial never runs out. Changes
+ * people made move with everything else.
+ */
+function moveToToday(saved: Tables, savedOn: string) {
+  const days = Math.round((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${savedOn}T00:00:00Z`)) / 86_400_000);
+  if (!Number.isFinite(days) || days === 0) return;
+  for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
+    const moved = Object.keys(columns).filter((c) => columns[c].type === 'timestamptz');
+    for (const row of saved[table] ?? []) {
+      for (const c of moved) {
+        if (row[c] != null) row[c] = new Date(ms(row[c]) + days * 86_400_000).toISOString();
+      }
+    }
+  }
 }
 
 export function tables(): Tables {
   if (current) return current;
   try {
     const saved = storage()?.getItem(STORAGE_KEY);
-    const parsed = saved ? (JSON.parse(saved) as { tables?: Tables }) : null;
-    if (parsed?.tables && Array.isArray(parsed.tables.bookings)) current = parsed.tables;
+    const parsed = saved ? (JSON.parse(saved) as { tables?: Tables; seededOn?: string }) : null;
+    if (parsed?.tables && Array.isArray(parsed.tables.bookings)) {
+      if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn);
+      current = parsed.tables;
+      seededOn = today();
+      if (parsed.seededOn !== seededOn) save();
+    }
   } catch {
     // Unreadable or blocked storage: start fresh.
   }
@@ -355,10 +388,26 @@ export function tables(): Tables {
 
 export function save() {
   try {
-    storage()?.setItem(STORAGE_KEY, JSON.stringify({ version: 1, tables: current }));
+    storage()?.setItem(STORAGE_KEY, JSON.stringify({ version: 2, seededOn, tables: current }));
   } catch {
     // Storage full or blocked: the demo keeps working until the page closes.
   }
+}
+
+// Another tab saved: read its copy before the next request instead of
+// writing over it.
+try {
+  globalThis.addEventListener?.('storage', (e: Event) => {
+    const key = (e as StorageEvent).key;
+    if (key === STORAGE_KEY || key === null) current = null;
+  });
+} catch {
+  // No window events here (tests).
+}
+
+/** Forgets the copy in memory, as opening the page again would. */
+export function reloadTables() {
+  current = null;
 }
 
 /** Throws away every change and starts again from the sample data. */
@@ -371,7 +420,7 @@ export function transaction<T>(fn: () => T): T {
   const before = JSON.stringify(tables());
   try {
     const result = fn();
-    save();
+    if (JSON.stringify(current) !== before) save();
     return result;
   } catch (e) {
     current = JSON.parse(before) as Tables;
@@ -395,6 +444,9 @@ function checkRow(table: TableName, row: Row) {
     if (!ok(row)) throw new PgError('23514', `new row for relation "${table}" violates check constraint "${name}"`, 400);
   }
   const all = tables();
+  if (all[table].some((other) => other.id === row.id)) {
+    throw new PgError('23505', `duplicate key value violates unique constraint "${table}_pkey"`, 409);
+  }
   for (const [name, column] of UNIQUE[table] ?? []) {
     if (row[column] != null && all[table].some((other) => other.id !== row.id && other[column] === row[column])) {
       throw new PgError('23505', `duplicate key value violates unique constraint "${name}"`, 409);
@@ -443,6 +495,18 @@ export function updateRows(table: TableName, rows: Row[], patch: Row, guard?: (r
   for (const row of rows) {
     const next = { ...row, ...coerced };
     guard?.(next);
+    if (next.id !== row.id) {
+      // ON UPDATE NO ACTION: an id other rows point at can't change.
+      for (const fk of FOREIGN_KEYS) {
+        if (fk.references === table && tables()[fk.table].some((r) => r[fk.column] === row.id)) {
+          throw new PgError(
+            '23503',
+            `update or delete on table "${table}" violates foreign key constraint "${fk.name}" on table "${fk.table}"`,
+            409,
+          );
+        }
+      }
+    }
     const index = list.indexOf(row);
     // Check against the table as it will be, one row at a time like Postgres.
     list.splice(index, 1);
@@ -497,7 +561,7 @@ export function deleteRows(table: TableName, rows: Row[]) {
 /** The on_auth_user_created trigger: every new user gets a profile. */
 function handleNewUser(user: Row) {
   const meta = (user.user_metadata ?? {}) as Record<string, unknown>;
-  const clip = (v: unknown, max: number) => [...String(v ?? '').trim()].slice(0, max).join('');
+  const clip = (v: unknown, max: number) => [...pgTrim(String(v ?? ''))].slice(0, max).join('');
   insertRow('profiles', {
     id: user.id,
     role: meta.role === 'barber' ? 'barber' : 'customer',

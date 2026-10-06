@@ -61,6 +61,8 @@ const DYNAMIC_KEYS = [
   'Invalid login credentials',
   'User already registered',
   'Email not confirmed',
+  'New password should be different from the old password.',
+  'Unable to validate email address: invalid format',
 ];
 
 test('every piece of UI text has a Malay translation', () => {

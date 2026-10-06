@@ -99,6 +99,7 @@ const authError = (status: number, code: string, msg: string): Reply => ({
 
 // Auth -------------------------------------------------------------------------
 
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const recoveryRequested = new Set<string>();
 const findUser = (email: unknown) =>
   tables().users.find((u) => u.email === String(email ?? '').trim().toLowerCase());
@@ -106,7 +107,7 @@ const findUser = (email: unknown) =>
 function handleAuth(method: string, route: string, url: URL, headers: Headers, body: Row): Reply {
   if (method === 'POST' && route === '/signup') {
     const email = String(body.email ?? '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!EMAIL.test(email)) {
       return authError(400, 'validation_failed', 'Unable to validate email address: invalid format');
     }
     if (String(body.password ?? '').length < 6) {
@@ -140,7 +141,9 @@ function handleAuth(method: string, route: string, url: URL, headers: Headers, b
 
   // Like Supabase, answers the same whether or not the email has an account.
   if (method === 'POST' && route === '/recover') {
-    if (findUser(body.email)) recoveryRequested.add(String(body.email).trim().toLowerCase());
+    const email = String(body.email ?? '').trim().toLowerCase();
+    if (!EMAIL.test(email)) return authError(400, 'validation_failed', 'Unable to validate email address: invalid format');
+    if (findUser(email)) recoveryRequested.add(email);
     return { status: 200, body: {} };
   }
 
@@ -161,6 +164,9 @@ function handleAuth(method: string, route: string, url: URL, headers: Headers, b
     if (method === 'PUT' && body.password !== undefined) {
       if (String(body.password).length < 6) {
         return authError(422, 'weak_password', 'Password should be at least 6 characters.');
+      }
+      if (String(body.password) === user.password) {
+        return authError(422, 'same_password', 'New password should be different from the old password.');
       }
       transaction(() => {
         tables().users.find((u) => u.id === uid)!.password = String(body.password);

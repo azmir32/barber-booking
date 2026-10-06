@@ -340,6 +340,8 @@ export const ms: Record<string, string> = {
   'Invalid login credentials': 'E-mel atau kata laluan salah.',
   'User already registered': 'E-mel ini sudah didaftarkan. Cuba log masuk.',
   'Email not confirmed': 'E-mel belum disahkan. Semak e-mel anda untuk pautan pengesahan.',
+  'New password should be different from the old password.': 'Kata laluan baharu mesti berbeza daripada yang lama.',
+  'Unable to validate email address: invalid format': 'Alamat e-mel itu tidak sah.',
 
   // Demo build (scripts/build-demo.mjs)
   Demo: 'Demo',

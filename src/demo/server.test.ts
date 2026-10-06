@@ -5,7 +5,7 @@ import { beforeEach, test } from 'node:test';
 import { createClient } from '@supabase/supabase-js';
 
 import { addDays, localDateString } from '../lib/time.ts';
-import { tables } from './db.ts';
+import { reloadTables, setClock, tables } from './db.ts';
 import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
@@ -327,4 +327,46 @@ test('password reset by code, wrong passwords and deleting an account', async ()
   assert.equal((await ali.rpc('delete_my_account')).error, null);
   assert.equal((await client().from('shops').select('*').eq('slug', 'ali-barber').maybeSingle()).data, null);
   assert.equal(tables().barbers.filter((b) => b.name === 'Danial').length, 0);
+});
+
+test('opened on a later day, the sample week moves forward with it', async () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  try {
+    resetDemo();
+    const before = tables().bookings.map((b) => Date.parse(String(b.starts_at)));
+    const trialBefore = Date.parse(String(tables().shops[0].trial_ends_at));
+
+    const later = Date.now() + 3 * 86_400_000;
+    setClock(() => later);
+    reloadTables();
+    const after = tables().bookings.map((b) => Date.parse(String(b.starts_at)));
+    assert.deepEqual(after, before.map((t) => t + 3 * 86_400_000));
+    assert.equal(Date.parse(String(tables().shops[0].trial_ends_at)), trialBefore + 3 * 86_400_000);
+
+    // Once moved, opening again the same day changes nothing.
+    reloadTables();
+    assert.deepEqual(tables().bookings.map((b) => Date.parse(String(b.starts_at))), after);
+  } finally {
+    setClock(() => Date.now());
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});
+
+test('ids stay unique and rows that others point at keep theirs', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const kemas = await shopBySlug(ali, 'kemas-barber-kajang');
+  const theirChair = tables().barbers.find((b) => b.shop_id === kemas.id)!;
+  const mine = await shopBySlug(ali, 'ali-barber');
+  const copy = await ali.from('barbers').insert({ id: theirChair.id, shop_id: mine.id, name: 'Copy' });
+  assert.equal(copy.error?.code, '23505');
+  const myChair = tables().barbers.find((b) => b.shop_id === mine.id)!;
+  const moved = await ali.from('barbers').update({ id: '00000000-0000-4000-8000-000000000999' }).eq('id', myChair.id);
+  assert.equal(moved.error?.code, '23503');
 });
