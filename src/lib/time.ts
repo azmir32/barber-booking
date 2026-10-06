@@ -1,8 +1,9 @@
 // Date and money helpers. Times are shown in the shop's time zone, whatever
 // zone the phone is set to, so a booking at 10:00 in Kajang always reads 10:00.
 
+import { dateLocale, t } from './lang.ts';
+
 export const DEFAULT_TIME_ZONE = 'Asia/Kuala_Lumpur';
-const LOCALE = 'en-MY';
 
 export type DayOption = {
   /** Local calendar date in the shop's zone, YYYY-MM-DD. */
@@ -31,7 +32,8 @@ export function addDays(date: string, days: number): string {
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
-const RELATIVE_LABELS: Record<number, string> = { [-1]: 'Yesterday', 0: 'Today', 1: 'Tomorrow' };
+const relativeLabel = (offset: number) =>
+  offset === -1 ? t('Yesterday') : offset === 0 ? t('Today') : offset === 1 ? t('Tomorrow') : null;
 
 /**
  * `count` consecutive days in the shop's zone, starting `startOffset` days
@@ -49,10 +51,10 @@ export function upcomingDays(
     const date = addDays(today, offset);
     const asUtc = new Date(`${date}T00:00:00Z`);
     const fmt = (opts: Intl.DateTimeFormatOptions) =>
-      new Intl.DateTimeFormat(LOCALE, { timeZone: 'UTC', ...opts }).format(asUtc);
+      new Intl.DateTimeFormat(dateLocale(), { timeZone: 'UTC', ...opts }).format(asUtc);
     return {
       date,
-      label: RELATIVE_LABELS[offset] ?? fmt({ weekday: 'short' }),
+      label: relativeLabel(offset) ?? fmt({ weekday: 'short' }),
       dayOfMonth: fmt({ day: 'numeric' }),
       month: fmt({ month: 'short' }),
     };
@@ -87,7 +89,7 @@ export function dayBounds(date: string, timeZone = DEFAULT_TIME_ZONE): { start: 
 
 /** "10:30 am" in the shop's zone. */
 export function formatTime(at: string | Date, timeZone = DEFAULT_TIME_ZONE): string {
-  return new Intl.DateTimeFormat(LOCALE, { timeZone, hour: 'numeric', minute: '2-digit' }).format(
+  return new Intl.DateTimeFormat(dateLocale(), { timeZone, hour: 'numeric', minute: '2-digit' }).format(
     new Date(at),
   );
 }
@@ -99,16 +101,16 @@ export function groupByPartOfDay(times: string[], timeZone = DEFAULT_TIME_ZONE):
   const hourOf = (at: string) =>
     Number(new Intl.DateTimeFormat('en-US', { timeZone, hour: 'numeric', hourCycle: 'h23' }).format(new Date(at)));
   const groups: Record<PartOfDay, string[]> = { Morning: [], Afternoon: [], Evening: [] };
-  for (const t of times) {
-    const h = hourOf(t);
-    groups[h < 12 ? 'Morning' : h < 17 ? 'Afternoon' : 'Evening'].push(t);
+  for (const at of times) {
+    const h = hourOf(at);
+    groups[h < 12 ? 'Morning' : h < 17 ? 'Afternoon' : 'Evening'].push(at);
   }
   return (Object.entries(groups) as [PartOfDay, string[]][]).filter(([, list]) => list.length > 0);
 }
 
 /** "Tue, 6 Oct" in the shop's zone. */
 export function formatDay(at: string | Date, timeZone = DEFAULT_TIME_ZONE): string {
-  return new Intl.DateTimeFormat(LOCALE, {
+  return new Intl.DateTimeFormat(dateLocale(), {
     timeZone,
     weekday: 'short',
     day: 'numeric',
@@ -126,8 +128,8 @@ export function formatPrice(amount: number | string): string {
 export function formatDuration(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  if (h === 0) return `${m} min`;
-  return m === 0 ? `${h} hr` : `${h} hr ${m} min`;
+  if (h === 0) return t('{m} min', { m });
+  return m === 0 ? t('{h} hr', { h }) : t('{h} hr {m} min', { h, m });
 }
 
 /** Accepts "9:00", "09:00" or "17:30"; returns "HH:MM" or null. */

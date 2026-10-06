@@ -4,6 +4,7 @@ import { View } from 'react-native';
 
 import { Button, Chip, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay, formatDuration, formatPrice, localDateString, normalizeTime } from '@/lib/time';
@@ -50,10 +51,10 @@ export default function NewBooking() {
 
   async function save() {
     const clock = wholeDay ? '00:00' : normalizeTime(time);
-    if (!barberId) return setError('Pick a barber.');
-    if (!clock) return setError('Enter the start time, e.g. 14:30.');
-    if (kind === 'booking' && !serviceId) return setError('Pick a service.');
-    if (kind === 'booking' && !name.trim()) return setError("Add the customer's name.");
+    if (!barberId) return setError(t('Pick a barber.'));
+    if (!clock) return setError(t('Enter the start time, e.g. 14:30.'));
+    if (kind === 'booking' && !serviceId) return setError(t('Pick a service.'));
+    if (kind === 'booking' && !name.trim()) return setError(t('Add the customer’s name.'));
     setBusy(true);
     setError(null);
     const { error } = await supabase.rpc('add_shop_booking', {
@@ -69,7 +70,9 @@ export default function NewBooking() {
     });
     setBusy(false);
     if (error && wholeDay && error.code === 'P0001') {
-      return setError('There are bookings on this day. Cancel them first (and let the customers know), then block the day.');
+      return setError(
+        t('There are bookings on this day. Cancel them first (and let the customers know), then block the day.'),
+      );
     }
     if (error) return setError(errorMessage(error));
     router.back();
@@ -80,17 +83,17 @@ export default function NewBooking() {
       <T variant="heading">{formatDay(`${day}T12:00:00Z`, 'UTC')}</T>
 
       <Row>
-        <Chip label="Customer booking" selected={kind === 'booking'} onPress={() => setKind('booking')} />
-        <Chip label="Block time" selected={kind === 'block'} onPress={() => setKind('block')} />
+        <Chip label={t('Customer booking')} selected={kind === 'booking'} onPress={() => setKind('booking')} />
+        <Chip label={t('Block time')} selected={kind === 'block'} onPress={() => setKind('block')} />
       </Row>
       <T variant="small">
         {kind === 'booking'
-          ? 'For walk-ins and bookings that came by WhatsApp or phone. Online customers can no longer take this time.'
-          : 'For breaks, errands or a day off. Online customers can’t book this time.'}
+          ? t('For walk-ins and bookings that came by WhatsApp or phone. Online customers can no longer take this time.')
+          : t('For breaks, errands or a day off. Online customers can’t book this time.')}
       </T>
 
       {barbers.length > 1 ? (
-        <Section title="Barber">
+        <Section title={t('Barber')}>
           <Row>
             {barbers.map((b) => (
               <Chip key={b.id} label={b.name} selected={barberId === b.id} onPress={() => setBarberId(b.id)} />
@@ -100,7 +103,7 @@ export default function NewBooking() {
       ) : null}
 
       {kind === 'booking' ? (
-        <Section title="Service">
+        <Section title={t('Service')}>
           <Row>
             {services.map((s) => (
               <Chip
@@ -114,12 +117,12 @@ export default function NewBooking() {
           </Row>
         </Section>
       ) : (
-        <Section title="How long">
+        <Section title={t('How long')}>
           <Row>
             {BLOCK_LENGTHS.map((m) => (
               <Chip
                 key={m}
-                label={m === WHOLE_DAY ? 'Whole day' : formatDuration(m)}
+                label={m === WHOLE_DAY ? t('Whole day') : formatDuration(m)}
                 selected={blockMinutes === m}
                 onPress={() => setBlockMinutes(m)}
               />
@@ -129,40 +132,46 @@ export default function NewBooking() {
       )}
 
       {wholeDay ? null : (
-        <Field label="Start time" value={time} onChangeText={setTime} placeholder="14:30" hint="24-hour time." />
+        <Field label={t('Start time')} value={time} onChangeText={setTime} placeholder="14:30" hint={t('24-hour time.')} />
       )}
 
       {kind === 'booking' ? (
         <View style={{ gap: Spacing.lg }}>
-          <Field label="Customer name" value={name} onChangeText={setName} placeholder="e.g. Pak Abu" maxLength={80} />
           <Field
-            label="Customer phone (optional)"
+            label={t('Customer name')}
+            value={name}
+            onChangeText={setName}
+            placeholder={t('e.g. Pak Abu')}
+            maxLength={80}
+          />
+          <Field
+            label={t('Customer phone (optional)')}
             value={phone}
             onChangeText={setPhone}
             keyboardType="phone-pad"
             maxLength={20}
           />
           <Field
-            label="Note (optional)"
+            label={t('Note (optional)')}
             value={note}
             onChangeText={setNote}
-            placeholder="e.g. booked on WhatsApp"
+            placeholder={t('e.g. booked on WhatsApp')}
             maxLength={280}
           />
         </View>
       ) : (
         <Field
-          label="Reason (optional)"
+          label={t('Reason (optional)')}
           value={note}
           onChangeText={setNote}
-          placeholder={wholeDay ? 'e.g. Hari Raya, day off' : 'e.g. lunch, errand'}
+          placeholder={wholeDay ? t('e.g. Hari Raya, day off') : t('e.g. lunch, errand')}
           maxLength={80}
         />
       )}
 
       <ErrorText message={error} />
       <Button
-        title={kind === 'booking' ? 'Add booking' : wholeDay ? 'Block the day' : 'Block time'}
+        title={kind === 'booking' ? t('Add booking') : wholeDay ? t('Block the day') : t('Block time')}
         onPress={save}
         loading={busy}
       />

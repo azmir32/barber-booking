@@ -2,6 +2,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 
 import { Button, ErrorText, Field, Screen, T } from '@/components/ui';
+import { t } from '@/lib/lang';
 import { returnAfterAuth } from '@/lib/navigation';
 import { errorMessage, supabase } from '@/lib/supabase';
 
@@ -24,7 +25,7 @@ export default function SignIn() {
   return (
     <Screen edges={[]}>
       <Field
-        label="Email"
+        label={t('Email')}
         value={email}
         onChangeText={setEmail}
         autoCapitalize="none"
@@ -33,7 +34,7 @@ export default function SignIn() {
         placeholder="you@email.com"
       />
       <Field
-        label="Password"
+        label={t('Password')}
         value={password}
         onChangeText={setPassword}
         secureTextEntry
@@ -41,9 +42,9 @@ export default function SignIn() {
         onSubmitEditing={submit}
       />
       <ErrorText message={error} />
-      <Button title="Sign in" onPress={submit} loading={busy} disabled={!email || !password} />
+      <Button title={t('Sign in')} onPress={submit} loading={busy} disabled={!email || !password} />
       <Button
-        title="Forgot password?"
+        title={t('Forgot password?')}
         variant="ghost"
         onPress={() =>
           router.replace({
@@ -53,10 +54,10 @@ export default function SignIn() {
         }
       />
       <T variant="muted" style={{ textAlign: 'center' }}>
-        New here?
+        {t('New here?')}
       </T>
       <Button
-        title="Create an account"
+        title={t('Create an account')}
         variant="secondary"
         onPress={() => router.replace({ pathname: '/sign-up', params: next ? { next } : {} })}
       />

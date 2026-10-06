@@ -5,6 +5,8 @@ import { Empty, Screen, T } from '@/components/ui';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider } from '@/lib/auth';
+import { LanguageProvider } from '@/lib/i18n';
+import { t } from '@/lib/lang';
 import { isSupabaseConfigured } from '@/lib/supabase';
 
 export default function RootLayout() {
@@ -26,17 +28,16 @@ export default function RootLayout() {
     <ThemeProvider value={navTheme}>
       <StatusBar style="auto" />
       {isSupabaseConfigured ? (
-        <AuthProvider>
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="shop/[slug]" options={{ headerShown: true, title: '', headerBackTitle: 'Back' }} />
-            <Stack.Screen name="sign-in" options={{ headerShown: true, title: 'Sign in', headerBackTitle: 'Back' }} />
-            <Stack.Screen name="sign-up" options={{ headerShown: true, title: 'Create account', headerBackTitle: 'Back' }} />
-            <Stack.Screen
-              name="forgot-password"
-              options={{ headerShown: true, title: 'Reset password', headerBackTitle: 'Back' }}
-            />
-          </Stack>
-        </AuthProvider>
+        <LanguageProvider>
+          <AuthProvider>
+            <Stack screenOptions={{ headerShown: false, headerBackTitle: t('Back') }}>
+              <Stack.Screen name="shop/[slug]" options={{ headerShown: true, title: '' }} />
+              <Stack.Screen name="sign-in" options={{ headerShown: true, title: t('Sign in') }} />
+              <Stack.Screen name="sign-up" options={{ headerShown: true, title: t('Create account') }} />
+              <Stack.Screen name="forgot-password" options={{ headerShown: true, title: t('Reset password') }} />
+            </Stack>
+          </AuthProvider>
+        </LanguageProvider>
       ) : (
         <Screen>
           <Empty

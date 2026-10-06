@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Button, ErrorText, Field } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
 import { useAuth } from '@/lib/auth';
+import { t } from '@/lib/lang';
 import { addBarber } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { slugify } from '@/lib/time';
@@ -53,7 +54,7 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
       return setError(errorMessage(error));
     }
     // Most shops start with the owner cutting, so give them the first chair.
-    await addBarber(data.id, profile?.full_name || 'Me');
+    await addBarber(data.id, profile?.full_name || t('Me'));
     setBusy(false);
     onSaved();
   }
@@ -61,17 +62,17 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   return (
     <>
       <Field
-        label="Shop name"
+        label={t('Shop name')}
         value={name}
         onChangeText={(v) => {
           setName(v);
           if (!slugEdited) setSlug(slugify(v));
         }}
-        placeholder="e.g. Kemas Barber Kajang"
+        placeholder={t('e.g. Kemas Barber Kajang')}
         maxLength={80}
       />
       <Field
-        label="Booking link"
+        label={t('Booking link')}
         value={slug}
         onChangeText={(v) => {
           setSlugEdited(true);
@@ -79,16 +80,42 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
         }}
         autoCapitalize="none"
         maxLength={40}
-        hint={cleanSlug ? bookingLink(cleanSlug) : 'Letters, numbers and dashes.'}
+        hint={cleanSlug ? bookingLink(cleanSlug) : t('Letters, numbers and dashes.')}
       />
-      <Field label="About" value={about} onChangeText={setAbout} multiline placeholder="Fades, beard trims, kids cuts…" maxLength={500} />
-      <Field label="Address" value={address} onChangeText={setAddress} placeholder="No. 12, Jalan Reko, Kajang" maxLength={200} />
-      <Field label="Area" value={area} onChangeText={setArea} maxLength={60} />
-      <Field label="Shop phone (WhatsApp)" value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={20} />
-      <Field label="Instagram" value={instagram} onChangeText={setInstagram} autoCapitalize="none" placeholder="@yourshop" maxLength={60} />
+      <Field
+        label={t('About')}
+        value={about}
+        onChangeText={setAbout}
+        multiline
+        placeholder={t('Fades, beard trims, kids cuts…')}
+        maxLength={500}
+      />
+      <Field
+        label={t('Address')}
+        value={address}
+        onChangeText={setAddress}
+        placeholder="No. 12, Jalan Reko, Kajang"
+        maxLength={200}
+      />
+      <Field label={t('Area')} value={area} onChangeText={setArea} maxLength={60} />
+      <Field
+        label={t('Shop phone (WhatsApp)')}
+        value={phone}
+        onChangeText={setPhone}
+        keyboardType="phone-pad"
+        maxLength={20}
+      />
+      <Field
+        label="Instagram"
+        value={instagram}
+        onChangeText={setInstagram}
+        autoCapitalize="none"
+        placeholder={t('@yourshop')}
+        maxLength={60}
+      />
       <ErrorText message={error} />
       <Button
-        title={shop ? 'Save changes' : 'Create my shop'}
+        title={shop ? t('Save changes') : t('Create my shop')}
         onPress={save}
         loading={busy}
         disabled={!name.trim() || !cleanSlug}

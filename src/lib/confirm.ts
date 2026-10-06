@@ -1,7 +1,9 @@
 import { Alert, Platform } from 'react-native';
 
+import { t } from '@/lib/lang';
+
 /** Asks before a destructive action. Resolves true if the person confirms. */
-export function confirmAction(title: string, message: string, confirmLabel: string, cancelLabel = 'Keep it') {
+export function confirmAction(title: string, message: string, confirmLabel: string, cancelLabel = t('Keep it')) {
   if (Platform.OS === 'web') {
     return Promise.resolve(window.confirm(`${title}\n\n${message}`));
   }

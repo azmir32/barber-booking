@@ -3,6 +3,7 @@ import { Redirect, Stack } from 'expo-router';
 import { ShopForm } from '@/components/shop-form';
 import { Loading, Screen, T } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
+import { t } from '@/lib/lang';
 import { MyShopProvider, useMyShop } from '@/lib/my-shop';
 
 export default function BarberLayout() {
@@ -24,18 +25,18 @@ function BarberStack() {
   if (!shop) {
     return (
       <Screen>
-        <T variant="title">Set up your shop</T>
-        <T variant="muted">This is what customers see. You can change any of it later.</T>
+        <T variant="title">{t('Set up your shop')}</T>
+        <T variant="muted">{t('This is what customers see. You can change any of it later.')}</T>
         <ShopForm onSaved={reload} />
       </Screen>
     );
   }
 
   return (
-    <Stack screenOptions={{ headerBackTitle: 'Back' }}>
+    <Stack screenOptions={{ headerBackTitle: t('Back') }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="hours/[id]" options={{ title: 'Working hours' }} />
-      <Stack.Screen name="new-booking" options={{ title: 'Add to the day' }} />
+      <Stack.Screen name="hours/[id]" options={{ title: t('Working hours') }} />
+      <Stack.Screen name="new-booking" options={{ title: t('Add to the day') }} />
     </Stack>
   );
 }

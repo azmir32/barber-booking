@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Tabs } from 'expo-router/js-tabs';
 
 import { useTheme } from '@/hooks/use-theme';
+import { t } from '@/lib/lang';
 
 export default function CustomerTabs() {
   const theme = useTheme();
@@ -16,21 +17,21 @@ export default function CustomerTabs() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Barbers',
+          title: t('Barbers'),
           tabBarIcon: ({ color, size }) => <Ionicons name="cut-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="bookings"
         options={{
-          title: 'My bookings',
+          title: t('My bookings'),
           tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="account"
         options={{
-          title: 'Account',
+          title: t('Account'),
           tabBarIcon: ({ color, size }) => <Ionicons name="person-outline" color={color} size={size} />,
         }}
       />

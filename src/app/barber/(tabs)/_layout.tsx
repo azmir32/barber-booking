@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Tabs } from 'expo-router/js-tabs';
 
 import { useTheme } from '@/hooks/use-theme';
+import { t } from '@/lib/lang';
 
 export default function BarberTabs() {
   const theme = useTheme();
@@ -16,28 +17,28 @@ export default function BarberTabs() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Bookings',
+          title: t('Bookings'),
           tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="services"
         options={{
-          title: 'Services',
+          title: t('Services'),
           tabBarIcon: ({ color, size }) => <Ionicons name="pricetags-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="team"
         options={{
-          title: 'Barbers',
+          title: t('Barbers'),
           tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="shop"
         options={{
-          title: 'My shop',
+          title: t('My shop'),
           tabBarIcon: ({ color, size }) => <Ionicons name="storefront-outline" color={color} size={size} />,
         }}
       />

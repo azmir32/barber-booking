@@ -135,7 +135,7 @@ test.describe.serial('booking flow', () => {
     await field(page, 'Note for your barber (optional)').fill('Low fade please');
     await button(page, 'Confirm booking').click();
 
-    await expect(page.getByText("You're booked!")).toBeVisible();
+    await expect(page.getByText('You’re booked!')).toBeVisible();
     await snap(page, '11-booked');
     await button(page, 'See my bookings').click();
     await expect(page.getByText('Upcoming')).toBeVisible();

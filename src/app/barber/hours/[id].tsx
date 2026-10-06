@@ -4,6 +4,7 @@ import { View } from 'react-native';
 
 import { Button, Chip, ErrorText, Field, Loading, Row, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { t } from '@/lib/lang';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { dayPlanFrom, rangesFromPlan, WEEK_ORDER, type DayPlan } from '@/lib/hours';
 import { WEEKDAYS, type WorkingHours } from '@/lib/types';
@@ -40,7 +41,7 @@ export default function Hours() {
     const rows = [];
     for (const weekday of WEEK_ORDER) {
       const ranges = rangesFromPlan(week[weekday]);
-      if (typeof ranges === 'string') return setError(`${WEEKDAYS[weekday]}: ${ranges}`);
+      if (typeof ranges === 'string') return setError(`${t(WEEKDAYS[weekday])}: ${ranges}`);
       rows.push(...ranges.map((r) => ({ weekday, ...r })));
     }
     setBusy(true);
@@ -57,44 +58,46 @@ export default function Hours() {
 
   return (
     <Screen edges={[]}>
-      <Field label="Barber name" value={name} onChangeText={setName} maxLength={40} />
+      <Field label={t('Barber name')} value={name} onChangeText={setName} maxLength={40} />
       {week[1].open ? (
-        <Button title="Copy Monday's hours to all open days" variant="secondary" onPress={copyMondayToAll} />
+        <Button title={t('Copy Monday’s hours to all open days')} variant="secondary" onPress={copyMondayToAll} />
       ) : null}
       {WEEK_ORDER.map((weekday) => {
         const d = week[weekday];
         return (
           <View key={weekday} style={{ gap: Spacing.sm }}>
             <Row style={{ justifyContent: 'space-between' }}>
-              <T variant="label">{WEEKDAYS[weekday]}</T>
+              <T variant="label">{t(WEEKDAYS[weekday])}</T>
               <Row>
-                <Chip label="Open" selected={d.open} onPress={() => update(weekday, { open: true })} />
-                <Chip label="Off" selected={!d.open} onPress={() => update(weekday, { open: false })} />
+                <Chip label={t('Open')} selected={d.open} onPress={() => update(weekday, { open: true })} />
+                <Chip label={t('Off')} selected={!d.open} onPress={() => update(weekday, { open: false })} />
               </Row>
             </Row>
             {d.open ? (
               <Row style={{ flexWrap: 'nowrap' }}>
                 <View style={{ flex: 1 }}>
-                  <Field label="From" value={d.opens} onChangeText={(v) => update(weekday, { opens: v })} placeholder="10:00" />
+                  <Field label={t('From')} value={d.opens} onChangeText={(v) => update(weekday, { opens: v })} placeholder="10:00" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Field label="To" value={d.closes} onChangeText={(v) => update(weekday, { closes: v })} placeholder="20:00" />
+                  <Field label={t('To')} value={d.closes} onChangeText={(v) => update(weekday, { closes: v })} placeholder="20:00" />
                 </View>
               </Row>
             ) : null}
             {d.open && d.hasBreak ? (
               <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-end' }}>
                 <View style={{ flex: 1 }}>
-                  <Field label="Break from" value={d.breakFrom} onChangeText={(v) => update(weekday, { breakFrom: v })} placeholder="13:00" />
+                  <Field label={t('Break from')} value={d.breakFrom} onChangeText={(v) => update(weekday, { breakFrom: v })} placeholder="13:00" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Field label="Break to" value={d.breakTo} onChangeText={(v) => update(weekday, { breakTo: v })} placeholder="14:00" />
+                  <Field label={t('Break to')} value={d.breakTo} onChangeText={(v) => update(weekday, { breakTo: v })} placeholder="14:00" />
                 </View>
               </Row>
             ) : null}
             {d.open ? (
               <Button
-                title={d.hasBreak ? 'Remove break' : weekday === 5 ? '+ Add break (e.g. Friday prayers)' : '+ Add break'}
+                title={
+                  d.hasBreak ? t('Remove break') : weekday === 5 ? t('+ Add break (e.g. Friday prayers)') : t('+ Add break')
+                }
                 variant="ghost"
                 style={{ alignSelf: 'flex-start' }}
                 onPress={() => update(weekday, { hasBreak: !d.hasBreak })}
@@ -103,10 +106,10 @@ export default function Hours() {
           </View>
         );
       })}
-      <T variant="small">Use 24-hour time, e.g. 21:30 for 9:30pm.</T>
+      <T variant="small">{t('Use 24-hour time, e.g. 21:30 for 9:30pm.')}</T>
       <ErrorText message={error} />
-      <Button title="Save hours" onPress={save} loading={busy} disabled={!name.trim()} />
-      <Button title="Cancel" variant="ghost" onPress={() => router.back()} />
+      <Button title={t('Save hours')} onPress={save} loading={busy} disabled={!name.trim()} />
+      <Button title={t('Cancel')} variant="ghost" onPress={() => router.back()} />
     </Screen>
   );
 }

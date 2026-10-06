@@ -5,9 +5,12 @@ import { Button, Screen, T } from '@/components/ui';
 import { APP_NAME } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useLanguage } from '@/lib/i18n';
+import { t } from '@/lib/lang';
 
 export default function Welcome() {
   const theme = useTheme();
+  const { lang, setLang } = useLanguage();
   return (
     <Screen edges={['top', 'bottom']}>
       <View style={styles.hero}>
@@ -18,26 +21,33 @@ export default function Welcome() {
           {APP_NAME}
         </T>
         <T variant="muted" style={styles.center}>
-          Book your next haircut in seconds. No calls, no waiting for DM replies.
+          {t('Book your next haircut in seconds. No calls, no waiting for DM replies.')}
         </T>
       </View>
 
       <View style={styles.actions}>
-        <Button title="Find a barber" onPress={() => router.push('/customer')} />
-        <Button title="Sign in" variant="secondary" onPress={() => router.push('/sign-in')} />
+        <Button title={t('Find a barber')} onPress={() => router.push('/customer')} />
+        <Button title={t('Sign in')} variant="secondary" onPress={() => router.push('/sign-in')} />
       </View>
 
       <View style={[styles.barberBox, { borderColor: theme.border }]}>
-        <T variant="heading">Are you a barber?</T>
+        <T variant="heading">{t('Are you a barber?')}</T>
         <T variant="muted">
-          Get your own booking link, fill your chairs and cut down on no-shows. Free for your first month.
+          {t('Get your own booking link, fill your chairs and cut down on no-shows. Free for your first month.')}
         </T>
         <Button
-          title="Set up my shop"
+          title={t('Set up my shop')}
           variant="ghost"
           onPress={() => router.push({ pathname: '/sign-up', params: { role: 'barber' } })}
         />
       </View>
+
+      {/* Shown in the other language, so people who can't read this one can still find it. */}
+      <Button
+        title={lang === 'ms' ? 'Switch to English' : 'Tukar ke Bahasa Melayu'}
+        variant="ghost"
+        onPress={() => setLang(lang === 'ms' ? 'en' : 'ms')}
+      />
     </Screen>
   );
 }

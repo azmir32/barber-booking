@@ -1,5 +1,6 @@
 // Working-hours helpers shared by the barber and customer screens.
 
+import { t } from './lang.ts';
 import { normalizeTime } from './time.ts';
 import { WEEKDAYS, type WorkingHours } from './types.ts';
 
@@ -11,7 +12,7 @@ export const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 /** "20:00" or "20:00:00" -> "8:00 pm". */
 export function formatClock(time: string): string {
   const [h, m] = time.split(':').map(Number);
-  const suffix = h < 12 ? 'am' : 'pm';
+  const suffix = h < 12 ? t('am') : t('pm');
   const hour12 = h % 12 === 0 ? 12 : h % 12;
   return `${hour12}:${String(m).padStart(2, '0')} ${suffix}`;
 }
@@ -32,7 +33,7 @@ export function shopWeek(hours: Range[]): ({ opens: string; closes: string } | n
 
 /** "Mon–Sat · 10:00–20:00" style summary of one barber's week (breaks aside). */
 export function summarizeWeek(hours: Range[]): string {
-  if (hours.length === 0) return 'No hours set, so not bookable';
+  if (hours.length === 0) return t('No hours set, so not bookable');
   const days = [...new Set(hours.map((h) => h.weekday))].sort((a, b) => a - b);
   const spans = shopWeek(hours);
   const ranges = [...new Set(days.map((d) => `${spans[d]!.opens}–${spans[d]!.closes}`))];
@@ -40,13 +41,14 @@ export function summarizeWeek(hours: Range[]): string {
   const ordered = WEEK_ORDER.filter((d) => days.includes(d));
   const positions = ordered.map((d) => WEEK_ORDER.indexOf(d));
   const consecutive = positions.every((p, i) => i === 0 || p === positions[i - 1] + 1);
+  const dayName = (d: number) => t(WEEKDAYS[d]);
   const dayText =
     days.length === 7
-      ? 'Every day'
+      ? t('Every day')
       : consecutive && ordered.length > 2
-        ? `${WEEKDAYS[ordered[0]]}–${WEEKDAYS[ordered[ordered.length - 1]]}`
-        : ordered.map((d) => WEEKDAYS[d]).join(', ');
-  return `${dayText} · ${ranges.length === 1 ? ranges[0] : 'varied hours'}`;
+        ? `${dayName(ordered[0])}–${dayName(ordered[ordered.length - 1])}`
+        : ordered.map(dayName).join(', ');
+  return `${dayText} · ${ranges.length === 1 ? ranges[0] : t('varied hours')}`;
 }
 
 /** One day in the hours editor: open or off, with an optional break. */
@@ -85,13 +87,13 @@ export function rangesFromPlan(plan: DayPlan): { opens_at: string; closes_at: st
   if (!plan.open) return [];
   const opens = normalizeTime(plan.opens);
   const closes = normalizeTime(plan.closes);
-  if (!opens || !closes) return 'use times like 09:00 or 21:30.';
-  if (closes <= opens) return 'closing time must be after opening time.';
+  if (!opens || !closes) return t('use times like 09:00 or 21:30.');
+  if (closes <= opens) return t('closing time must be after opening time.');
   if (!plan.hasBreak) return [{ opens_at: opens, closes_at: closes }];
   const from = normalizeTime(plan.breakFrom);
   const to = normalizeTime(plan.breakTo);
-  if (!from || !to) return 'use times like 13:00 for the break.';
-  if (!(opens < from && from < to && to < closes)) return 'the break must sit inside opening hours.';
+  if (!from || !to) return t('use times like 13:00 for the break.');
+  if (!(opens < from && from < to && to < closes)) return t('the break must sit inside opening hours.');
   return [
     { opens_at: opens, closes_at: from },
     { opens_at: to, closes_at: closes },

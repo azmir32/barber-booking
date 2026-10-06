@@ -9,6 +9,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 **Everyone**
 - Email and password sign-in, with password reset by emailed code
 - Delete account from the Account screen (required by the App Store and Google Play)
+- English or Bahasa Melayu: follows the phone's language, with a switch on the welcome screen and under Account
 
 **Customers**
 - Browse live barbershops and search by name or area
@@ -86,6 +87,10 @@ GitHub Actions runs all of these on every push (`.github/workflows/ci.yml`).
 - A shop's free trial ends 30 days after it is created (`shops.trial_ends_at`).
 - When a barber pays, set `subscription_status = 'active'` on their shop in the Supabase table editor.
 - When a trial ends without payment, the shop disappears from search and its link stops taking bookings.
+
+## Translations
+
+Screens wrap their text in `t('English text')`; the Malay for each line is in [`src/lib/strings-ms.ts`](src/lib/strings-ms.ts), keyed by the English. `npm test` fails if any text is missing a Malay line, so add one whenever you add or change a sentence.
 
 ## Renaming the app
 

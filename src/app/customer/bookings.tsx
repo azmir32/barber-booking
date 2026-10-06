@@ -7,6 +7,7 @@ import { Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/compo
 import { useNow } from '@/hooks/use-now';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
+import { t } from '@/lib/lang';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay, formatPrice, formatTime } from '@/lib/time';
@@ -48,8 +49,8 @@ export default function MyBookings() {
   if (!session) {
     return (
       <Screen>
-        <Empty title="Your bookings live here" body="Sign in to see and manage your appointments.">
-          <Button title="Sign in" onPress={() => router.push({ pathname: '/sign-in', params: { next: '/customer/bookings' } })} />
+        <Empty title={t('Your bookings live here')} body={t('Sign in to see and manage your appointments.')}>
+          <Button title={t('Sign in')} onPress={() => router.push({ pathname: '/sign-in', params: { next: '/customer/bookings' } })} />
         </Empty>
       </Screen>
     );
@@ -63,9 +64,13 @@ export default function MyBookings() {
   async function cancel(b: MyBooking) {
     const tz = b.shops?.time_zone;
     const ok = await confirmAction(
-      'Cancel booking?',
-      `${b.service_name} on ${formatDay(b.starts_at, tz)} at ${formatTime(b.starts_at, tz)}`,
-      'Cancel booking',
+      t('Cancel booking?'),
+      t('{service} on {day} at {time}', {
+        service: b.service_name,
+        day: formatDay(b.starts_at, tz),
+        time: formatTime(b.starts_at, tz),
+      }),
+      t('Cancel booking'),
     );
     if (!ok) return;
     const { error } = await supabase.rpc('set_booking_status', { p_booking_id: b.id, p_status: 'cancelled' });
@@ -75,23 +80,24 @@ export default function MyBookings() {
 
   return (
     <Screen onRefresh={load}>
-      <T variant="title">My bookings</T>
+      <T variant="title">{t('My bookings')}</T>
       <ErrorText message={error} />
       {!loading && bookings.length === 0 ? (
-        <Empty title="No bookings yet" body="Find a barber and grab a slot.">
-          <Button title="Find a barber" onPress={() => router.push('/customer')} />
+        <Empty title={t('No bookings yet')} body={t('Find a barber and grab a slot.')}>
+          <Button title={t('Find a barber')} onPress={() => router.push('/customer')} />
         </Empty>
       ) : null}
 
       {upcoming.length ? (
-        <Section title="Upcoming">
+        <Section title={t('Upcoming')}>
           {upcoming.map((b) => (
             <Card key={b.id}>
               <T variant="heading">
                 {formatDay(b.starts_at, b.shops?.time_zone)}, {formatTime(b.starts_at, b.shops?.time_zone)}
               </T>
               <T>
-                {b.service_name} with {b.barbers?.name ?? 'your barber'} · {formatPrice(b.price)}
+                {t('{service} with {barber}', { service: b.service_name, barber: b.barbers?.name ?? t('your barber') })} ·{' '}
+                {formatPrice(b.price)}
               </T>
               <T variant="muted">
                 {b.shops?.name}
@@ -100,12 +106,12 @@ export default function MyBookings() {
               <Row>
                 {b.shops?.phone ? (
                   <Button
-                    title="WhatsApp shop"
+                    title={t('WhatsApp shop')}
                     variant="secondary"
                     onPress={() => Linking.openURL(whatsappUrl(b.shops!.phone!))}
                   />
                 ) : null}
-                <Button title="Cancel" variant="ghost" onPress={() => cancel(b)} />
+                <Button title={t('Cancel')} variant="ghost" onPress={() => cancel(b)} />
               </Row>
             </Card>
           ))}
@@ -113,7 +119,7 @@ export default function MyBookings() {
       ) : null}
 
       {past.length ? (
-        <Section title="Past">
+        <Section title={t('Past')}>
           {past.map((b) => (
             <Card key={b.id}>
               <Row style={{ justifyContent: 'space-between' }}>
@@ -121,10 +127,10 @@ export default function MyBookings() {
                 <BookingStatusBadge booking={b} />
               </Row>
               <T>
-                {b.service_name} at {b.shops?.name}
+                {t('{service} at {shop}', { service: b.service_name, shop: b.shops?.name ?? '' })}
               </T>
               {b.shops ? (
-                <Button title="Book again" variant="secondary" onPress={() => router.push(`/shop/${b.shops!.slug}`)} />
+                <Button title={t('Book again')} variant="secondary" onPress={() => router.push(`/shop/${b.shops!.slug}`)} />
               ) : null}
             </Card>
           ))}

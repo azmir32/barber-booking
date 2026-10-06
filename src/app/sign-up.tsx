@@ -4,6 +4,7 @@ import { View } from 'react-native';
 
 import { Button, Chip, ErrorText, Field, Row, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { t } from '@/lib/lang';
 import { returnAfterAuth } from '@/lib/navigation';
 import { errorMessage, supabase } from '@/lib/supabase';
 import type { Role } from '@/lib/types';
@@ -39,11 +40,11 @@ export default function SignUp() {
   if (checkEmail) {
     return (
       <Screen edges={[]}>
-        <T variant="heading">Check your email</T>
+        <T variant="heading">{t('Check your email')}</T>
         <T variant="muted">
-          We sent a confirmation link to {email.trim()}. Tap it, then come back and sign in.
+          {t('We sent a confirmation link to {email}. Tap it, then come back and sign in.', { email: email.trim() })}
         </T>
-        <Button title="Go to sign in" onPress={() => router.replace('/sign-in')} />
+        <Button title={t('Go to sign in')} onPress={() => router.replace('/sign-in')} />
       </Screen>
     );
   }
@@ -51,28 +52,32 @@ export default function SignUp() {
   return (
     <Screen edges={[]}>
       <View style={{ gap: Spacing.sm }}>
-        <T variant="label">I am a</T>
+        <T variant="label">{t('I am a')}</T>
         <Row>
-          <Chip label="Customer" selected={role === 'customer'} onPress={() => setRole('customer')} />
-          <Chip label="Barber / shop owner" selected={role === 'barber'} onPress={() => setRole('barber')} />
+          <Chip label={t('Customer')} selected={role === 'customer'} onPress={() => setRole('customer')} />
+          <Chip label={t('Barber / shop owner')} selected={role === 'barber'} onPress={() => setRole('barber')} />
         </Row>
         {role === 'barber' ? (
-          <T variant="small">Your first month is free. You can set up your shop right after this.</T>
+          <T variant="small">{t('Your first month is free. You can set up your shop right after this.')}</T>
         ) : null}
       </View>
-      <Field label="Full name" value={fullName} onChangeText={setFullName} autoComplete="name" maxLength={80} />
+      <Field label={t('Full name')} value={fullName} onChangeText={setFullName} autoComplete="name" maxLength={80} />
       <Field
-        label="Phone (WhatsApp)"
+        label={t('Phone (WhatsApp)')}
         value={phone}
         onChangeText={setPhone}
         keyboardType="phone-pad"
         autoComplete="tel"
         maxLength={20}
         placeholder="012-345 6789"
-        hint={role === 'barber' ? 'Customers will see this to contact you.' : 'Your barber can reach you here if plans change.'}
+        hint={
+          role === 'barber'
+            ? t('Customers will see this to contact you.')
+            : t('Your barber can reach you here if plans change.')
+        }
       />
       <Field
-        label="Email"
+        label={t('Email')}
         value={email}
         onChangeText={setEmail}
         autoCapitalize="none"
@@ -80,15 +85,15 @@ export default function SignUp() {
         keyboardType="email-address"
       />
       <Field
-        label="Password"
+        label={t('Password')}
         value={password}
         onChangeText={setPassword}
         secureTextEntry
         autoComplete="new-password"
-        hint="At least 8 characters."
+        hint={t('At least 8 characters.')}
       />
       <ErrorText message={error} />
-      <Button title="Create account" onPress={submit} loading={busy} disabled={!canSubmit} />
+      <Button title={t('Create account')} onPress={submit} loading={busy} disabled={!canSubmit} />
     </Screen>
   );
 }

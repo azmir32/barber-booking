@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Empty, Field, Row, T } from '@/components/ui';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { t } from '@/lib/lang';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -64,18 +65,23 @@ export default function Explore() {
         }}
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}>
-        <T variant="title">Find a barber</T>
-        <Field label="Search" value={query} onChangeText={setQuery} placeholder="Shop name or area, e.g. Sungai Chua" />
+        <T variant="title">{t('Find a barber')}</T>
+        <Field
+          label={t('Search')}
+          value={query}
+          onChangeText={setQuery}
+          placeholder={t('Shop name or area, e.g. Sungai Chua')}
+        />
         {error ? (
-          <Empty title="Couldn't load barbers" body="Check your connection and try again.">
-            <Button title="Try again" variant="secondary" onPress={load} />
+          <Empty title={t('Couldn’t load barbers')} body={t('Check your connection and try again.')}>
+            <Button title={t('Try again')} variant="secondary" onPress={load} />
           </Empty>
         ) : null}
-        {loading && shops.length === 0 && !error ? <T variant="muted">Loading barbers…</T> : null}
+        {loading && shops.length === 0 && !error ? <T variant="muted">{t('Loading barbers…')}</T> : null}
         {!loading && !error && visible.length === 0 ? (
           <Empty
-            title={query ? 'No matches' : 'No barbers yet'}
-            body={query ? 'Try another name or area.' : 'Barbers in your area are joining soon. Check back shortly.'}
+            title={query ? t('No matches') : t('No barbers yet')}
+            body={query ? t('Try another name or area.') : t('Barbers in your area are joining soon. Check back shortly.')}
           />
         ) : null}
         {visible.map((shop) => {
@@ -91,11 +97,11 @@ export default function Explore() {
                 </T>
               ) : null}
               <Row>
-                {prices.length ? <T variant="label">From {formatPrice(Math.min(...prices))}</T> : null}
+                {prices.length ? (
+                  <T variant="label">{t('From {price}', { price: formatPrice(Math.min(...prices)) })}</T>
+                ) : null}
                 {chairs ? (
-                  <T variant="small">
-                    {chairs} {chairs === 1 ? 'barber' : 'barbers'}
-                  </T>
+                  <T variant="small">{chairs === 1 ? t('1 barber') : t('{count} barbers', { count: chairs })}</T>
                 ) : null}
               </Row>
             </Card>

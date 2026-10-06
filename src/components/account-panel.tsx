@@ -1,25 +1,45 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
 
-import { Button, Card, ErrorText, Field, T } from '@/components/ui';
+import { Button, Card, Chip, ErrorText, Field, Row, T } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
+import { useLanguage } from '@/lib/i18n';
+import { LANGUAGES, t } from '@/lib/lang';
 import { errorMessage, supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/types';
 
-/** Name, phone, sign out and delete account. Shared by the customer and barber apps. */
+/** Language, name, phone, sign out and delete account. Shared by the customer and barber apps. */
 export function AccountPanel() {
   const { session, profile } = useAuth();
-  if (!session || !profile) {
-    return (
-      <Card>
-        <T variant="muted">{"You're browsing as a guest."}</T>
-        <Button title="Sign in" onPress={() => router.push('/sign-in')} />
-        <Button title="Create an account" variant="secondary" onPress={() => router.push('/sign-up')} />
-      </Card>
-    );
-  }
-  return <AccountForm key={profile.id} email={session.user.email ?? ''} profile={profile} />;
+  return (
+    <>
+      {!session || !profile ? (
+        <Card>
+          <T variant="muted">{t('You’re browsing as a guest.')}</T>
+          <Button title={t('Sign in')} onPress={() => router.push('/sign-in')} />
+          <Button title={t('Create an account')} variant="secondary" onPress={() => router.push('/sign-up')} />
+        </Card>
+      ) : (
+        <AccountForm key={profile.id} email={session.user.email ?? ''} profile={profile} />
+      )}
+      <LanguagePicker />
+    </>
+  );
+}
+
+function LanguagePicker() {
+  const { lang, setLang } = useLanguage();
+  return (
+    <Card>
+      <T variant="label">{t('Language')}</T>
+      <Row>
+        {LANGUAGES.map((l) => (
+          <Chip key={l.code} label={l.name} selected={lang === l.code} onPress={() => setLang(l.code)} />
+        ))}
+      </Row>
+    </Card>
+  );
 }
 
 function AccountForm({ email, profile }: { email: string; profile: Profile }) {
@@ -46,11 +66,13 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
 
   async function deleteAccount() {
     const ok = await confirmAction(
-      'Delete your account?',
+      t('Delete your account?'),
       profile.role === 'barber'
-        ? 'This deletes your shop, booking link, services and all its bookings. Let customers with upcoming bookings know first. This can’t be undone.'
-        : 'Your upcoming bookings will be cancelled. This can’t be undone.',
-      'Delete account',
+        ? t(
+            'This deletes your shop, booking link, services and all its bookings. Let customers with upcoming bookings know first. This can’t be undone.',
+          )
+        : t('Your upcoming bookings will be cancelled. This can’t be undone.'),
+      t('Delete account'),
     );
     if (!ok) return;
     setBusy(true);
@@ -64,20 +86,20 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
   return (
     <Card>
       <T variant="muted">{email}</T>
-      <Field label="Full name" value={fullName} onChangeText={setFullName} maxLength={80} />
-      <Field label="Phone (WhatsApp)" value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={20} />
+      <Field label={t('Full name')} value={fullName} onChangeText={setFullName} maxLength={80} />
+      <Field label={t('Phone (WhatsApp)')} value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={20} />
       <ErrorText message={error} />
-      {saved ? <T variant="small">Saved.</T> : null}
-      <Button title="Save" variant="secondary" onPress={save} loading={busy} />
+      {saved ? <T variant="small">{t('Saved.')}</T> : null}
+      <Button title={t('Save')} variant="secondary" onPress={save} loading={busy} />
       <Button
-        title="Sign out"
+        title={t('Sign out')}
         variant="ghost"
         onPress={async () => {
           await signOut();
           router.replace('/welcome');
         }}
       />
-      <Button title="Delete account" variant="ghost" onPress={deleteAccount} disabled={busy} />
+      <Button title={t('Delete account')} variant="ghost" onPress={deleteAccount} disabled={busy} />
     </Card>
   );
 }

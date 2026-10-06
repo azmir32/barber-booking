@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react';
 
 import { Button, Card, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
 import { summarizeWeek } from '@/lib/hours';
+import { t } from '@/lib/lang';
 import { addBarber, useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
 import type { Barber, WorkingHours } from '@/lib/types';
@@ -53,32 +54,41 @@ export default function Team() {
 
   return (
     <Screen>
-      <T variant="title">Barbers</T>
-      <T variant="muted">One per chair. Customers can pick a barber or take whoever is free.</T>
+      <T variant="title">{t('Barbers')}</T>
+      <T variant="muted">{t('One per chair. Customers can pick a barber or take whoever is free.')}</T>
 
-      <Section title="Your team">
-        {barbers.length === 0 ? <Empty title="No barbers yet" body="Add yourself and anyone who cuts in your shop." /> : null}
+      <Section title={t('Your team')}>
+        {barbers.length === 0 ? (
+          <Empty title={t('No barbers yet')} body={t('Add yourself and anyone who cuts in your shop.')} />
+        ) : null}
         {barbers.map((b) => (
           <Card key={b.id} style={b.is_active ? undefined : { opacity: 0.6 }}>
             <T variant="label">{b.name}</T>
-            <T variant="small">{b.is_active ? summarizeWeek(b.working_hours) : 'Away, not taking bookings'}</T>
+            <T variant="small">{b.is_active ? summarizeWeek(b.working_hours) : t('Away, not taking bookings')}</T>
             <Row>
               <Button
-                title="Hours"
+                title={t('Hours')}
                 variant="secondary"
                 onPress={() => router.push({ pathname: '/barber/hours/[id]', params: { id: b.id } })}
               />
-              <Button title={b.is_active ? 'Mark away' : 'Back at work'} variant="ghost" onPress={() => toggle(b)} />
+              <Button title={b.is_active ? t('Mark away') : t('Back at work')} variant="ghost" onPress={() => toggle(b)} />
             </Row>
           </Card>
         ))}
       </Section>
 
-      <Section title="Add a barber">
-        <Field label="Name" value={name} onChangeText={setName} placeholder="e.g. Danial" onSubmitEditing={add} maxLength={40} />
-        <T variant="small">New barbers start with 10am–8pm, Monday to Saturday. Tap Hours to change.</T>
+      <Section title={t('Add a barber')}>
+        <Field
+          label={t('Name')}
+          value={name}
+          onChangeText={setName}
+          placeholder={t('e.g. Danial')}
+          onSubmitEditing={add}
+          maxLength={40}
+        />
+        <T variant="small">{t('New barbers start with 10am–8pm, Monday to Saturday. Tap Hours to change.')}</T>
         <ErrorText message={error} />
-        <Button title="Add barber" onPress={add} loading={busy} disabled={!name.trim()} />
+        <Button title={t('Add barber')} onPress={add} loading={busy} disabled={!name.trim()} />
       </Section>
     </Screen>
   );

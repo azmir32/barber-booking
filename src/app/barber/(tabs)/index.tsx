@@ -7,6 +7,7 @@ import { DayPicker } from '@/components/day-picker';
 import { Badge, Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { useNow } from '@/hooks/use-now';
 import { confirmAction } from '@/lib/confirm';
+import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -64,11 +65,15 @@ export default function BarberBookings() {
   async function setStatus(b: ShopBooking, status: BookingStatus) {
     if (status === 'cancelled') {
       const ok = b.is_block
-        ? await confirmAction('Remove this block?', 'Customers will be able to book this time again.', 'Remove')
+        ? await confirmAction(t('Remove this block?'), t('Customers will be able to book this time again.'), t('Remove'))
         : await confirmAction(
-            'Cancel this booking?',
-            `${whoFor(b)} · ${b.service_name} at ${formatTime(b.starts_at, tz)}. Let them know on WhatsApp.`,
-            'Cancel booking',
+            t('Cancel this booking?'),
+            t('{who} · {service} at {time}. Let them know on WhatsApp.', {
+              who: whoFor(b),
+              service: b.service_name,
+              time: formatTime(b.starts_at, tz),
+            }),
+            t('Cancel booking'),
           );
       if (!ok) return;
     }
@@ -85,14 +90,26 @@ export default function BarberBookings() {
 
   return (
     <Screen onRefresh={load}>
-      <T variant="title">Bookings</T>
+      <T variant="title">{t('Bookings')}</T>
 
       {setup && !ready ? (
         <Card>
-          <T variant="heading">Get ready for bookings</T>
-          <SetupStep done={setup.services > 0} label="Add your services and prices" onPress={() => router.push('/barber/services')} />
-          <SetupStep done={setup.barbers > 0 && setup.hours > 0} label="Check your barbers and working hours" onPress={() => router.push('/barber/team')} />
-          <SetupStep done={shop.is_published} label="Go live and share your booking link" onPress={() => router.push('/barber/shop')} />
+          <T variant="heading">{t('Get ready for bookings')}</T>
+          <SetupStep
+            done={setup.services > 0}
+            label={t('Add your services and prices')}
+            onPress={() => router.push('/barber/services')}
+          />
+          <SetupStep
+            done={setup.barbers > 0 && setup.hours > 0}
+            label={t('Check your barbers and working hours')}
+            onPress={() => router.push('/barber/team')}
+          />
+          <SetupStep
+            done={shop.is_published}
+            label={t('Go live and share your booking link')}
+            onPress={() => router.push('/barber/shop')}
+          />
         </Card>
       ) : null}
 
@@ -104,12 +121,15 @@ export default function BarberBookings() {
         title={formatDay(dayBounds(day, tz).start, tz)}
         action={active.length ? <T variant="muted">{active.length} · {formatPrice(expected)}</T> : undefined}>
         <Button
-          title="+ Add booking or block time"
+          title={t('+ Add booking or block time')}
           variant="secondary"
           onPress={() => router.push({ pathname: '/barber/new-booking', params: { day } })}
         />
         {bookings.length === 0 ? (
-          <Empty title="No bookings" body={shop.is_published ? 'Share your booking link to fill this day.' : undefined} />
+          <Empty
+            title={t('No bookings')}
+            body={shop.is_published ? t('Share your booking link to fill this day.') : undefined}
+          />
         ) : (
           bookings.map((b) => {
             const phone = b.customer?.phone ?? b.guest_phone;
@@ -118,9 +138,9 @@ export default function BarberBookings() {
               <Card key={b.id} style={b.status === 'cancelled' ? { opacity: 0.6 } : undefined}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <T variant="heading">
-                    {isWholeDay(b) ? 'Whole day' : `${formatTime(b.starts_at, tz)} – ${formatTime(b.ends_at, tz)}`}
+                    {isWholeDay(b) ? t('Whole day') : `${formatTime(b.starts_at, tz)} – ${formatTime(b.ends_at, tz)}`}
                   </T>
-                  {b.is_block ? <Badge label="Blocked" /> : <BookingStatusBadge booking={b} />}
+                  {b.is_block ? <Badge label={t('Blocked')} /> : <BookingStatusBadge booking={b} />}
                 </Row>
                 {b.is_block ? (
                   <T>
@@ -130,8 +150,7 @@ export default function BarberBookings() {
                 ) : (
                   <>
                     <T variant="label">
-                      {whoFor(b)}
-                      {b.customer_id ? '' : ' (added by you)'}
+                      {b.customer_id ? whoFor(b) : t('{name} (added by you)', { name: whoFor(b) })}
                     </T>
                     <T>
                       {b.service_name} · {formatPrice(b.price)}
@@ -144,11 +163,11 @@ export default function BarberBookings() {
                   <Row>
                     {!b.is_block && new Date(b.starts_at).getTime() <= now ? (
                       <>
-                        <Button title="Done" variant="secondary" onPress={() => setStatus(b, 'completed')} />
-                        <Button title="No-show" variant="ghost" onPress={() => setStatus(b, 'no_show')} />
+                        <Button title={t('Done')} variant="secondary" onPress={() => setStatus(b, 'completed')} />
+                        <Button title={t('No-show')} variant="ghost" onPress={() => setStatus(b, 'no_show')} />
                       </>
                     ) : null}
-                    <Button title={b.is_block ? 'Remove' : 'Cancel'} variant="ghost" onPress={() => setStatus(b, 'cancelled')} />
+                    <Button title={b.is_block ? t('Remove') : t('Cancel')} variant="ghost" onPress={() => setStatus(b, 'cancelled')} />
                     {phone && !b.is_block ? (
                       <Button
                         title="WhatsApp"
@@ -157,7 +176,13 @@ export default function BarberBookings() {
                           Linking.openURL(
                             whatsappUrl(
                               phone,
-                              `Hi ${whoFor(b)}, this is ${shop.name} about your ${b.service_name} on ${formatDay(b.starts_at, tz)} at ${formatTime(b.starts_at, tz)}.`,
+                              t('Hi {who}, this is {shop} about your {service} on {day} at {time}.', {
+                                who: whoFor(b),
+                                shop: shop.name,
+                                service: b.service_name,
+                                day: formatDay(b.starts_at, tz),
+                                time: formatTime(b.starts_at, tz),
+                              }),
                             ),
                           )
                         }
@@ -178,7 +203,7 @@ const isWholeDay = (b: Booking) =>
   b.is_block && new Date(b.ends_at).getTime() - new Date(b.starts_at).getTime() >= 24 * 60 * 60 * 1000;
 
 function whoFor(b: ShopBooking): string {
-  return b.customer?.full_name || b.guest_name || 'Customer';
+  return b.customer?.full_name || b.guest_name || t('Customer');
 }
 
 function SetupStep({ done, label, onPress }: { done: boolean; label: string; onPress: () => void }) {
@@ -188,7 +213,7 @@ function SetupStep({ done, label, onPress }: { done: boolean; label: string; onP
         {done ? '✓ ' : '○ '}
         {label}
       </T>
-      {done ? null : <Button title="Go" variant="secondary" onPress={onPress} />}
+      {done ? null : <Button title={t('Go')} variant="secondary" onPress={onPress} />}
     </Row>
   );
 }
