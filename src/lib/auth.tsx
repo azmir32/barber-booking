@@ -43,6 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
+      // Someone else signed in: drop the old profile until theirs loads.
+      setProfile((p) => (p && p.id === s?.user.id ? p : null));
       // Supabase warns against awaiting other calls inside this callback.
       setTimeout(() => loadProfile(s), 0);
     });

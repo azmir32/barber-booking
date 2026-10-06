@@ -340,4 +340,24 @@ export const ms: Record<string, string> = {
   'Invalid login credentials': 'E-mel atau kata laluan salah.',
   'User already registered': 'E-mel ini sudah didaftarkan. Cuba log masuk.',
   'Email not confirmed': 'E-mel belum disahkan. Semak e-mel anda untuk pautan pengesahan.',
+
+  // Demo build (scripts/build-demo.mjs)
+  Demo: 'Demo',
+  'Try it with sample shops in Kajang': 'Cuba dengan kedai contoh di Kajang',
+  'As a customer you are Hakim. As a barber you are Ali, who runs Ali Barber Sungai Chua.':
+    'Sebagai pelanggan, anda ialah Hakim. Sebagai barber, anda ialah Ali, pemilik Ali Barber Sungai Chua.',
+  'Try as a customer': 'Cuba sebagai pelanggan',
+  'Try as a barber': 'Cuba sebagai barber',
+  'Nothing here is real and nothing is sent anywhere. Your changes stay on this device.':
+    'Semua di sini hanya contoh dan tiada apa-apa dihantar. Perubahan anda kekal di peranti ini.',
+  'Start the demo again': 'Mulakan semula demo',
+  'Start the demo again?': 'Mulakan semula demo?',
+  'Every booking, shop and account goes back to the sample data.':
+    'Semua tempahan, kedai dan akaun akan kembali kepada data contoh.',
+  'Start again': 'Mula semula',
+  'See the barber side': 'Lihat sebagai barber',
+  'See the customer side': 'Lihat sebagai pelanggan',
+  'Demo accounts: {customer} (customer) or {barber} (barber). Password: {password}':
+    'Akaun demo: {customer} (pelanggan) atau {barber} (barber). Kata laluan: {password}',
+  'This is the demo, so no email is sent. Use code {code}.': 'Ini demo, jadi tiada e-mel dihantar. Gunakan kod {code}.',
 };

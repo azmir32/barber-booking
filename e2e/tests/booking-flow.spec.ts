@@ -44,6 +44,12 @@ function dayChip(offset: number) {
   return new RegExp(`^${part({ weekday: 'short' })}\\s?${part({ day: 'numeric' })} ${part({ month: 'short' })}`);
 }
 
+/** Says yes in the app's "Are you sure?" dialog. */
+async function confirm(page: Page, label: string) {
+  await page.getByRole('alertdialog').getByRole('button', { name: label, exact: true }).click();
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+}
+
 async function signOut(page: Page) {
   await page.evaluate(() => window.localStorage.clear());
 }
@@ -59,11 +65,6 @@ async function pickHaircutTomorrow(page: Page) {
 
 test.describe.serial('booking flow', () => {
   let bookedTime = '';
-
-  // Cancelling asks first; say yes.
-  test.beforeEach(({ page }) => {
-    page.on('dialog', (dialog) => dialog.accept());
-  });
 
   test('barber signs up, sets up the shop and goes live', async ({ page }) => {
     await page.goto('/');
@@ -162,6 +163,9 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('“Low fade please”')).toBeVisible();
     await snap(page, '13-barber-day');
     await button(page, 'Cancel').click();
+    await expect(page.getByText('Cancel this booking?')).toBeVisible();
+    await snap(page, '13b-confirm-cancel');
+    await confirm(page, 'Cancel booking');
     await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
     await signOut(page);
   });
@@ -249,6 +253,7 @@ test.describe.serial('booking flow', () => {
     await signIn(page, { ...customer2, password: 'new-password-456' });
     await page.getByRole('tab', { name: /Account/ }).click();
     await button(page, 'Delete account').click();
+    await confirm(page, 'Delete account');
     await expect(page.getByText('Are you a barber?')).toBeVisible();
 
     await signIn(page, { ...customer2, password: 'new-password-456' });

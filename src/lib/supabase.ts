@@ -7,16 +7,30 @@ import { t } from '@/lib/lang';
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
-export const isSupabaseConfigured = Boolean(url && anonKey);
+/**
+ * The demo build (EXPO_PUBLIC_DEMO=1, see scripts/build-demo.mjs) answers
+ * every request from a pretend backend inside the page, with sample shops.
+ * Other builds leave it out entirely.
+ */
+export const demo: typeof import('@/demo/server') | null =
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  process.env.EXPO_PUBLIC_DEMO === '1' ? require('@/demo/server') : null;
 
-export const supabase = createClient(url || 'http://localhost:54321', anonKey || 'not-configured', {
-  auth: {
-    storage: AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
+export const isSupabaseConfigured = Boolean(demo || (url && anonKey));
+
+export const supabase = createClient(
+  demo?.DEMO_URL ?? (url || 'http://localhost:54321'),
+  demo?.DEMO_ANON_KEY ?? (anonKey || 'not-configured'),
+  {
+    auth: {
+      storage: demo?.demoStorage ?? AsyncStorage,
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: false,
+    },
+    global: demo ? { fetch: demo.demoFetch } : {},
   },
-});
+);
 
 // Only refresh the session while the app is in the foreground.
 if (Platform.OS !== 'web') {

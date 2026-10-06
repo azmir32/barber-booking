@@ -45,6 +45,15 @@ export default function MyShop() {
     reload();
   }
 
+  async function copyLink(text: string) {
+    try {
+      await Clipboard.setStringAsync(text);
+      setCopied(true);
+    } catch {
+      // The link is on screen to copy by hand.
+    }
+  }
+
   return (
     <Screen>
       <T variant="title">{t('My shop')}</T>
@@ -80,16 +89,14 @@ export default function MyShop() {
         <Row>
           <Button
             title={t('Share')}
-            onPress={() => Share.share({ message: t('Book your next cut at {shop}: {link}', { shop: shop.name, link }) })}
+            onPress={() =>
+              // Browsers without a share sheet get the link copied instead.
+              Share.share({ message: t('Book your next cut at {shop}: {link}', { shop: shop.name, link }) }).catch(() =>
+                copyLink(link),
+              )
+            }
           />
-          <Button
-            title={copied ? t('Copied') : t('Copy')}
-            variant="secondary"
-            onPress={async () => {
-              await Clipboard.setStringAsync(link);
-              setCopied(true);
-            }}
-          />
+          <Button title={copied ? t('Copied') : t('Copy')} variant="secondary" onPress={() => copyLink(link)} />
           <Button title={t('Preview')} variant="ghost" onPress={() => router.push(`/shop/${shop.slug}`)} />
         </Row>
       </Card>

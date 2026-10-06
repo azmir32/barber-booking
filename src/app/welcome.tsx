@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
+import { DemoPanel } from '@/components/demo-panel';
 import { Button, Screen, T } from '@/components/ui';
 import { APP_NAME } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
@@ -24,6 +25,8 @@ export default function Welcome() {
           {t('Book your next haircut in seconds. No calls, no waiting for DM replies.')}
         </T>
       </View>
+
+      <DemoPanel />
 
       <View style={styles.actions}>
         <Button title={t('Find a barber')} onPress={() => router.push('/customer')} />

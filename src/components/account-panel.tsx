@@ -1,12 +1,13 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
 
+import { DemoSwitch } from '@/components/demo-panel';
 import { Button, Card, Chip, ErrorText, Field, Row, T } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
 import { useLanguage } from '@/lib/i18n';
 import { LANGUAGES, t } from '@/lib/lang';
-import { errorMessage, supabase } from '@/lib/supabase';
+import { demo, errorMessage, supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/types';
 
 /** Language, name, phone, sign out and delete account. Shared by the customer and barber apps. */
@@ -21,7 +22,15 @@ export function AccountPanel() {
           <Button title={t('Create an account')} variant="secondary" onPress={() => router.push('/sign-up')} />
         </Card>
       ) : (
-        <AccountForm key={profile.id} email={session.user.email ?? ''} profile={profile} />
+        <>
+          {demo ? (
+            <Card>
+              <T variant="label">{t('Demo')}</T>
+              <DemoSwitch role={profile.role} />
+            </Card>
+          ) : null}
+          <AccountForm key={profile.id} email={session.user.email ?? ''} profile={profile} />
+        </>
       )}
       <LanguagePicker />
     </>

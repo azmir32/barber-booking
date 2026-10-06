@@ -1,6 +1,7 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
+import { ConfirmHost } from '@/components/confirm-host';
 import { Empty, Screen, T } from '@/components/ui';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -36,6 +37,7 @@ export default function RootLayout() {
               <Stack.Screen name="sign-up" options={{ headerShown: true, title: t('Create account') }} />
               <Stack.Screen name="forgot-password" options={{ headerShown: true, title: t('Reset password') }} />
             </Stack>
+            <ConfirmHost />
           </AuthProvider>
         </LanguageProvider>
       ) : (

@@ -44,6 +44,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+      - run: npm run test:demo
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

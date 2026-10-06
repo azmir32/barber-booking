@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Button, ErrorText, Field, Screen, T } from '@/components/ui';
 import { t } from '@/lib/lang';
 import { returnAfterAuth } from '@/lib/navigation';
-import { errorMessage, supabase } from '@/lib/supabase';
+import { demo, errorMessage, supabase } from '@/lib/supabase';
 
 export default function SignIn() {
   const { next } = useLocalSearchParams<{ next?: string }>();
@@ -42,6 +42,15 @@ export default function SignIn() {
         onSubmitEditing={submit}
       />
       <ErrorText message={error} />
+      {demo ? (
+        <T variant="small" selectable>
+          {t('Demo accounts: {customer} (customer) or {barber} (barber). Password: {password}', {
+            customer: demo.DEMO_CUSTOMER_EMAIL,
+            barber: demo.DEMO_BARBER_EMAIL,
+            password: demo.DEMO_PASSWORD,
+          })}
+        </T>
+      ) : null}
       <Button title={t('Sign in')} onPress={submit} loading={busy} disabled={!email || !password} />
       <Button
         title={t('Forgot password?')}

@@ -41,6 +41,16 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - [Supabase](https://supabase.com) for sign-in, Postgres and row-level security
 - Schema and functions: [`supabase/migrations`](supabase/migrations)
 
+## Trying it without Supabase
+
+```bash
+npm run build:demo
+```
+
+This builds `dist-demo/index.html`: the whole web app in one file, with a pretend backend inside the page ([`src/demo`](src/demo)) and four sample shops around Kajang. Open it in any browser, or host it anywhere, and tap **Try as a customer** (Hakim) or **Try as a barber** (Ali of Ali Barber Sungai Chua). Nothing is sent anywhere; changes are kept in that browser until **Start the demo again**. The demo password reset code is `123456`.
+
+The pretend backend copies the database rules in `supabase/migrations` (row-level security, the booking functions and their messages), so when you change a rule there, change it in `src/demo` too. `npm test` checks the demo backend through the real Supabase client.
+
 ## Getting it running
 
 1. Create a free project at [supabase.com](https://supabase.com).
@@ -71,9 +81,10 @@ Tip for testing: in Supabase under Authentication > Sign In / Providers > Email,
 ```bash
 npm run typecheck   # TypeScript
 npm run lint        # ESLint
-npm test            # date, money and phone helpers
+npm test            # date, money, phone and language helpers, and the demo backend
 npm run test:db     # schema + booking rules against a throwaway local Postgres 16+
 npm run test:e2e    # the whole app in a browser: barber sets up, customers book
+npm run test:demo   # the one-file demo, in a locked-down iframe with no network
 ```
 
 `test:db` needs `initdb`, `pg_ctl` and `psql` installed locally (it does not need Supabase or Docker).

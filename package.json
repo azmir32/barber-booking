@@ -47,9 +47,11 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/*.test.ts",
+    "test": "node --test src/lib/*.test.ts src/demo/*.test.ts",
     "test:db": "bash scripts/test-db.sh",
-    "test:e2e": "bash e2e/run.sh"
+    "test:e2e": "bash e2e/run.sh",
+    "build:demo": "node scripts/build-demo.mjs",
+    "test:demo": "node scripts/build-demo.mjs && playwright test -c e2e/playwright.demo.config.ts"
   },
   "private": true
 }

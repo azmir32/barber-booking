@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Button, ErrorText, Field, Screen, T } from '@/components/ui';
 import { t } from '@/lib/lang';
 import { returnAfterAuth } from '@/lib/navigation';
-import { errorMessage, supabase } from '@/lib/supabase';
+import { demo, errorMessage, supabase } from '@/lib/supabase';
 
 /**
  * Reset by emailed code rather than link, so it works the same in the app
@@ -72,6 +72,9 @@ export default function ForgotPassword() {
           email: sentTo,
         })}
       </T>
+      {demo ? (
+        <T variant="small">{t('This is the demo, so no email is sent. Use code {code}.', { code: demo.DEMO_RESET_CODE })}</T>
+      ) : null}
       <Field
         label={t('Code from the email')}
         value={code}
