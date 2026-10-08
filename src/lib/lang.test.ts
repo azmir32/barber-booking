@@ -63,6 +63,7 @@ const DYNAMIC_KEYS = [
   'Pick between 1 and 31 days.',
   'Pick days from today up to 60 days ahead.',
   'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.',
+  'You can only change an upcoming booking.',
   'Invalid login credentials',
   'User already registered',
   'Email not confirmed',

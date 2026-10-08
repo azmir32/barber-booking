@@ -15,7 +15,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Browse live barbershops and search by name or area
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
-- See upcoming and past bookings, cancel, WhatsApp the shop, book again
+- See upcoming and past bookings, move one to another time, cancel, WhatsApp the shop, book again
 
 **Barbers and shop owners**
 - Create a shop with a booking link (`/shop/your-shop`)
@@ -28,7 +28,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 
 **Rules enforced in the database**
 - A barber can never be double-booked (Postgres exclusion constraint)
-- Bookings are only created through `book_appointment` (customers) and `add_shop_booking` (owners), which re-check the slot is free and inside working hours
+- Bookings are only created through `book_appointment` (customers) and `add_shop_booking` (owners), and moved through `reschedule_booking`, which re-check the slot is free and inside working hours
 - Customers only see their own bookings; owners only see their own shop's bookings and customers
 - Shops are only visible while published and paid up or inside the free trial
 - Owners can't change their own trial or subscription status

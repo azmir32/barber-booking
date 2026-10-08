@@ -4,7 +4,7 @@ import { beforeEach, test } from 'node:test';
 
 import { createClient } from '@supabase/supabase-js';
 
-import { addDays, localDateString } from '../lib/time.ts';
+import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import { reloadTables, setClock, tables } from './db.ts';
 import {
   DEMO_ANON_KEY,
@@ -139,6 +139,101 @@ test('a customer books, sees and cancels, and the same time cannot be taken twic
   // After a cancel the time is free again.
   const retry = await ravi.rpc('book_appointment', { p_service_id: fade.id, p_starts_at: slot.starts_at });
   assert.equal(retry.error, null);
+});
+
+test('customers move their own booking to another free time, and so can the shop', async () => {
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const shop = await shopBySlug(hakim, 'gunting-pak-mat');
+  const { data: services } = await hakim.from('services').select('*').eq('shop_id', shop.id).order('sort_order');
+  const cut = services![0]; // 20 minutes
+  const { data: barbers } = await hakim.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const [mat, faizal] = barbers!;
+  // A day both barbers work: Faizal is off on Fridays.
+  let day = addDays(today(), 3);
+  if (new Date(`${day}T00:00:00Z`).getUTCDay() === 5) day = addDays(day, 1);
+  const at = (clock: string) => {
+    const [h, m] = clock.split(':').map(Number);
+    return new Date(dayBounds(day, TZ).start.getTime() + (h * 60 + m) * 60_000).toISOString();
+  };
+  const freeFor = async (c: ReturnType<typeof client>, ignore: string | null) =>
+    ((await c.rpc('available_slots', { p_service_id: cut.id, p_day: day, p_barber_id: mat.id, p_ignore_booking: ignore }))
+      .data as { starts_at: string }[]).map((s) => Date.parse(s.starts_at));
+
+  const booked = await hakim.rpc('book_appointment', {
+    p_service_id: cut.id,
+    p_starts_at: at('10:00'),
+    p_barber_id: mat.id,
+    p_note: 'Pendek sikit',
+  });
+  assert.equal(booked.error, null);
+  const id = booked.data.id;
+
+  // Its own time is free to Hakim when moving it, but stays taken for everyone else.
+  assert.ok(!(await freeFor(hakim, null)).includes(Date.parse(at('10:15'))));
+  assert.ok((await freeFor(hakim, id)).includes(Date.parse(at('10:15'))));
+  const ravi = await signedIn('ravi@demo.potongku.my');
+  assert.ok(!(await freeFor(ravi, id)).includes(Date.parse(at('10:15'))));
+
+  // 15 minutes later overlaps the old time, and keeps the barber, note and price.
+  const later = await hakim.rpc('reschedule_booking', { p_booking_id: id, p_starts_at: at('10:15') });
+  assert.equal(later.error, null);
+  assert.equal(later.data.id, id);
+  assert.equal(later.data.barber_id, mat.id);
+  assert.equal(Date.parse(later.data.starts_at), Date.parse(at('10:15')));
+  assert.equal(Date.parse(later.data.ends_at), Date.parse(at('10:35')));
+  assert.equal(later.data.customer_note, 'Pendek sikit');
+  assert.equal(later.data.price, 12);
+  assert.ok((await freeFor(hakim, null)).includes(Date.parse(at('09:45'))), 'the old time is free again');
+
+  // The shop adds a WhatsApp customer at 11:00 and blocks 12:00 for Pak Mat.
+  const owner = await signedIn('mat@demo.potongku.my');
+  const guest = await owner.rpc('add_shop_booking', {
+    p_barber_id: mat.id,
+    p_day: day,
+    p_time: '11:00',
+    p_service_id: cut.id,
+    p_guest_name: 'Pak Long',
+  });
+  assert.equal(guest.error, null);
+  const block = await owner.rpc('add_shop_booking', {
+    p_barber_id: mat.id,
+    p_day: day,
+    p_time: '12:00',
+    p_duration_min: 30,
+    p_is_block: true,
+  });
+  assert.equal(block.error, null);
+  const move = (c: ReturnType<typeof client>, args: Record<string, unknown>) =>
+    c.rpc('reschedule_booking', { p_booking_id: id, ...args });
+  for (const clock of ['11:00', '12:00']) {
+    const taken = await move(hakim, { p_starts_at: at(clock), p_barber_id: mat.id });
+    assert.equal(taken.error?.message, 'Sorry, that time was just taken. Please pick another.');
+  }
+  // With any barber, a time Pak Mat can't do goes to Faizal.
+  const other = await move(hakim, { p_starts_at: at('11:00') });
+  assert.equal(other.data.barber_id, faizal.id);
+
+  assert.equal((await move(ravi, { p_starts_at: at('09:00') })).error?.message, 'Booking not found.');
+  assert.equal((await move(client(), { p_starts_at: at('09:00') })).error?.code, '42501');
+
+  // The owner can move it, but not blocked time.
+  const back = await move(owner, { p_starts_at: at('10:00'), p_barber_id: mat.id });
+  assert.equal(back.error, null);
+  assert.equal(back.data.barber_id, mat.id);
+  const blockMove = await owner.rpc('reschedule_booking', { p_booking_id: block.data.id, p_starts_at: at('15:00') });
+  assert.equal(blockMove.error?.message, 'Booking not found.');
+
+  // Once it has started, or once cancelled, Hakim can't move it.
+  setClock(() => Date.parse(at('10:05')));
+  try {
+    const started = await move(hakim, { p_starts_at: at('15:00') });
+    assert.equal(started.error?.message, 'You can only change an upcoming booking.');
+  } finally {
+    setClock(() => Date.now());
+  }
+  await hakim.rpc('set_booking_status', { p_booking_id: id, p_status: 'cancelled' });
+  const cancelled = await move(hakim, { p_starts_at: at('15:00') });
+  assert.equal(cancelled.error?.message, 'You can only change an upcoming booking.');
 });
 
 test('one customer can hold at most four upcoming bookings at a shop', async () => {

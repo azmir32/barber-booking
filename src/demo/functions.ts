@@ -114,7 +114,21 @@ export function shopAreas() {
 
 // Booking ----------------------------------------------------------------------
 
-export function availableSlots(c: Caller, serviceId: unknown, dayArg: unknown, barberId: unknown = null) {
+const TAKEN = 'Sorry, that time was just taken. Please pick another.';
+
+/** How many bookings a barber has on a local day, so "any barber" shares work across chairs. */
+const busyThatDay = (day: string, tz: string) => (barberId: string) =>
+  tables().bookings.filter(
+    (bk) => bk.barber_id === barberId && bk.status !== 'cancelled' && localDateString(new Date(ms(bk.starts_at)), tz) === day,
+  ).length;
+
+export function availableSlots(
+  c: Caller,
+  serviceId: unknown,
+  dayArg: unknown,
+  barberId: unknown = null,
+  ignoreBooking: unknown = null,
+) {
   if (dayArg == null) return [];
   const day = parseDate(dayArg);
   const service = findById('services', serviceId);
@@ -123,6 +137,10 @@ export function availableSlots(c: Caller, serviceId: unknown, dayArg: unknown, b
   if (!(shopIsLive(shop) || (c.uid != null && shop.owner_id === c.uid))) return [];
   const tz = String(shop.time_zone);
   if (day > addDays(localDateString(new Date(now()), tz), BOOKING_HORIZON_DAYS)) return [];
+  // Only the caller's own booking, or one at their shop, can be left out.
+  const ignored = findById('bookings', ignoreBooking);
+  const ignoredId =
+    ignored && ((c.uid != null && ignored.customer_id === c.uid) || ownsShop(ignored.shop_id, c.uid)) ? ignored.id : null;
 
   const duration = Number(service.duration_min) * 60_000;
   const weekday = weekdayOf(day);
@@ -139,7 +157,7 @@ export function availableSlots(c: Caller, serviceId: unknown, dayArg: unknown, b
         if (seen.has(key)) continue;
         seen.add(key);
         if (at <= now()) continue;
-        if (tables().bookings.some((bk) => clash(bk, barber.id, at, at + duration))) continue;
+        if (tables().bookings.some((bk) => bk.id !== ignoredId && clash(bk, barber.id, at, at + duration))) continue;
         slots.push({ barber_id: String(barber.id), starts_at: new Date(at).toISOString(), at });
       }
     }
@@ -167,17 +185,14 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
     );
   }
   const tz = String(findById('shops', service.shop_id)!.time_zone);
-  if (startsAt == null) throw new PgError('P0001', 'Sorry, that time was just taken. Please pick another.', 400);
+  if (startsAt == null) throw new PgError('P0001', TAKEN, 400);
   const at = ms(toColumnValue('bookings', 'starts_at', startsAt));
   const day = localDateString(new Date(at), tz);
-  const busyThatDay = (id: string) =>
-    tables().bookings.filter(
-      (bk) => bk.barber_id === id && bk.status !== 'cancelled' && localDateString(new Date(ms(bk.starts_at)), tz) === day,
-    ).length;
+  const busy = busyThatDay(day, tz);
   const free = availableSlots(c, serviceId, day, barberId)
     .filter((s) => ms(s.starts_at) === at)
-    .sort((a, b) => busyThatDay(a.barber_id) - busyThatDay(b.barber_id) || (a.barber_id < b.barber_id ? -1 : 1));
-  if (free.length === 0) throw new PgError('P0001', 'Sorry, that time was just taken. Please pick another.', 400);
+    .sort((a, b) => busy(a.barber_id) - busy(b.barber_id) || (a.barber_id < b.barber_id ? -1 : 1));
+  if (free.length === 0) throw new PgError('P0001', TAKEN, 400);
 
   return guarded(
     () =>
@@ -192,7 +207,49 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
         ends_at: new Date(at + Number(service.duration_min) * 60_000).toISOString(),
         customer_note: trimmed(note),
       }),
-    'Sorry, that time was just taken. Please pick another.',
+    TAKEN,
+  );
+}
+
+export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unknown, barberId: unknown = null) {
+  const booking = findById('bookings', bookingId);
+  if (!booking || booking.is_block) throw new PgError('P0002', 'Booking not found.', 500);
+  if (ownsShop(booking.shop_id, c.uid)) {
+    if (booking.status !== 'confirmed') throw new PgError('42501', 'You can only change an upcoming booking.', 403);
+  } else if (c.uid != null && booking.customer_id === c.uid) {
+    if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
+      throw new PgError('42501', 'You can only change an upcoming booking.', 403);
+    }
+  } else {
+    throw new PgError('P0002', 'Booking not found.', 500);
+  }
+  const service = findById('services', booking.service_id);
+  if (!service || !service.is_active) throw new PgError('P0002', 'This service is no longer available.', 500);
+
+  const tz = String(findById('shops', booking.shop_id)!.time_zone);
+  if (startsAt == null) throw new PgError('P0001', TAKEN, 400);
+  const at = ms(toColumnValue('bookings', 'starts_at', startsAt));
+  const day = localDateString(new Date(at), tz);
+  const busy = busyThatDay(day, tz);
+  const stays = (id: string) => (id === booking.barber_id ? 0 : 1);
+  const free = availableSlots(c, service.id, day, barberId, booking.id)
+    .filter((s) => ms(s.starts_at) === at)
+    .sort(
+      (a, b) =>
+        stays(a.barber_id) - stays(b.barber_id) ||
+        busy(a.barber_id) - busy(b.barber_id) ||
+        (a.barber_id < b.barber_id ? -1 : 1),
+    );
+  if (free.length === 0) throw new PgError('P0001', TAKEN, 400);
+
+  return guarded(
+    () =>
+      updateRows('bookings', [booking], {
+        barber_id: free[0].barber_id,
+        starts_at: new Date(at).toISOString(),
+        ends_at: new Date(at + Number(service.duration_min) * 60_000).toISOString(),
+      })[0],
+    TAKEN,
   );
 }
 
@@ -442,6 +499,7 @@ export function deleteMyAccount(c: Caller) {
 const SIGNED_IN_ONLY = new Set([
   'book_appointment',
   'set_booking_status',
+  'reschedule_booking',
   'set_barber_hours',
   'add_shop_booking',
   'delete_my_account',
@@ -459,7 +517,10 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
     case 'shop_areas':
       return { status: 200, body: shopAreas() };
     case 'available_slots':
-      return { status: 200, body: availableSlots(c, args.p_service_id, args.p_day, args.p_barber_id ?? null) };
+      return {
+        status: 200,
+        body: availableSlots(c, args.p_service_id, args.p_day, args.p_barber_id ?? null, args.p_ignore_booking ?? null),
+      };
     case 'book_appointment':
       return {
         status: 200,
@@ -467,6 +528,11 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       };
     case 'set_booking_status':
       return { status: 200, body: setBookingStatus(c, args.p_booking_id, args.p_status) };
+    case 'reschedule_booking':
+      return {
+        status: 200,
+        body: rescheduleBooking(c, args.p_booking_id, args.p_starts_at, args.p_barber_id ?? null),
+      };
     case 'set_barber_hours':
       return { status: 200, body: setBarberHours(c, args.p_barber_id, args.p_hours) };
     case 'add_shop_booking':

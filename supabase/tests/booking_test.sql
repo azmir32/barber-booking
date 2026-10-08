@@ -453,6 +453,155 @@ reset role;
 delete from bookings where (starts_at at time zone 'Asia/Kuala_Lumpur')::date
   >= (now() at time zone 'Asia/Kuala_Lumpur')::date + 39;
 
+-- Moving a booking -----------------------------------------------------------
+-- Both barbers work 09:00-12:00 every day again. On day +5 Ali has an errand
+-- at 09:00 and a WhatsApp customer at 11:00.
+reset role;
+delete from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2';
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a2', d, '09:00', '12:00' from generate_series(0, 6) d;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$
+declare d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 5;
+begin
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '09:00', 30,
+    p_note => 'Errand', p_is_block => true);
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '11:00', null,
+    '00000000-0000-0000-0000-0000000000e1', 'Pak Abu');
+end $$;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 5;
+  ten timestamptz := (d + time '10:00') at time zone 'Asia/Kuala_Lumpur';
+  b bookings;
+  moved bookings;
+begin
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', ten, '00000000-0000-0000-0000-0000000000a1', 'keep the top long');
+
+  -- The booking's own time is free to the customer moving it, and to nobody else.
+  assert not exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d,
+          '00000000-0000-0000-0000-0000000000a1') where starts_at = ten + interval '15 minutes'),
+    'a booked time should not be free';
+  assert exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d,
+          '00000000-0000-0000-0000-0000000000a1', b.id) where starts_at = ten + interval '15 minutes'),
+    'leaving the booking out should free its own time';
+
+  -- 15 minutes later overlaps the old time, which must not count as taken.
+  moved := reschedule_booking(b.id, ten + interval '15 minutes');
+  assert moved.id = b.id, 'a move should change the booking, not make a new one';
+  assert moved.starts_at = ten + interval '15 minutes' and moved.ends_at = ten + interval '45 minutes',
+    'the booking should move and keep the service length';
+  assert moved.barber_id = '00000000-0000-0000-0000-0000000000a1', 'any barber should keep the same barber when free';
+  assert moved.customer_note = 'keep the top long' and moved.price = 25 and moved.service_name = 'Haircut'
+     and moved.status = 'confirmed', 'a move should keep the note, price and service';
+  assert (select count(*) from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
+          and status = 'confirmed' and starts_at > now()) = 1, 'a move should not add a booking';
+  assert exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d,
+          '00000000-0000-0000-0000-0000000000a1') where starts_at = ten - interval '15 minutes'),
+    'the old time should be free again';
+
+  -- Not onto someone else's booking or blocked time with the same barber.
+  begin
+    perform reschedule_booking(b.id, (d + time '11:00') at time zone 'Asia/Kuala_Lumpur', '00000000-0000-0000-0000-0000000000a1');
+    raise exception 'moving onto a booked time should fail';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Sorry, that time was just taken. Please pick another.', 'unexpected message: ' || sqlerrm;
+  end;
+  begin
+    perform reschedule_booking(b.id, (d + time '09:00') at time zone 'Asia/Kuala_Lumpur', '00000000-0000-0000-0000-0000000000a1');
+    raise exception 'moving onto blocked time should fail';
+  exception when sqlstate 'P0001' then null;
+  end;
+  begin
+    perform reschedule_booking(b.id, (d + time '12:00') at time zone 'Asia/Kuala_Lumpur');
+    raise exception 'moving past closing should fail';
+  exception when sqlstate 'P0001' then null;
+  end;
+
+  -- With any barber, a time the current barber can't do goes to a free one.
+  moved := reschedule_booking(b.id, (d + time '11:00') at time zone 'Asia/Kuala_Lumpur');
+  assert moved.barber_id = '00000000-0000-0000-0000-0000000000a2', 'any barber should fall back to a free barber';
+
+  -- A cancelled booking can't be moved.
+  begin
+    perform reschedule_booking((select id from bookings where status = 'cancelled'
+                                and customer_id = '00000000-0000-0000-0000-0000000000c1' limit 1),
+                               (d + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+    raise exception 'a cancelled booking should not move';
+  exception when sqlstate '42501' then
+    assert sqlerrm = 'You can only change an upcoming booking.', 'unexpected message: ' || sqlerrm;
+  end;
+end $$;
+
+-- Nobody else can move it.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$
+declare v_id uuid;
+begin
+  reset role;
+  select id into v_id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
+    and status = 'confirmed' and starts_at > now();
+  set role authenticated;
+  assert not exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1',
+          (now() at time zone 'Asia/Kuala_Lumpur')::date + 5, '00000000-0000-0000-0000-0000000000a2', v_id)
+          where starts_at = ((now() at time zone 'Asia/Kuala_Lumpur')::date + 5 + time '11:00') at time zone 'Asia/Kuala_Lumpur'),
+    'other people''s bookings should stay taken';
+  begin
+    perform reschedule_booking(v_id, ((now() at time zone 'Asia/Kuala_Lumpur')::date + 5 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+    raise exception 'customers should not move other people''s bookings';
+  exception when sqlstate 'P0002' then null;
+  end;
+end $$;
+
+-- The shop owner moves it back to Ali, but can't move blocked time.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 5;
+  v_id uuid;
+  moved bookings;
+begin
+  select id into v_id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
+    and status = 'confirmed' and starts_at > now();
+  moved := reschedule_booking(v_id, (d + time '10:00') at time zone 'Asia/Kuala_Lumpur', '00000000-0000-0000-0000-0000000000a1');
+  assert moved.barber_id = '00000000-0000-0000-0000-0000000000a1'
+     and moved.starts_at = (d + time '10:00') at time zone 'Asia/Kuala_Lumpur', 'the owner should move a booking';
+  begin
+    perform reschedule_booking((select id from bookings where is_block and status = 'confirmed' and starts_at > now() limit 1),
+                               (d + time '10:30') at time zone 'Asia/Kuala_Lumpur');
+    raise exception 'blocked time should not move';
+  exception when sqlstate 'P0002' then null;
+  end;
+end $$;
+
+-- Once its time has passed, the customer can't move it.
+reset role;
+update bookings set starts_at = now() - interval '2 days', ends_at = now() - interval '2 days' + interval '30 minutes'
+where customer_id = '00000000-0000-0000-0000-0000000000c1' and status = 'confirmed' and starts_at > now();
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+set role authenticated;
+do $$
+declare v_id uuid;
+begin
+  select id into v_id from bookings where status = 'confirmed' and starts_at < now() - interval '1 day';
+  begin
+    perform reschedule_booking(v_id, ((now() at time zone 'Asia/Kuala_Lumpur')::date + 5 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+    raise exception 'a past booking should not move';
+  exception when sqlstate '42501' then null;
+  end;
+end $$;
+
+reset role;
+set role anon;
+do $$ begin
+  perform reschedule_booking(gen_random_uuid(), now() + interval '1 day');
+  raise exception 'guests must not call reschedule_booking';
+exception when insufficient_privilege then null;
+end $$;
+
 -- Limits on what one customer can do ---------------------------------------
 reset role;
 delete from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2';

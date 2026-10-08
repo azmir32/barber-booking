@@ -16,14 +16,16 @@ import {
   formatPrice,
   formatTime,
   groupByPartOfDay,
+  localClock,
   localDateString,
+  partOfDay,
   upcomingDays,
   type PartOfDay,
 } from '@/lib/time';
 import { WEEKDAYS, type Barber, type Booking, type Service, type Shop, type Slot, type WorkingHours } from '@/lib/types';
 
 type BarberWithHours = Barber & { working_hours: Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>[] };
-type Step = 'barber' | 'time';
+type Step = 'move' | 'barber' | 'time';
 
 const DAYS_AHEAD = 14;
 
@@ -35,10 +37,15 @@ const orList = (names: string[]) =>
   names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} ${t('or')} ${names.at(-1)}`;
 
 export default function ShopPage() {
-  // `name` titles the header while the shop loads; "Book again" passes `service` and `barber`.
-  const params = useLocalSearchParams<{ slug: string; name?: string; service?: string; barber?: string }>();
+  // `name` titles the header while the shop loads; "Book again" passes `service` and `barber`,
+  // and "Change time" adds `move`, the booking to move.
+  const params = useLocalSearchParams<{ slug: string; name?: string; service?: string; barber?: string; move?: string }>();
   const { slug } = params;
-  const { session, profile } = useAuth();
+  const { session, profile, loading: authLoading } = useAuth();
+  // Signed out, a move link is just the booking page. The user only counts with a move
+  // link, so signing up to book on a normal page doesn't reload it.
+  const moveUser = params.move ? session?.user.id : undefined;
+  const waitForAuth = Boolean(params.move) && authLoading;
 
   const [shop, setShop] = useState<Shop | null>(null);
   const [services, setServices] = useState<Service[]>([]);
@@ -91,15 +98,20 @@ export default function ShopPage() {
   const [booking, setBooking] = useState(false);
   const [bookError, setBookError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<Booking | null>(null);
+  // Moving a booking: the booking as it was, whether the link can't be used, and the booking once moved.
+  const [moving, setMoving] = useState<Booking | null>(null);
+  const [moveMissing, setMoveMissing] = useState(false);
+  const [moved, setMoved] = useState<Booking | null>(null);
   // Set while a guest signs up to book; once they are back and signed in, the booking goes through.
   const pendingBook = useRef(false);
 
   const scrollRef = useRef<ScrollView>(null);
-  // Where the steps below the services start, and a step to scroll to once it is laid out.
+  // Where the steps below the services (or the booking being moved) start, and a step to scroll to once it is laid out.
   const stepY = useRef<Partial<Record<Step, number>>>({});
   const scrollAfterLayout = useRef<Step | null>(null);
 
   useEffect(() => {
+    if (waitForAuth) return;
     (async () => {
       setLoading(true);
       setLoadError(null);
@@ -109,7 +121,7 @@ export default function ShopPage() {
         setLoading(false);
         return;
       }
-      const [svc, brb] = await Promise.all([
+      const [svc, brb, mv] = await Promise.all([
         supabase.from('services').select('*').eq('shop_id', shopRow.id).eq('is_active', true).order('sort_order').order('name'),
         supabase
           .from('barbers')
@@ -118,10 +130,11 @@ export default function ShopPage() {
           .eq('is_active', true)
           .order('sort_order')
           .order('name'),
+        moveUser ? supabase.from('bookings').select('*').eq('id', params.move!).maybeSingle() : null,
       ]);
       // Without these the page would wrongly say the shop isn't taking bookings.
-      if (svc.error || brb.error) {
-        setLoadError(errorMessage(svc.error ?? brb.error));
+      if (svc.error || brb.error || mv?.error) {
+        setLoadError(errorMessage(svc.error ?? brb.error ?? mv?.error));
         setLoading(false);
         return;
       }
@@ -136,18 +149,41 @@ export default function ShopPage() {
         setServiceId(params.service!);
         scrollAfterLayout.current = 'time';
       }
+      // Change time: only the customer's own upcoming booking here, for a service the shop still offers.
+      const move = (mv?.data ?? null) as Booking | null;
+      const canMove = Boolean(
+        move &&
+          move.customer_id === moveUser &&
+          move.shop_id === shopRow.id &&
+          move.status === 'confirmed' &&
+          Date.parse(move.starts_at) > Date.now() &&
+          activeServices.some((s) => s.id === move.service_id),
+      );
+      setMoving(canMove ? move : null);
+      setMoveMissing(Boolean(moveUser) && !canMove);
+      if (canMove && move) {
+        setServiceId(move.service_id);
+        // Scroll to what is being changed, with the pickers right under it.
+        scrollAfterLayout.current = 'move';
+        // Open on the booking's own day and part of the day, so its time shows among the free ones.
+        const bookedDay = localDateString(new Date(move.starts_at), shopRow.time_zone);
+        if (upcomingDays(DAYS_AHEAD, shopRow.time_zone).some((d) => d.date === bookedDay)) setPickedDay(bookedDay);
+        setPart(partOfDay(Number(localClock(move.starts_at, shopRow.time_zone).slice(0, 2))));
+      }
       setLoading(false);
     })();
-  }, [slug, reload, params.service, params.barber]);
+  }, [slug, reload, params.service, params.barber, params.move, moveUser, waitForAuth]);
 
-  const slotsKey = serviceId && day ? `${serviceId}|${day}|${barberId ?? 'any'}|${slotsVersion}` : null;
+  const movingId = moving?.id ?? null;
+  const slotsKey = serviceId && day ? `${serviceId}|${day}|${barberId ?? 'any'}|${movingId}|${slotsVersion}` : null;
   const slotsLoading = slotsKey !== null && slotsKey !== slotsFor;
 
   useEffect(() => {
     if (!slotsKey || !serviceId || !day) return;
     let active = true;
     supabase
-      .rpc('available_slots', { p_service_id: serviceId, p_day: day, p_barber_id: barberId })
+      // When moving, the booking's own time doesn't count as taken, so it can move to a time next to it.
+      .rpc('available_slots', { p_service_id: serviceId, p_day: day, p_barber_id: barberId, p_ignore_booking: movingId })
       .then(({ data, error }) => {
         if (!active) return;
         setSlotsError(error ? errorMessage(error) : null);
@@ -158,7 +194,7 @@ export default function ShopPage() {
     return () => {
       active = false;
     };
-  }, [slotsKey, serviceId, day, barberId, checkToday, pickKey]);
+  }, [slotsKey, serviceId, day, barberId, movingId, checkToday, pickKey]);
 
   function scrollToStep(step: Step) {
     const y = stepY.current[step];
@@ -198,6 +234,16 @@ export default function ShopPage() {
 
   // With "any barber", several barbers can share a start time; show it once.
   const times = useMemo(() => [...new Set(slots.map((s) => s.starts_at))], [slots]);
+  // Moving: the booking's own time comes back free, since it is left out of the taken times.
+  // Picking it with the same barber would change nothing, so it shows as the current time instead.
+  const currentAt =
+    moving &&
+    (!barberId || barberId === moving.barber_id) &&
+    slots.some((s) => s.barber_id === moving.barber_id && Date.parse(s.starts_at) === Date.parse(moving.starts_at))
+      ? Date.parse(moving.starts_at)
+      : null;
+  const isCurrent = (time: string) => Date.parse(time) === currentAt;
+  const freeCount = times.filter((time) => !isCurrent(time)).length;
   const timeGroups = useMemo(() => groupByPartOfDay(times, shop?.time_zone), [times, shop?.time_zone]);
   // One part of the day at a time keeps the grid short. The customer's choice
   // sticks across days while that part still has free times.
@@ -240,13 +286,29 @@ export default function ShopPage() {
       p_note: note,
     });
     setBooking(false);
-    if (error) {
-      setBookError(errorMessage(error));
-      setStartsAt(null);
-      setSlotsVersion((v) => v + 1);
-      return;
-    }
+    if (error) return failed(error);
     setConfirmed(data as Booking);
+  }
+
+  async function move() {
+    if (!moving || !startsAt) return;
+    setBooking(true);
+    setBookError(null);
+    const { data, error } = await supabase.rpc('reschedule_booking', {
+      p_booking_id: moving.id,
+      p_starts_at: startsAt,
+      p_barber_id: barberId,
+    });
+    setBooking(false);
+    if (error) return failed(error);
+    setMoved(data as Booking);
+  }
+
+  // The time was most likely just taken, so drop it and fetch the free times again.
+  function failed(error: unknown) {
+    setBookError(errorMessage(error));
+    setStartsAt(null);
+    setSlotsVersion((v) => v + 1);
   }
 
   const bookAfterSignUp = useEffectEvent(() => {
@@ -298,18 +360,61 @@ export default function ShopPage() {
   }
 
   const tz = shop.time_zone;
+  const when = (at: string) => ({ day: formatDay(at, tz), time: formatTime(at, tz) });
+  const dayAndTime = (at: string) => `${formatDay(at, tz)}, ${formatTime(at, tz)}`;
+  /** "Haircut with Ali", or just "Haircut" if that barber is away now. */
+  const withBarber = (b: Booking) => {
+    const who = barbers.find((x) => x.id === b.barber_id)?.name;
+    return who ? t('{service} with {barber}', { service: b.service_name, barber: who }) : b.service_name;
+  };
+
+  if (moving && moved) {
+    const what = withBarber(moved);
+    // Tells the barber which booking moved, so they can find it in their day.
+    const message = profile?.full_name
+      ? t('Hi {shop}, this is {name}. I moved my {service} from {old} to {new}.', {
+          shop: shop.name,
+          name: profile.full_name,
+          service: moved.service_name,
+          old: dayAndTime(moving.starts_at),
+          new: dayAndTime(moved.starts_at),
+        })
+      : undefined;
+    return (
+      <Screen key="moved" edges={[]}>
+        {header}
+        <Empty title={t('Booking moved')} body={t('{service} on {day} at {time}.', { service: what, ...when(moved.starts_at) })}>
+          <T variant="muted" style={{ textAlign: 'center' }}>
+            {t('Was {day} at {time}.', when(moving.starts_at))}
+          </T>
+        </Empty>
+        <Card>
+          <T variant="label">{shop.name}</T>
+          {shop.address ? <T variant="muted">{shop.address}</T> : null}
+          {shop.phone ? (
+            <Button
+              title={t('WhatsApp shop')}
+              variant="secondary"
+              onPress={() => Linking.openURL(whatsappUrl(shop.phone!, message))}
+            />
+          ) : null}
+        </Card>
+        {/* Back to the bookings screen this came from, rather than a second copy on top of it. */}
+        <Button title={t('See my bookings')} onPress={() => router.dismissTo('/customer/bookings')} />
+      </Screen>
+    );
+  }
 
   if (confirmed) {
-    const who = barbers.find((b) => b.id === confirmed.barber_id)?.name;
-    const what = who ? t('{service} with {barber}', { service: confirmed.service_name, barber: who }) : confirmed.service_name;
-    const when = { day: formatDay(confirmed.starts_at, tz), time: formatTime(confirmed.starts_at, tz) };
+    const what = withBarber(confirmed);
+    const booked = when(confirmed.starts_at);
     // Tells the barber which booking the chat is about, so they don't have to ask.
     const message = profile?.full_name
       ? t('Hi {shop}, this is {name}. I booked {service} on {day} at {time}.', {
           shop: shop.name,
           name: profile.full_name,
           service: what,
-          ...when,
+          ...booked,
         })
       : undefined;
     const place = encodeURIComponent(`${shop.name}, ${shop.address || shop.area}`);
@@ -317,7 +422,7 @@ export default function ShopPage() {
       // A new key starts the booked page at the top instead of where the picker was scrolled.
       <Screen key="booked" edges={[]}>
         {header}
-        <Empty title={t('You’re booked!')} body={t('{service} on {day} at {time}.', { service: what, ...when })}>
+        <Empty title={t('You’re booked!')} body={t('{service} on {day} at {time}.', { service: what, ...booked })}>
           <T variant="label">
             {formatPrice(confirmed.price)} · {t('Pay at the shop.')}
           </T>
@@ -350,18 +455,39 @@ export default function ShopPage() {
     );
   }
 
+  if (moveMissing) {
+    return (
+      <Screen edges={[]}>
+        {header}
+        <Empty
+          title={t('This booking can’t be changed')}
+          body={t('It may have been cancelled or already started, or the shop no longer offers this service.')}>
+          <Button title={t('See my bookings')} onPress={() => router.dismissTo('/customer/bookings')} />
+        </Empty>
+      </Screen>
+    );
+  }
+
   // Stays at the bottom so Confirm is never buried under the time chips.
   const footer =
     service && startsAt ? (
       <>
         <T variant="label" numberOfLines={2}>
-          {formatDay(startsAt, tz)}, {formatTime(startsAt, tz)} · {serviceWith(service.name)} · {formatPrice(service.price)}
+          {dayAndTime(startsAt)} · {serviceWith(service.name)} · {formatPrice(moving ? moving.price : service.price)}
         </T>
-        <Button title={session ? t('Confirm booking') : t('Continue to book')} onPress={book} loading={booking} />
+        {moving ? (
+          <Button title={t('Move to this time')} onPress={move} loading={booking} />
+        ) : (
+          <Button title={session ? t('Confirm booking') : t('Continue to book')} onPress={book} loading={booking} />
+        )}
       </>
     ) : bookError ? (
       <ErrorText message={bookError} />
     ) : null;
+  // A move skips the service step, so the steps after it come up one.
+  const timeTitle = moving
+    ? barbers.length > 1 ? t('2. Pick a new time') : t('1. Pick a new time')
+    : barbers.length > 1 ? t('3. Pick a time') : t('2. Pick a time');
 
   return (
     <Screen edges={[]} scrollRef={scrollRef} footer={footer}>
@@ -388,23 +514,36 @@ export default function ShopPage() {
         <Empty title={t('Not taking online bookings yet')} body={t('Message the shop to book for now.')} />
       ) : (
         <>
-          <Section title={t('1. Pick a service')}>
-            {services.map((s) => (
-              <Card key={s.id} role="radio" selected={s.id === serviceId} onPress={() => pickService(s.id)}>
-                <Row style={{ justifyContent: 'space-between' }}>
-                  <T variant="label">{s.name}</T>
-                  <T variant="label">{formatPrice(s.price)}</T>
-                </Row>
-                <T variant="small">{formatDuration(s.duration_min)}</T>
+          {moving ? (
+            // A move keeps the service, so it is a summary here rather than a choice.
+            <View onLayout={(e) => onStepLayout('move', e)}>
+              <Card>
+                <T variant="heading">{t('Changing your booking')}</T>
+                <T>
+                  {withBarber(moving)} · {dayAndTime(moving.starts_at)}
+                </T>
+                <T variant="small">{t('Your booking stays as it is until you move it.')}</T>
               </Card>
-            ))}
-          </Section>
+            </View>
+          ) : (
+            <Section title={t('1. Pick a service')}>
+              {services.map((s) => (
+                <Card key={s.id} role="radio" selected={s.id === serviceId} onPress={() => pickService(s.id)}>
+                  <Row style={{ justifyContent: 'space-between' }}>
+                    <T variant="label">{s.name}</T>
+                    <T variant="label">{formatPrice(s.price)}</T>
+                  </Row>
+                  <T variant="small">{formatDuration(s.duration_min)}</T>
+                </Card>
+              ))}
+            </Section>
+          )}
 
           {serviceId ? (
             <>
               {barbers.length > 1 ? (
                 <View onLayout={(e) => onStepLayout('barber', e)}>
-                  <Section title={t('2. Pick a barber')}>
+                  <Section title={moving ? t('1. Pick a barber') : t('2. Pick a barber')}>
                     <Row role="radiogroup" accessibilityLabel={t('Barber')}>
                       <Chip label={t('Any barber')} selected={barberId === null} onPress={() => pickBarber(null)} />
                       {barbers.map((b) => (
@@ -416,7 +555,7 @@ export default function ShopPage() {
               ) : null}
 
               <View onLayout={(e) => onStepLayout('time', e)}>
-                <Section title={barbers.length > 1 ? t('3. Pick a time') : t('2. Pick a time')}>
+                <Section title={timeTitle}>
                   <DayPicker
                     days={days}
                     selected={day}
@@ -434,7 +573,7 @@ export default function ShopPage() {
                       <ErrorText message={`${t('Couldn’t load free times.')} ${slotsError}`} />
                       <Button title={t('Try again')} variant="secondary" onPress={() => setSlotsVersion((v) => v + 1)} />
                     </>
-                  ) : times.length === 0 ? (
+                  ) : freeCount === 0 ? (
                     <>
                       <T variant="muted">
                         {barberId
@@ -456,21 +595,30 @@ export default function ShopPage() {
                           <Chip
                             key={p}
                             label={t(p)}
-                            sublabel={t('{count} free', { count: list.length })}
+                            sublabel={t('{count} free', { count: list.filter((time) => !isCurrent(time)).length })}
                             selected={p === shownPart}
                             onPress={() => setPart(p)}
                           />
                         ))}
                       </Row>
                       <Row role="radiogroup" accessibilityLabel={t('Free times')}>
-                        {shownTimes.map((time) => (
-                          <Chip
-                            key={time}
-                            label={formatTime(time, tz)}
-                            selected={startsAt === time}
-                            onPress={() => pickTime(time)}
-                          />
-                        ))}
+                        {shownTimes.map((time) => {
+                          // The booking's own time stays in view, so the customer sees where it sits.
+                          const current = isCurrent(time);
+                          return (
+                            <Chip
+                              key={time}
+                              label={formatTime(time, tz)}
+                              sublabel={current ? t('Your time') : undefined}
+                              accessibilityLabel={
+                                current ? t('{time}, your current time', { time: formatTime(time, tz) }) : undefined
+                              }
+                              selected={startsAt === time}
+                              disabled={current}
+                              onPress={() => pickTime(time)}
+                            />
+                          );
+                        })}
                       </Row>
                     </>
                   )}
@@ -479,7 +627,7 @@ export default function ShopPage() {
             </>
           ) : null}
 
-          {service && startsAt ? (
+          {service && startsAt && !moving ? (
             <Card>
               <T variant="heading">
                 {formatDay(startsAt, tz)}, {formatTime(startsAt, tz)}

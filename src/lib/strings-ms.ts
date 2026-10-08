@@ -488,4 +488,22 @@ export const ms: Record<string, string> = {
   'Links you already shared, in your Instagram bio, WhatsApp status or posters, will stop working.':
     'Pautan yang anda sudah kongsi di bio Instagram, status WhatsApp atau poster tidak akan berfungsi lagi.',
   'Change link': 'Tukar pautan',
+
+  // Customer: moving a booking to another time (customer/bookings.tsx, shop/[slug].tsx)
+  'Changing your booking': 'Tukar masa tempahan anda',
+  'Your booking stays as it is until you move it.': 'Tempahan anda kekal seperti sekarang sehingga anda tukar masanya.',
+  '1. Pick a barber': '1. Pilih barber',
+  '1. Pick a new time': '1. Pilih masa baharu',
+  '2. Pick a new time': '2. Pilih masa baharu',
+  'Your time': 'Masa anda',
+  '{time}, your current time': '{time}, masa tempahan anda sekarang',
+  'Move to this time': 'Tukar ke masa ini',
+  'Booking moved': 'Masa tempahan sudah ditukar',
+  'Was {day} at {time}.': 'Sebelum ini {day} jam {time}.',
+  'Hi {shop}, this is {name}. I moved my {service} from {old} to {new}.':
+    'Hai {shop}, saya {name}. Saya dah tukar masa {service} saya dari {old} ke {new}.',
+  'This booking can’t be changed': 'Tempahan ini tidak boleh ditukar',
+  'It may have been cancelled or already started, or the shop no longer offers this service.':
+    'Mungkin tempahan ini sudah dibatalkan atau sudah bermula, atau kedai tidak lagi menawarkan servis ini.',
+  'You can only change an upcoming booking.': 'Anda hanya boleh menukar tempahan yang akan datang.',
 };
