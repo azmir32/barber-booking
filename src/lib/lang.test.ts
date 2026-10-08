@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { formatClock, summarizeWeek } from './hours.ts';
+import { formatClock, openStatus, summarizeWeek } from './hours.ts';
 import { setCurrentLang, t } from './lang.ts';
 import { ms } from './strings-ms.ts';
 import { formatDay, formatDuration, formatTime, groupByPartOfDay, upcomingDays } from './time.ts';
@@ -105,6 +105,10 @@ test('dates, times and hours read naturally in Malay', () => {
     assert.equal(formatTime('2026-10-06T01:15:00Z', 'Asia/Kuala_Lumpur'), '9.15 pagi');
     const week = [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens_at: '10:00', closes_at: '20:00' }));
     assert.equal(summarizeWeek(week), 'Isn–Sab · 10.00 pagi–8.00 malam');
+    const at = (clock: string) => new Date(`2026-10-06T${clock}:00+08:00`);
+    assert.equal(openStatus('10:00:00', '20:00:00', at('08:30')).label, 'Buka jam 10.00 pagi');
+    assert.equal(openStatus('10:00:00', '20:00:00', at('15:00')).label, 'Buka sekarang · hingga 8.00 malam');
+    assert.equal(openStatus(null, null, at('15:00')).label, 'Tutup hari ini');
     const slots = ['2026-10-06T03:00:00Z', '2026-10-06T05:00:00Z', '2026-10-06T07:00:00Z', '2026-10-06T12:00:00Z'];
     assert.deepEqual(
       groupByPartOfDay(slots, 'Asia/Kuala_Lumpur').map(([part, [at]]) => `${t(part)}: ${formatTime(at, 'Asia/Kuala_Lumpur')}`),

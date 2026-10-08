@@ -12,7 +12,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - English or Bahasa Melayu: follows the phone's language, with a switch on the welcome screen and under Account
 
 **Customers**
-- Browse live barbershops and search by name or area
+- Browse live barbershops, see which are open now, and search by name or area
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
 - See upcoming and past bookings, cancel, WhatsApp the shop, book again
@@ -23,7 +23,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Barbers (one per chair) with weekly working hours and an optional daily break (e.g. Friday prayers); a solo barber is a shop with one chair
 - Bookings by day with expected takings, refreshed every minute and by pulling down; mark done or no-show once the time has started, cancel, WhatsApp the customer
 - Add walk-in, WhatsApp or phone bookings, and block time or a whole day off, so online customers can't take those times
-- Go live / pause, share or copy the booking link
+- Go live / pause, share or copy the booking link; while paused, the link asks customers to WhatsApp the shop
 - One-month free trial on every new shop
 
 **Rules enforced in the database**
@@ -119,7 +119,7 @@ That is far more than a pre-Raya peak needs: if all 100,000 customers booked wit
 
 - A shop's free trial ends 30 days after it is created (`shops.trial_ends_at`).
 - When a barber pays, set `subscription_status = 'active'` on their shop in the Supabase table editor.
-- When a trial ends without payment, the shop disappears from search and its link stops taking bookings.
+- When a trial ends without payment, the shop disappears from search and its link stops taking bookings (it tells customers to WhatsApp the shop instead).
 
 ## Translations
 

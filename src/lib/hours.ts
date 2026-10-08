@@ -1,7 +1,7 @@
 // Working-hours helpers shared by the barber and customer screens.
 
 import { t } from './lang.ts';
-import { clockLabel, normalizeTime } from './time.ts';
+import { clockLabel, DEFAULT_TIME_ZONE, localClock, normalizeTime } from './time.ts';
 import { WEEKDAYS, type WorkingHours } from './types.ts';
 
 type Range = Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>;
@@ -27,6 +27,28 @@ export function shopWeek(hours: Range[]): ({ opens: string; closes: string } | n
     const closes = day.map((h) => h.closes_at.slice(0, 5)).sort().at(-1)!;
     return { opens, closes };
   });
+}
+
+export type OpenStatus = { state: 'open' | 'later' | 'closed'; label: string };
+
+/**
+ * Whether a shop is open right now, from today's first opening and last
+ * closing time in its zone ("10:00" or "10:00:00", null when nobody works
+ * today): "Opens 10:00 am", "Open now · until 8:00 pm" or "Closed today".
+ * Breaks don't count, so a shop on its lunch break still reads as open.
+ */
+export function openStatus(
+  opensToday: string | null,
+  closesToday: string | null,
+  now: Date | number = new Date(),
+  timeZone = DEFAULT_TIME_ZONE,
+): OpenStatus {
+  const clock = localClock(new Date(now), timeZone);
+  const opens = opensToday?.slice(0, 5);
+  const closes = closesToday?.slice(0, 5);
+  if (!opens || !closes || clock >= closes) return { state: 'closed', label: t('Closed today') };
+  if (clock < opens) return { state: 'later', label: t('Opens {time}', { time: formatClock(opens) }) };
+  return { state: 'open', label: t('Open now · until {time}', { time: formatClock(closes) }) };
 }
 
 /** "10:00 am–8:00 pm". */

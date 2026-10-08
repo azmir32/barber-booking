@@ -82,6 +82,12 @@ export function findShops(args: Record<string, unknown>) {
       const prices = tables()
         .services.filter((v) => v.shop_id === s.id && v.is_active)
         .map((v) => Number(v.price));
+      const barbers = tables().barbers.filter((b) => b.shop_id === s.id && b.is_active);
+      // Today's hours by the shop's clock, from the first barber in to the last one out.
+      const weekday = weekdayOf(localDateString(new Date(now()), String(s.time_zone)));
+      const today = tables().working_hours.filter(
+        (wh) => wh.weekday === weekday && barbers.some((b) => b.id === wh.barber_id),
+      );
       return {
         id: s.id,
         name: s.name,
@@ -90,9 +96,18 @@ export function findShops(args: Record<string, unknown>) {
         address: s.address,
         about: s.about,
         from_price: prices.length ? Math.min(...prices) : null,
-        barber_count: tables().barbers.filter((b) => b.shop_id === s.id && b.is_active).length,
+        barber_count: barbers.length,
+        opens_today: today.length ? today.map((wh) => String(wh.opens_at)).sort()[0] : null,
+        closes_today: today.length ? today.map((wh) => String(wh.closes_at)).sort().at(-1) : null,
       };
     });
+}
+
+/** A booking link's shop even when it is hidden, so the page can say it isn't live. */
+export function shopPublicStatus(slug: unknown) {
+  return tables()
+    .shops.filter((s) => slug != null && s.slug === String(slug))
+    .map((s) => ({ name: s.name, phone: s.phone, is_live: shopIsLive(s) }));
 }
 
 export function shopAreas() {
@@ -356,6 +371,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: findShops(args) };
     case 'shop_areas':
       return { status: 200, body: shopAreas() };
+    case 'shop_public_status':
+      return { status: 200, body: shopPublicStatus(args.p_slug) };
     case 'available_slots':
       return { status: 200, body: availableSlots(c, args.p_service_id, args.p_day, args.p_barber_id ?? null) };
     case 'book_appointment':

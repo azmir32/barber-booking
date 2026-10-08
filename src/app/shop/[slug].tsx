@@ -5,11 +5,13 @@ import { Linking, View, type LayoutChangeEvent, type ScrollView } from 'react-na
 import { DayPicker } from '@/components/day-picker';
 import { Button, Card, Chip, Empty, ErrorText, Field, Loading, Row, Screen, Section, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { useNow } from '@/hooks/use-now';
+import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import { t } from '@/lib/lang';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
-import { formatClock, shopWeek, WEEK_ORDER } from '@/lib/hours';
+import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
 import {
   formatDay,
   formatDuration,
@@ -24,6 +26,8 @@ import { WEEKDAYS, type Barber, type Booking, type Service, type Shop, type Slot
 
 type BarberWithHours = Barber & { working_hours: Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>[] };
 type Step = 'barber' | 'time';
+/** A shop that exists but is hidden from customers (paused, or its trial ended). */
+type HiddenShop = { name: string; phone: string | null; is_live: boolean };
 
 const DAYS_AHEAD = 14;
 
@@ -39,8 +43,11 @@ export default function ShopPage() {
   const params = useLocalSearchParams<{ slug: string; name?: string; service?: string; barber?: string }>();
   const { slug } = params;
   const { session, profile } = useAuth();
+  const theme = useTheme();
+  const now = useNow();
 
   const [shop, setShop] = useState<Shop | null>(null);
+  const [hidden, setHidden] = useState<HiddenShop | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
   const [loading, setLoading] = useState(true);
@@ -92,9 +99,20 @@ export default function ShopPage() {
     (async () => {
       setLoading(true);
       setLoadError(null);
+      setHidden(null);
       const { data: shopRow, error } = await supabase.from('shops').select('*').eq('slug', slug).maybeSingle();
-      if (error || !shopRow) {
-        setLoadError(error ? errorMessage(error) : null);
+      if (error) {
+        setLoadError(errorMessage(error));
+        setLoading(false);
+        return;
+      }
+      if (!shopRow) {
+        // Customers can't read a paused shop, but its link may still be on a poster
+        // or in an Instagram bio, so find out whose it is to say more than "not found".
+        const status = await supabase.rpc('shop_public_status', { p_slug: slug });
+        const row = ((status.data ?? []) as HiddenShop[])[0];
+        setLoadError(status.error ? errorMessage(status.error) : null);
+        setHidden(row && !row.is_live ? row : null);
         setLoading(false);
         return;
       }
@@ -193,6 +211,7 @@ export default function ShopPage() {
   const [shownPart, shownTimes] = timeGroups.find(([p]) => p === part) ?? timeGroups[0] ?? [null, []];
   const nextOpen = day ? days.find((d) => d.date > day && !closedDays.has(d.date)) : undefined;
   const week = useMemo(() => shopWeek(barbers.flatMap((b) => b.working_hours ?? [])), [barbers]);
+  const todayWeekday = new Date(`${localDateString(new Date(now), shop?.time_zone)}T00:00:00Z`).getUTCDay();
   const service = services.find((s) => s.id === serviceId);
   // Who can take the picked time. With "any barber" the booking goes to one of them, so say so up front.
   const freeNames = barbers
@@ -273,13 +292,38 @@ export default function ShopPage() {
       </Screen>
     );
   }
+  if (hidden) {
+    const phone = hidden.phone;
+    return (
+      <Screen edges={[]}>
+        <Stack.Screen options={{ title: hidden.name }} />
+        <Empty
+          title={t('{shop} isn’t taking online bookings right now', { shop: hidden.name })}
+          body={
+            phone
+              ? t('Message them on WhatsApp to book, or find another barber.')
+              : t('Check back later, or find another barber.')
+          }>
+          {phone ? (
+            <Button
+              title={t('WhatsApp {name}', { name: hidden.name })}
+              onPress={() => Linking.openURL(whatsappUrl(phone))}
+            />
+          ) : null}
+          <Button
+            title={t('Find another barber')}
+            variant={phone ? 'secondary' : 'primary'}
+            onPress={() => router.replace('/customer')}
+          />
+        </Empty>
+      </Screen>
+    );
+  }
   if (!shop) {
     return (
       <Screen edges={[]}>
         <Stack.Screen options={{ title: t('Shop not found') }} />
-        <Empty
-          title={t('Shop not found')}
-          body={t('This booking link may be wrong, or the shop isn’t taking bookings right now.')}>
+        <Empty title={t('Shop not found')} body={t('This booking link may be wrong. Check it with the shop.')}>
           <Button title={t('Find another barber')} onPress={() => router.replace('/customer')} />
         </Empty>
       </Screen>
@@ -287,6 +331,7 @@ export default function ShopPage() {
   }
 
   const tz = shop.time_zone;
+  const openNow = openStatus(week[todayWeekday]?.opens ?? null, week[todayWeekday]?.closes ?? null, now, tz);
 
   if (confirmed) {
     const who = barbers.find((b) => b.id === confirmed.barber_id)?.name;
@@ -358,6 +403,11 @@ export default function ShopPage() {
       <View style={{ gap: Spacing.xs }}>
         <T variant="title">{shop.name}</T>
         <T variant="muted">{shop.address || shop.area}</T>
+        {week.some(Boolean) ? (
+          <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
+            {openNow.label}
+          </T>
+        ) : null}
         {shop.about ? <T>{shop.about}</T> : null}
         <Row>
           {shop.phone ? (
@@ -494,7 +544,7 @@ export default function ShopPage() {
           <T variant="label">{t('Opening hours')}</T>
           {WEEK_ORDER.map((weekday) => {
             const d = week[weekday];
-            const isToday = weekday === new Date(`${localDateString(new Date(), tz)}T00:00:00Z`).getUTCDay();
+            const isToday = weekday === todayWeekday;
             return (
               <Row key={weekday} style={{ justifyContent: 'space-between' }}>
                 <T variant={isToday ? 'label' : 'muted'}>{t(WEEKDAYS[weekday])}</T>

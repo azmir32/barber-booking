@@ -20,8 +20,8 @@ end $$;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 set role authenticated;
 
-insert into shops (owner_id, name, slug)
-values ('00000000-0000-0000-0000-0000000000b1', 'Ali Cuts', 'ali-cuts');
+insert into shops (owner_id, name, slug, phone)
+values ('00000000-0000-0000-0000-0000000000b1', 'Ali Cuts', 'ali-cuts', '012-345 6789');
 
 -- Billing fields can't be chosen at sign-up either.
 do $$ begin
@@ -63,7 +63,17 @@ do $$ begin
   assert (select count(*) from available_slots('00000000-0000-0000-0000-0000000000e1',
           (now() at time zone 'Asia/Kuala_Lumpur')::date + 1)) = 0,
     'unpublished shop should have no slots';
+  -- Its link still says whose shop it is, so customers can message them.
+  assert (select name = 'Ali Cuts' and phone = '012-345 6789' and not is_live
+          from shop_public_status('ali-cuts')), 'a hidden shop''s link should say it is not live';
+  assert (select count(*) from shop_public_status('no-such-shop')) = 0, 'an unknown link should find nothing';
 end $$;
+
+set role anon;
+do $$ begin
+  assert (select not is_live from shop_public_status('ali-cuts')), 'guests should be able to check a link';
+end $$;
+set role authenticated;
 
 do $$ begin
   insert into shops (owner_id, name, slug) values ('00000000-0000-0000-0000-0000000000c1', 'Nope', 'nope');
@@ -85,6 +95,8 @@ declare
 begin
   assert (select count(*) from shops) = 1, 'published shop should be visible';
   assert (select from_price = 25 and barber_count = 2 from find_shops()), 'listing should show price and chairs';
+  assert (select opens_today = '09:00' and closes_today = '12:00' from find_shops()), 'listing should show today''s hours';
+  assert (select is_live from shop_public_status('ali-cuts')), 'a live shop''s link should say so';
   assert (select count(*) from find_shops(' ALI ')) = 1, 'search should ignore case and spaces';
   assert (select count(*) from find_shops('kajang')) = 1, 'search should look at the area';
   assert (select count(*) from find_shops('%')) = 0, 'search text is not a pattern';
@@ -130,6 +142,37 @@ begin
   exception when sqlstate 'P0001' then null;
   end;
 end $$;
+
+-- Today's hours on the shop list run from the first barber in to the last
+-- one out, by the shop's own clock, and leave out barbers who are away.
+begin;
+reset role;
+do $$
+declare
+  today int := extract(dow from now() at time zone 'Asia/Kuala_Lumpur')::int;
+begin
+  delete from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2' and weekday = today;
+  insert into working_hours (barber_id, weekday, opens_at, closes_at) values
+    ('00000000-0000-0000-0000-0000000000a2', today, '10:00', '13:00'),
+    ('00000000-0000-0000-0000-0000000000a2', today, '14:00', '19:30');
+  assert (select opens_today = '09:00' and closes_today = '19:30' from find_shops()),
+    'today''s hours should span every barber, across breaks';
+  update barbers set is_active = false where id = '00000000-0000-0000-0000-0000000000a2';
+  assert (select opens_today = '09:00' and closes_today = '12:00' from find_shops()),
+    'barbers who are away should not count';
+
+  -- Kiritimati and Pago Pago are 25 hours apart, so never on the same day.
+  delete from working_hours;
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  values ('00000000-0000-0000-0000-0000000000a1',
+          extract(dow from now() at time zone 'Pacific/Kiritimati')::int, '09:00', '12:00');
+  update shops set time_zone = 'Pacific/Kiritimati';
+  assert (select opens_today = '09:00' from find_shops()), 'today should be the shop''s own day';
+  update shops set time_zone = 'Pacific/Pago_Pago';
+  assert (select opens_today is null and closes_today is null from find_shops()),
+    'a day nobody works should have no hours';
+end $$;
+rollback;
 
 -- Customers can't write bookings directly or see other people's -----------
 do $$ begin
@@ -255,6 +298,8 @@ set role authenticated;
 do $$ begin
   assert (select count(*) from shops) = 0, 'shop with expired trial should be hidden';
   assert (select count(*) from find_shops()) = 0, 'shop with expired trial should not be listed';
+  assert (select name = 'Ali Cuts' and not is_live from shop_public_status('ali-cuts')),
+    'an expired trial''s link should say the shop is not live';
 end $$;
 reset role;
 update shops set subscription_status = 'active';

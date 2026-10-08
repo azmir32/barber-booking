@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { dayPlanFrom, formatClock, rangesFromPlan, shopWeek, summarizeWeek } from './hours.ts';
+import { dayPlanFrom, formatClock, openStatus, rangesFromPlan, shopWeek, summarizeWeek } from './hours.ts';
 
 const range = (weekday: number, opens_at: string, closes_at: string) => ({ weekday, opens_at, closes_at });
 
@@ -32,6 +32,22 @@ test('shopWeek spans all barbers per day', () => {
   assert.deepEqual(week[1], { opens: '09:30', closes: '20:00' });
   assert.deepEqual(week[2], { opens: '11:00', closes: '15:00' });
   assert.equal(week[0], null);
+});
+
+test('openStatus reads the shop\'s own clock', () => {
+  // Tue 6 Oct in Kajang (UTC+8), at the given local time.
+  const at = (clock: string) => new Date(`2026-10-06T${clock}:00+08:00`);
+  const status = (clock: string, opens: string | null = '10:00:00', closes: string | null = '20:00:00') =>
+    openStatus(opens, closes, at(clock), 'Asia/Kuala_Lumpur');
+  assert.deepEqual(status('09:59'), { state: 'later', label: 'Opens 10:00 am' });
+  assert.deepEqual(status('10:00'), { state: 'open', label: 'Open now · until 8:00 pm' });
+  assert.deepEqual(status('19:59'), { state: 'open', label: 'Open now · until 8:00 pm' });
+  assert.deepEqual(status('20:00'), { state: 'closed', label: 'Closed today' });
+  assert.deepEqual(status('12:00', null, null), { state: 'closed', label: 'Closed today' });
+  assert.equal(status('21:00', '09:30', '21:15').label, 'Open now · until 9:15 pm');
+  // 1 am in Kajang is still the evening before in London.
+  assert.equal(openStatus('10:00', '20:00', at('01:00'), 'Europe/London').label, 'Open now · until 8:00 pm');
+  assert.equal(openStatus('10:00', '20:00', at('01:00').getTime()).label, 'Opens 10:00 am');
 });
 
 test('summarizeWeek shows breaks', () => {

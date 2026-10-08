@@ -6,7 +6,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Button, Card, Chip, Empty, Field, Row, T } from '@/components/ui';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
+import { openStatus } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice } from '@/lib/time';
@@ -15,6 +17,9 @@ import type { Shop } from '@/lib/types';
 type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'about'> & {
   from_price: number | null;
   barber_count: number;
+  /** Today's first opening and last closing time, e.g. "10:00:00"; null when nobody works today. */
+  opens_today: string | null;
+  closes_today: string | null;
 };
 type Area = { area: string; shops: number };
 
@@ -25,6 +30,8 @@ const AREA_KEY = 'potongku.area';
 
 export default function Explore() {
   const theme = useTheme();
+  // Keeps "Open now" right while the list stays on screen.
+  const now = useNow();
   const [shops, setShops] = useState<ShopListing[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [areas, setAreas] = useState<Area[]>([]);
@@ -181,30 +188,37 @@ export default function Explore() {
             <Empty title={t('No barbers yet')} body={t('Barbers in your area are joining soon. Check back shortly.')} />
           )
         ) : null}
-        {shops.map((shop) => (
-          <Card
-            key={shop.id}
-            role="link"
-            onPress={() => router.push({ pathname: '/shop/[slug]', params: { slug: shop.slug, name: shop.name } })}>
-            <T variant="heading">{shop.name}</T>
-            <T variant="muted">{shop.address || shop.area}</T>
-            {shop.about ? (
-              <T numberOfLines={2} variant="small">
-                {shop.about}
-              </T>
-            ) : null}
-            <Row>
-              {shop.from_price != null ? (
-                <T variant="label">{t('From {price}', { price: formatPrice(Number(shop.from_price)) })}</T>
-              ) : null}
-              {shop.barber_count ? (
-                <T variant="small">
-                  {shop.barber_count === 1 ? t('1 barber') : t('{count} barbers', { count: shop.barber_count })}
+        {shops.map((shop) => {
+          // The list doesn't send each shop's zone: every shop is in Malaysia, on Kuala Lumpur time.
+          const openNow = openStatus(shop.opens_today, shop.closes_today, now);
+          return (
+            <Card
+              key={shop.id}
+              role="link"
+              onPress={() => router.push({ pathname: '/shop/[slug]', params: { slug: shop.slug, name: shop.name } })}>
+              <T variant="heading">{shop.name}</T>
+              <T variant="muted">{shop.address || shop.area}</T>
+              {shop.about ? (
+                <T numberOfLines={2} variant="small">
+                  {shop.about}
                 </T>
               ) : null}
-            </Row>
-          </Card>
-        ))}
+              <Row>
+                {shop.from_price != null ? (
+                  <T variant="label">{t('From {price}', { price: formatPrice(Number(shop.from_price)) })}</T>
+                ) : null}
+                {shop.barber_count ? (
+                  <T variant="small">
+                    {shop.barber_count === 1 ? t('1 barber') : t('{count} barbers', { count: shop.barber_count })}
+                  </T>
+                ) : null}
+              </Row>
+              <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
+                {openNow.label}
+              </T>
+            </Card>
+          );
+        })}
         {hasMore && !error ? (
           <Button title={t('Show more barbers')} variant="secondary" loading={loadingMore} onPress={loadMore} />
         ) : null}

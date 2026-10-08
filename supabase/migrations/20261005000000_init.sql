@@ -256,9 +256,11 @@ revoke insert, update, delete on public.bookings from anon, authenticated;
 -- Finding a barber ----------------------------------------------------------
 
 -- The customer's shop list: live shops whose name, area or address contains
--- the search, a page at a time, with each shop's lowest price and number of
--- chairs. Sending every shop with all its services and barbers came to
--- 570 KB for 1,000 shops (e2e/load).
+-- the search, a page at a time, with each shop's lowest price, number of
+-- chairs and today's hours (first barber in to last one out, in the shop's
+-- time zone; breaks and blocked time are not counted, and both are null
+-- when nobody works today). Sending every shop with all its services and
+-- barbers came to 570 KB for 1,000 shops (e2e/load).
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
@@ -273,26 +275,58 @@ returns table (
   address text,
   about text,
   from_price numeric,
-  barber_count int
+  barber_count int,
+  opens_today time,
+  closes_today time
 )
 language sql
 stable
 security definer
 set search_path = public
 as $$
-  select s.id, s.name, s.slug, s.area, s.address, s.about,
-         (select min(v.price) from services v where v.shop_id = s.id and v.is_active),
-         (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active)
+  -- The page is picked first, so today's hours are only worked out for the
+  -- shops sent back, in one look at their barbers' hours each.
+  select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
+         h.opens_today, h.closes_today
+  from (
+    select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone,
+           (select min(v.price) from services v where v.shop_id = s.id and v.is_active) as from_price,
+           (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active) as barber_count
+    from shops s
+    where public.shop_is_live(s)
+      and (coalesce(trim(p_area), '') = '' or lower(s.area) = lower(trim(p_area)))
+      and (
+        coalesce(trim(p_search), '') = ''
+        or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), lower(trim(p_search))) > 0
+      )
+    order by lower(s.name), s.id
+    limit least(greatest(coalesce(p_limit, 20), 1), 50)
+    offset greatest(coalesce(p_offset, 0), 0)
+  ) p
+  left join lateral (
+    select min(wh.opens_at) as opens_today, max(wh.closes_at) as closes_today
+    from barbers b
+    join working_hours wh on wh.barber_id = b.id
+    where b.shop_id = p.id
+      and b.is_active
+      and wh.weekday = extract(dow from now() at time zone p.time_zone)::int
+  ) h on true
+  order by lower(p.name), p.id;
+$$;
+
+-- What a booking link should say when the shop is hidden (paused, or its
+-- trial ended): the shop's name and number, so customers can message it
+-- instead of being told the shop doesn't exist. No row for an unknown link.
+create function public.shop_public_status(p_slug text)
+returns table (name text, phone text, is_live boolean)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select s.name, s.phone, public.shop_is_live(s)
   from shops s
-  where public.shop_is_live(s)
-    and (coalesce(trim(p_area), '') = '' or lower(s.area) = lower(trim(p_area)))
-    and (
-      coalesce(trim(p_search), '') = ''
-      or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), lower(trim(p_search))) > 0
-    )
-  order by lower(s.name), s.id
-  limit least(greatest(coalesce(p_limit, 20), 1), 50)
-  offset greatest(coalesce(p_offset, 0), 0);
+  where s.slug = p_slug;
 $$;
 
 -- Areas that have live shops, most shops first, for the area filter. Areas
@@ -658,3 +692,5 @@ revoke execute on function public.set_barber_hours(uuid, jsonb) from public, ano
 grant execute on function public.book_appointment(uuid, timestamptz, uuid, text) to authenticated;
 grant execute on function public.set_booking_status(uuid, public.booking_status) to authenticated;
 grant execute on function public.set_barber_hours(uuid, jsonb) to authenticated;
+-- Booking links are opened by guests too.
+grant execute on function public.shop_public_status(text) to anon, authenticated;
