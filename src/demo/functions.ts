@@ -55,6 +55,65 @@ function guarded<T>(fn: () => T, overlapMessage: string, checkMessage?: string):
   }
 }
 
+// Finding a barber ------------------------------------------------------------
+
+const blank = (v: unknown) => v == null || pgTrim(String(v)) === '';
+const sortKey = (v: unknown) => String(v).toLowerCase();
+
+export function findShops(args: Record<string, unknown>) {
+  const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
+  const area = blank(args.p_area) ? null : pgTrim(String(args.p_area)).toLowerCase();
+  const limit = Math.min(Math.max(Number(args.p_limit ?? 20), 1), 50);
+  const offset = Math.max(Number(args.p_offset ?? 0), 0);
+  return tables()
+    .shops.filter(
+      (s) =>
+        shopIsLive(s) &&
+        (area == null || sortKey(s.area) === area) &&
+        (search == null || `${s.name} ${s.area} ${s.address ?? ''}`.toLowerCase().includes(search)),
+    )
+    .sort((a, b) =>
+      sortKey(a.name) !== sortKey(b.name)
+        ? sortKey(a.name) < sortKey(b.name) ? -1 : 1
+        : String(a.id) < String(b.id) ? -1 : 1,
+    )
+    .slice(offset, offset + limit)
+    .map((s) => {
+      const prices = tables()
+        .services.filter((v) => v.shop_id === s.id && v.is_active)
+        .map((v) => Number(v.price));
+      return {
+        id: s.id,
+        name: s.name,
+        slug: s.slug,
+        area: s.area,
+        address: s.address,
+        about: s.about,
+        from_price: prices.length ? Math.min(...prices) : null,
+        barber_count: tables().barbers.filter((b) => b.shop_id === s.id && b.is_active).length,
+      };
+    });
+}
+
+export function shopAreas() {
+  const groups = new Map<string, Map<string, number>>();
+  for (const s of tables().shops.filter(shopIsLive)) {
+    const spellings = groups.get(sortKey(s.area)) ?? new Map<string, number>();
+    spellings.set(String(s.area), (spellings.get(String(s.area)) ?? 0) + 1);
+    groups.set(sortKey(s.area), spellings);
+  }
+  return [...groups.entries()]
+    .map(([key, spellings]) => {
+      // mode(): the most common spelling, the first in order on a tie.
+      const [area] = [...spellings.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0];
+      return { key, area, shops: [...spellings.values()].reduce((n, c) => n + c, 0) };
+    })
+    .sort((a, b) => b.shops - a.shops || (a.key < b.key ? -1 : 1))
+    .map(({ area, shops }) => ({ area, shops }));
+}
+
+// Booking ----------------------------------------------------------------------
+
 export function availableSlots(c: Caller, serviceId: unknown, dayArg: unknown, barberId: unknown = null) {
   if (dayArg == null) return [];
   const day = parseDate(dayArg);
@@ -293,6 +352,10 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
     throw new PgError('42501', `permission denied for function ${name}`, 401);
   }
   switch (name) {
+    case 'find_shops':
+      return { status: 200, body: findShops(args) };
+    case 'shop_areas':
+      return { status: 200, body: shopAreas() };
     case 'available_slots':
       return { status: 200, body: availableSlots(c, args.p_service_id, args.p_day, args.p_barber_id ?? null) };
     case 'book_appointment':

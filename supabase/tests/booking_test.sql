@@ -58,6 +58,8 @@ set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
 do $$ begin
   assert (select count(*) from shops) = 0, 'unpublished shop should be hidden from customers';
   assert (select count(*) from services) = 0, 'unpublished shop services should be hidden';
+  assert (select count(*) from find_shops()) = 0, 'unpublished shop should not be listed';
+  assert (select count(*) from shop_areas()) = 0, 'unpublished shop should not add an area';
   assert (select count(*) from available_slots('00000000-0000-0000-0000-0000000000e1',
           (now() at time zone 'Asia/Kuala_Lumpur')::date + 1)) = 0,
     'unpublished shop should have no slots';
@@ -82,6 +84,14 @@ declare
   b bookings;
 begin
   assert (select count(*) from shops) = 1, 'published shop should be visible';
+  assert (select from_price = 25 and barber_count = 2 from find_shops()), 'listing should show price and chairs';
+  assert (select count(*) from find_shops(' ALI ')) = 1, 'search should ignore case and spaces';
+  assert (select count(*) from find_shops('kajang')) = 1, 'search should look at the area';
+  assert (select count(*) from find_shops('%')) = 0, 'search text is not a pattern';
+  assert (select count(*) from find_shops(null, 'KAJANG')) = 1, 'area filter should ignore case';
+  assert (select count(*) from find_shops(null, 'Bangi')) = 0, 'area filter should filter';
+  assert (select count(*) from find_shops(null, null, 20, 1)) = 0, 'offset should page';
+  assert (select area = 'Kajang' and shops = 1 from shop_areas()), 'areas should count live shops';
   -- 09:00..11:30 every 15 min = 11 start times per barber.
   assert (select count(*) from available_slots('00000000-0000-0000-0000-0000000000e1', d,
           '00000000-0000-0000-0000-0000000000a1')) = 11, 'expected 11 slots for one barber';
@@ -244,6 +254,7 @@ set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
 set role authenticated;
 do $$ begin
   assert (select count(*) from shops) = 0, 'shop with expired trial should be hidden';
+  assert (select count(*) from find_shops()) = 0, 'shop with expired trial should not be listed';
 end $$;
 reset role;
 update shops set subscription_status = 'active';

@@ -128,6 +128,9 @@ export const ms: Record<string, string> = {
   'Loading barbers…': 'Memuatkan barber…',
   'No matches': 'Tiada padanan',
   'Try another name or area.': 'Cuba nama atau kawasan lain.',
+  'All areas': 'Semua kawasan',
+  'Show all barbers': 'Tunjuk semua barber',
+  'Show more barbers': 'Tunjuk lagi barber',
   'No barbers yet': 'Belum ada barber',
   'Barbers in your area are joining soon. Check back shortly.':
     'Barber di kawasan anda akan menyertai tidak lama lagi. Sila semak semula nanti.',

@@ -51,7 +51,8 @@
     "test:db": "bash scripts/test-db.sh",
     "test:e2e": "bash e2e/run.sh",
     "build:demo": "node scripts/build-demo.mjs",
-    "test:demo": "node scripts/build-demo.mjs && playwright test -c e2e/playwright.demo.config.ts"
+    "test:demo": "node scripts/build-demo.mjs && playwright test -c e2e/playwright.demo.config.ts",
+    "test:load": "bash e2e/load/run.sh"
   },
   "private": true
 }

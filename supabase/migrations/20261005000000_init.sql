@@ -88,17 +88,17 @@ as $$
   select exists (select 1 from shops where id = p_shop_id and owner_id = auth.uid());
 $$;
 
-create function public.shop_visible(p_shop_id uuid)
-returns boolean
+-- The signed-in barber's shop (an owner has at most one), or null. Policies
+-- call it as (select public.my_shop_id()) so Postgres works it out once per
+-- query instead of once per row, and can use the shop_id indexes.
+create function public.my_shop_id()
+returns uuid
 language sql
 stable
 security definer
 set search_path = public
 as $$
-  select exists (
-    select 1 from shops s
-    where s.id = p_shop_id and (public.shop_is_live(s) or s.owner_id = auth.uid())
-  );
+  select id from shops where owner_id = auth.uid();
 $$;
 
 -- Barbers (one per chair) ---------------------------------------------------
@@ -177,7 +177,10 @@ create table public.bookings (
   ) where (status <> 'cancelled')
 );
 create index bookings_shop_starts_idx on public.bookings (shop_id, starts_at);
-create index bookings_customer_idx on public.bookings (customer_id, starts_at);
+-- shop_id is in here for the per-shop booking limit and so a shop owner's
+-- check on each customer's name stays one index lookup however long the
+-- shop's history grows.
+create index bookings_customer_idx on public.bookings (customer_id, shop_id, starts_at);
 
 -- Row level security --------------------------------------------------------
 
@@ -188,52 +191,57 @@ alter table public.services enable row level security;
 alter table public.working_hours enable row level security;
 alter table public.bookings enable row level security;
 
+-- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
+-- per query. Checked per row, a query over every booking took over a minute
+-- with a Malaysia-sized table (e2e/load).
 create policy "read own profile" on public.profiles
-  for select using (id = auth.uid());
+  for select using (id = (select auth.uid()));
 create policy "shop owners read their customers" on public.profiles
   for select using (
     exists (
       select 1 from public.bookings b
-      where b.customer_id = profiles.id and public.owns_shop(b.shop_id)
+      where b.customer_id = profiles.id and b.shop_id = (select public.my_shop_id())
     )
   );
 create policy "update own profile" on public.profiles
-  for update using (id = auth.uid()) with check (id = auth.uid());
+  for update using (id = (select auth.uid())) with check (id = (select auth.uid()));
 
 create policy "read live or own shops" on public.shops
-  for select using (public.shop_is_live(shops) or owner_id = auth.uid());
+  for select using (public.shop_is_live(shops) or owner_id = (select auth.uid()));
 create policy "barbers create their shop" on public.shops
   for insert with check (
-    owner_id = auth.uid()
-    and exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'barber')
+    owner_id = (select auth.uid())
+    and exists (select 1 from public.profiles p where p.id = (select auth.uid()) and p.role = 'barber')
   );
 create policy "owners update their shop" on public.shops
-  for update using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+  for update using (owner_id = (select auth.uid())) with check (owner_id = (select auth.uid()));
 
+-- Barbers, services and hours are visible when their shop is: the shops and
+-- barbers policies decide that inside these subqueries.
 create policy "read barbers of visible shops" on public.barbers
-  for select using (public.shop_visible(shop_id));
+  for select using (exists (select 1 from public.shops s where s.id = shop_id));
 create policy "owners manage barbers" on public.barbers
-  for all using (public.owns_shop(shop_id)) with check (public.owns_shop(shop_id));
+  for all using (shop_id = (select public.my_shop_id()))
+  with check (shop_id = (select public.my_shop_id()));
 
 create policy "read services of visible shops" on public.services
-  for select using (public.shop_visible(shop_id));
+  for select using (exists (select 1 from public.shops s where s.id = shop_id));
 create policy "owners manage services" on public.services
-  for all using (public.owns_shop(shop_id)) with check (public.owns_shop(shop_id));
+  for all using (shop_id = (select public.my_shop_id()))
+  with check (shop_id = (select public.my_shop_id()));
 
 create policy "read hours of visible shops" on public.working_hours
-  for select using (
-    exists (select 1 from public.barbers b where b.id = barber_id and public.shop_visible(b.shop_id))
-  );
+  for select using (exists (select 1 from public.barbers b where b.id = barber_id));
 create policy "owners manage hours" on public.working_hours
   for all using (
-    exists (select 1 from public.barbers b where b.id = barber_id and public.owns_shop(b.shop_id))
+    exists (select 1 from public.barbers b where b.id = barber_id and b.shop_id = (select public.my_shop_id()))
   ) with check (
-    exists (select 1 from public.barbers b where b.id = barber_id and public.owns_shop(b.shop_id))
+    exists (select 1 from public.barbers b where b.id = barber_id and b.shop_id = (select public.my_shop_id()))
   );
 
 -- Bookings are read directly but only written through the functions below.
 create policy "customers and shop owners read bookings" on public.bookings
-  for select using (customer_id = auth.uid() or public.owns_shop(shop_id));
+  for select using (customer_id = (select auth.uid()) or shop_id = (select public.my_shop_id()));
 
 -- Users can't change their own role or billing fields from the app.
 revoke update on public.profiles from anon, authenticated;
@@ -245,12 +253,85 @@ grant update (name, slug, about, address, area, phone, instagram, is_published)
   on public.shops to authenticated;
 revoke insert, update, delete on public.bookings from anon, authenticated;
 
+-- Finding a barber ----------------------------------------------------------
+
+-- The customer's shop list: live shops whose name, area or address contains
+-- the search, a page at a time, with each shop's lowest price and number of
+-- chairs. Sending every shop with all its services and barbers came to
+-- 570 KB for 1,000 shops (e2e/load).
+create function public.find_shops(
+  p_search text default null,
+  p_area text default null,
+  p_limit int default 20,
+  p_offset int default 0
+)
+returns table (
+  id uuid,
+  name text,
+  slug text,
+  area text,
+  address text,
+  about text,
+  from_price numeric,
+  barber_count int
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select s.id, s.name, s.slug, s.area, s.address, s.about,
+         (select min(v.price) from services v where v.shop_id = s.id and v.is_active),
+         (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active)
+  from shops s
+  where public.shop_is_live(s)
+    and (coalesce(trim(p_area), '') = '' or lower(s.area) = lower(trim(p_area)))
+    and (
+      coalesce(trim(p_search), '') = ''
+      or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), lower(trim(p_search))) > 0
+    )
+  order by lower(s.name), s.id
+  limit least(greatest(coalesce(p_limit, 20), 1), 50)
+  offset greatest(coalesce(p_offset, 0), 0);
+$$;
+
+-- Areas that have live shops, most shops first, for the area filter. Areas
+-- are typed by barbers, so spellings that differ only in case count as one.
+create function public.shop_areas()
+returns table (area text, shops int)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select mode() within group (order by s.area), count(*)::int
+  from shops s
+  where public.shop_is_live(s)
+  group by lower(s.area)
+  order by count(*) desc, lower(s.area);
+$$;
+
 -- Booking rules ------------------------------------------------------------
 
 -- How far ahead customers can book, and how many upcoming bookings one
 -- customer may hold at one shop (stops a single account blocking a day).
 create function public.booking_horizon_days() returns int language sql immutable as $$ select 60 $$;
 create function public.max_upcoming_per_shop() returns int language sql immutable as $$ select 4 $$;
+
+-- Changes to one shop's bookings happen one at a time. Two people taking
+-- overlapping times at once otherwise deadlock on bookings_no_overlap, and
+-- Postgres fails one of them after a second's wait, holding a connection all
+-- the while. In a load test of 1,000 customers rushing one shop's Saturday,
+-- 20 deadlocks backed up the connection pool until 957 of them got an error
+-- instead of "that time was just taken"; with this lock, none did.
+-- Held until the transaction ends.
+create function public.lock_shop_diary(p_shop_id uuid)
+returns void
+language sql
+as $$
+  select pg_advisory_xact_lock(hashtextextended('shop-diary:' || p_shop_id, 0));
+$$;
+revoke execute on function public.lock_shop_diary(uuid) from public, anon, authenticated;
 
 -- Free start times for a service on a given local day, per barber.
 -- Slots start every 15 minutes inside each barber's working hours, skip
@@ -339,6 +420,8 @@ begin
     raise exception 'Please keep your note under 280 characters.' using errcode = '22001';
   end if;
 
+  perform public.lock_shop_diary(v_service.shop_id);
+
   if (
     select count(*) from bookings
     where customer_id = v_uid
@@ -360,7 +443,8 @@ begin
     select count(*) from bookings bk
     where bk.barber_id = a.barber_id
       and bk.status <> 'cancelled'
-      and (bk.starts_at at time zone v_tz)::date = v_day
+      and tstzrange(bk.starts_at, bk.ends_at)
+          && tstzrange(v_day::timestamp at time zone v_tz, (v_day + 1)::timestamp at time zone v_tz)
   ), a.barber_id
   limit 1;
 
@@ -418,6 +502,7 @@ begin
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
 
+  perform public.lock_shop_diary(v_booking.shop_id);
   begin
     update bookings set status = p_status where id = p_booking_id returning * into v_booking;
   exception when exclusion_violation then
@@ -510,6 +595,7 @@ begin
 
   v_starts := (p_day + p_time) at time zone v_shop.time_zone;
 
+  perform public.lock_shop_diary(v_shop.id);
   begin
     insert into bookings (
       shop_id, barber_id, service_id, guest_name, guest_phone, is_block,

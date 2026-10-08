@@ -85,13 +85,35 @@ npm test            # date, money, phone and language helpers, and the demo back
 npm run test:db     # schema + booking rules against a throwaway local Postgres 16+
 npm run test:e2e    # the whole app in a browser: barber sets up, customers book
 npm run test:demo   # the one-file demo, in a locked-down iframe with no network
+npm run test:load   # Malaysia-sized data, the busiest screens under load and a booking rush
 ```
 
 `test:db` needs `initdb`, `pg_ctl` and `psql` installed locally (it does not need Supabase or Docker).
 
 `test:e2e` builds the web app and runs it against a local stand-in for Supabase (Postgres, [PostgREST](https://github.com/PostgREST/postgrest/releases) 12 and a small auth gateway in `e2e/backend`). It needs Postgres 16+, the PostgREST binary on your `PATH` (or `POSTGREST=/path/to/postgrest`) and Playwright's Chromium (`npx playwright install chromium`). Set `SCREENSHOTS=<folder>` to save a screenshot of each step there, and `COLOR_SCHEME=dark` to run in dark mode.
 
-GitHub Actions runs all of these on every push (`.github/workflows/ci.yml`).
+GitHub Actions runs all of these on every push (`.github/workflows/ci.yml`) except `test:load`, which takes a few minutes and needs the same Postgres and PostgREST as `test:e2e`.
+
+## How many users it handles
+
+`npm run test:load` fills a local Postgres with 1,000 live shops (three chairs each), 100,000 customers and 2.85 million bookings (90 days of history and the next 30 days), sends each screen's own requests 50 at a time for 15 seconds, then has 300 customers try to book the same shop's Saturday evening at once. On a 4-core machine that also runs the load generator:
+
+| Screen | Requests a second | Typical (p50) | Slow (p95) |
+| --- | --- | --- | --- |
+| Find a barber | 476 | 91 ms | 236 ms |
+| Shop page | 597 | 82 ms | 112 ms |
+| Free times for a day | 376 | 110 ms | 311 ms |
+| Book a cut (free times, then book) | 190 | 236 ms | 579 ms |
+| My bookings | 983 | 47 ms | 93 ms |
+| Barber's day | 322 | 148 ms | 214 ms |
+
+In the rush, the six free evening times went to six customers and the other 294 were told the time was just taken, all within 2.3 seconds and with no errors.
+
+That is far more than a pre-Raya peak needs: if all 100,000 customers booked within the same hour, it would be under 30 bookings a second. What it changes is the bill, not the code:
+
+- The data above takes about 1.1 GB, and grows by roughly 3.5 GB a year at that size. Supabase's free plan stops at 500 MB, so a Malaysia-wide launch needs a paid plan; a Kajang launch with a few dozen shops stays under it for its first few years.
+- Supabase's built-in email only sends a few messages an hour, so password reset needs your own email provider (custom SMTP) before launch, whatever the size.
+- More than 50,000 monthly active sign-ins also needs a paid plan.
 
 ## Running the business side by hand (until payments are built)
 

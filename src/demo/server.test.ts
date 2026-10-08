@@ -46,17 +46,24 @@ beforeEach(() => resetDemo());
 
 test('guests browse live shops with their services, barbers and free times', async () => {
   const c = client();
-  const { data: shops, error } = await c
-    .from('shops')
-    .select('id, name, slug, area, address, about, services(price, is_active), barbers(id, is_active)')
-    .order('name');
+  const { data: shops, error } = await c.rpc('find_shops', { p_search: null, p_area: null, p_limit: 21, p_offset: 0 });
   assert.equal(error, null);
   assert.deepEqual(
-    shops!.map((s) => s.name),
+    shops!.map((s: { name: string }) => s.name),
     ['Ali Barber Sungai Chua', 'Gunting Pak Mat', 'Kemas Barber Kajang', 'The Fade Room'],
   );
-  assert.equal(shops![0].services.length, 5);
-  assert.equal(shops![0].barbers.length, 2);
+  assert.equal(shops![0].from_price, 12);
+  assert.equal(shops![0].barber_count, 2);
+  // Search looks in the name, area and address; areas match whatever the case.
+  const search = async (args: Record<string, unknown>) =>
+    ((await c.rpc('find_shops', args)).data as { slug: string }[]).map((s) => s.slug);
+  assert.deepEqual(await search({ p_search: '  FADE ' }), ['the-fade-room']);
+  assert.deepEqual(await search({ p_area: 'sungai chua' }), ['ali-barber']);
+  assert.deepEqual(await search({ p_search: 'zzz' }), []);
+  assert.equal((await search({ p_limit: 2, p_offset: 3 })).length, 1);
+  const { data: areas } = await c.rpc('shop_areas');
+  assert.equal(areas.length, 4);
+  assert.deepEqual(areas[0], { area: 'Kajang town', shops: 1 });
 
   const shop = await shopBySlug(c, 'ali-barber');
   const { data: services } = await c
