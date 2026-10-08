@@ -51,12 +51,23 @@ export default function ShopPage() {
   const [barberId, setBarberId] = useState<string | null>(null); // null = any barber
   const days = useMemo(() => upcomingDays(DAYS_AHEAD, shop?.time_zone), [shop?.time_zone]);
   const today = days[0]?.date ?? null;
+  // Days the barber closed the whole shop, like Hari Raya.
+  const [shutDays, setShutDays] = useState<Set<string>>(new Set());
+  const shopId = shop?.id;
+  useEffect(() => {
+    if (!shopId || days.length === 0) return;
+    supabase
+      .rpc('shop_closed_days', { p_shop_id: shopId, p_from: days[0].date, p_to: days[days.length - 1].date })
+      .then(({ data }) => setShutDays(new Set(((data ?? []) as { day: string }[]).map((d) => d.day))));
+  }, [shopId, days, reload]);
   // Days nobody works (or the picked barber doesn't), so they can be shown as closed.
   const closedDays = useMemo(() => {
     const working = barbers.filter((b) => !barberId || b.id === barberId);
     const open = new Set(working.flatMap((b) => (b.working_hours ?? []).map((h) => h.weekday)));
-    return new Set(days.filter((d) => !open.has(new Date(`${d.date}T00:00:00Z`).getUTCDay())).map((d) => d.date));
-  }, [barbers, barberId, days]);
+    return new Set(
+      days.filter((d) => shutDays.has(d.date) || !open.has(new Date(`${d.date}T00:00:00Z`).getUTCDay())).map((d) => d.date),
+    );
+  }, [barbers, barberId, days, shutDays]);
   const [pickedDay, setPickedDay] = useState<string | null>(null);
   // Late in the evening today has nothing left. Remember that for this service and
   // barber, so the page opens on the next open day instead of an empty Today.

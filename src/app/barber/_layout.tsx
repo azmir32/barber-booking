@@ -37,6 +37,7 @@ function BarberStack() {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="hours/[id]" options={{ title: t('Working hours') }} />
       <Stack.Screen name="new-booking" options={{ title: t('Add to the day') }} />
+      <Stack.Screen name="close-days" options={{ title: t('Close for a few days') }} />
     </Stack>
   );
 }

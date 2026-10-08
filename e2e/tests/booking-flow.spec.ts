@@ -53,6 +53,13 @@ function dayChip(offset: number) {
   return new RegExp(`^${part({ weekday: 'short' })}\\s?${part({ day: 'numeric' })} ${part({ month: 'short' })}`);
 }
 
+/** The day-picker chip `offset` days from today when the shop is closed then, e.g. "Wed Closed". */
+function closedChip(offset: number) {
+  const day = new Date(Date.now() + offset * 24 * 60 * 60 * 1000);
+  const weekday = new Intl.DateTimeFormat('en-MY', { timeZone: 'Asia/Kuala_Lumpur', weekday: 'short' }).format(day);
+  return new RegExp(`^${weekday}\\s?Closed$`);
+}
+
 /** Says yes in the app's "Are you sure?" dialog. */
 async function confirm(page: Page, label: string) {
   await page.getByRole('alertdialog').getByRole('button', { name: label, exact: true }).click();
@@ -228,8 +235,41 @@ test.describe.serial('booking flow', () => {
     for (const taken of ['12:00 pm', '12:30 pm', '3:00 pm']) {
       await expect(choice(page, taken)).toHaveCount(0);
     }
-    await choice(page, dayChip(2)).click();
-    await expect(page.getByText(/^No free times this day/)).toBeVisible();
+    // The only barber has the whole day off, so the shop reads as closed then.
+    await expect(choice(page, closedChip(2))).toBeDisabled();
+    await signOut(page);
+  });
+
+  test('barber closes the shop for Hari Raya, customers see it closed, and it reopens', async ({ page }) => {
+    await signIn(page, barber);
+    await page.getByRole('tab', { name: /My shop/ }).click();
+    await button(page, 'Close for a few days').click();
+    await choice(page, dayChip(4)).click();
+    await choice(page, '2 days').click();
+    await field(page, 'Reason (optional)').fill('Hari Raya');
+    await snap(page, '17-close-days');
+    await button(page, 'Close for 2 days').click();
+    await expect(page.getByText('Hari Raya', { exact: true })).toBeVisible();
+    await snap(page, '18-holidays');
+    await signOut(page);
+
+    await page.goto('/');
+    await button(page, 'Find a barber').click();
+    await page.getByText(shopName).click();
+    await choice(page, /^Haircut/).click();
+    for (const offset of [4, 5]) {
+      await expect(choice(page, closedChip(offset))).toBeDisabled();
+    }
+    await expect(choice(page, dayChip(6))).toBeEnabled();
+
+    await signIn(page, barber);
+    await page.getByRole('tab', { name: /My shop/ }).click();
+    // Ali's day off (in two days) reads as a closure too, since he is the only barber.
+    await expect(page.getByText('Day off', { exact: true })).toBeVisible();
+    await button(page, /^Reopen .* – /).click();
+    await confirm(page, 'Reopen');
+    await expect(page.getByText('Hari Raya', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Day off', { exact: true })).toBeVisible();
     await signOut(page);
   });
 

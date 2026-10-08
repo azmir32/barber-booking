@@ -352,6 +352,107 @@ do $$ begin
 exception when sqlstate 'P0002' then null;
 end $$;
 
+-- Closing the shop for a few days -------------------------------------------
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  svc uuid := '00000000-0000-0000-0000-0000000000e1';
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 40;
+  off bookings;
+begin
+  -- One barber's day off doesn't close the shop, and the closure replaces it.
+  off := add_shop_booking('00000000-0000-0000-0000-0000000000a2', d + 1, '00:00', 1440,
+    p_note => 'Day off', p_is_block => true);
+  assert (select count(*) from shop_closed_days(shop, d, d + 5)) = 0, 'one barber off is not a closed shop';
+
+  assert close_shop_days(d, 3, '  Hari Raya  ') = 3, 'closing returns the number of days';
+  assert (select array_agg(day order by day) from shop_closed_days(shop, d - 1, d + 5)) = array[d, d + 1, d + 2],
+    'the three days should read as closed';
+  assert (select bool_and(reason = 'Hari Raya') from shop_closed_days(shop, d, d + 2)), 'the owner sees the reason';
+  assert not exists (select 1 from available_slots(svc, d + 2)), 'no slots on a closed day';
+  assert exists (select 1 from available_slots(svc, d + 3)), 'the day after reopens';
+  assert (select status from bookings where id = off.id) = 'cancelled', 'the barber''s own day off gives way';
+
+  -- Closing the same days again is harmless.
+  perform close_shop_days(d, 3, 'Hari Raya');
+  assert (select count(*) from bookings where shop_id = shop and is_block and status = 'confirmed'
+          and service_name = 'Hari Raya') = 6, 'two barbers, three days, no doubles';
+
+  begin
+    perform close_shop_days(d, 0);
+    raise exception 'zero days should be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform close_shop_days(d - 41, 1);
+    raise exception 'a day in the past should be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform close_shop_days(d + 19, 3);
+    raise exception 'days past the booking horizon should be refused';
+  exception when sqlstate '22023' then null;
+  end;
+end $$;
+
+-- Customers see closed days without the reason, and can't close anything.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 40;
+begin
+  assert (select count(*) from shop_closed_days('00000000-0000-0000-0000-00000000005a', d, d + 5)
+          where reason is null) = 3, 'customers see the closed days but not why';
+  begin
+    perform close_shop_days(d + 5, 1);
+    raise exception 'customers should not close shops';
+  exception when sqlstate 'P0002' then null;
+  end;
+  -- A booking on a day blocks closing it.
+  perform book_appointment('00000000-0000-0000-0000-0000000000e1', (d + 5 + time '09:00') at time zone 'Asia/Kuala_Lumpur');
+end $$;
+
+reset role;
+set role anon;
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 40;
+begin
+  assert (select count(*) from shop_closed_days('00000000-0000-0000-0000-00000000005a', d, d + 5)) = 3,
+    'guests see closed days too';
+  begin
+    perform close_shop_days(d + 5, 1);
+    raise exception 'guests must not call close_shop_days';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 40;
+begin
+  begin
+    perform close_shop_days(d + 4, 2, 'Kenduri');
+    raise exception 'closing over a customer booking should be refused';
+  exception when sqlstate 'P0001' then null;
+  end;
+  assert not exists (select 1 from bookings where service_name = 'Kenduri'), 'a refused closure leaves nothing behind';
+
+  assert reopen_shop_days(d, 3) = 6, 'reopening removes every barber''s block';
+  assert (select count(*) from shop_closed_days('00000000-0000-0000-0000-00000000005a', d, d + 5)) = 0,
+    'nothing reads as closed after reopening';
+  assert exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d + 1)),
+    'the slots come back';
+end $$;
+
+-- Tidy up so the limits below start from a clean diary.
+reset role;
+delete from bookings where (starts_at at time zone 'Asia/Kuala_Lumpur')::date
+  >= (now() at time zone 'Asia/Kuala_Lumpur')::date + 39;
+
 -- Limits on what one customer can do ---------------------------------------
 reset role;
 delete from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2';

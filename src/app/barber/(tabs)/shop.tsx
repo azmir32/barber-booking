@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { Share } from 'react-native';
 
 import { AccountPanel } from '@/components/account-panel';
+import { ClosedDaysCard } from '@/components/closed-days-card';
 import { ShopForm } from '@/components/shop-form';
 import { Badge, Button, Card, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
@@ -62,7 +63,7 @@ export default function MyShop() {
       const ok = await confirmAction(
         t('Pause online bookings?'),
         t(
-          'Customers can’t find your shop or book from your link until you go live again. Bookings already made are not cancelled. For a day off or a break, use Block time on the Bookings tab instead.',
+          'Customers can’t find your shop or book from your link until you go live again. Bookings already made are not cancelled. For a holiday, use Close for a few days below instead.',
         ),
         t('Pause bookings'),
         t('Keep bookings open'),
@@ -119,6 +120,8 @@ export default function MyShop() {
           />
         )}
       </Card>
+
+      <ClosedDaysCard shop={shop} />
 
       <Card>
         <T variant="heading">{t('Your booking link')}</T>

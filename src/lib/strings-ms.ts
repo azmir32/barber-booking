@@ -455,9 +455,33 @@ export const ms: Record<string, string> = {
   'Days with their own break, like Friday prayers, keep it.':
     'Hari yang ada waktu rehat sendiri, seperti solat Jumaat, kekal seperti biasa.',
   'Pause online bookings?': 'Tutup tempahan dalam talian?',
-  'Customers can’t find your shop or book from your link until you go live again. Bookings already made are not cancelled. For a day off or a break, use Block time on the Bookings tab instead.':
-    'Pelanggan tidak dapat mencari kedai anda atau menempah melalui pautan anda sehingga anda buka tempahan semula. Tempahan sedia ada tidak dibatalkan. Untuk cuti sehari atau rehat, guna Sekat masa di tab Tempahan.',
+  'Customers can’t find your shop or book from your link until you go live again. Bookings already made are not cancelled. For a holiday, use Close for a few days below instead.':
+    'Pelanggan tidak dapat mencari kedai anda atau menempah melalui pautan anda sehingga anda buka tempahan semula. Tempahan sedia ada tidak dibatalkan. Untuk cuti, guna Tutup kedai beberapa hari di bawah.',
   'Keep bookings open': 'Biarkan tempahan dibuka',
+  Holidays: 'Cuti',
+  'Closing for Hari Raya or a holiday? Customers will see those days as closed.':
+    'Tutup untuk Hari Raya atau cuti? Pelanggan akan nampak kedai tutup pada hari tersebut.',
+  'Close for a few days': 'Tutup kedai beberapa hari',
+  'Reopen {days}?': 'Buka semula {days}?',
+  'Reopen {days}': 'Buka semula {days}',
+  'Customers will be able to book these days again.': 'Pelanggan boleh menempah pada hari-hari ini semula.',
+  Reopen: 'Buka semula',
+  'Every barber gets these days off, and customers see them as closed. Cancel any bookings on them first.':
+    'Semua barber bercuti pada hari-hari ini, dan pelanggan akan nampak kedai tutup. Batalkan dahulu tempahan pada hari tersebut.',
+  'First day': 'Hari pertama',
+  'How many days': 'Berapa hari',
+  '1 day': '1 hari',
+  '{count} days': '{count} hari',
+  'Closed {days}': 'Tutup {days}',
+  'Close for 1 day': 'Tutup 1 hari',
+  'Close for {count} days': 'Tutup {count} hari',
+  'Only you see the reason.': 'Hanya anda yang nampak sebab ini.',
+  'Pick the first day.': 'Pilih hari pertama.',
+  'Set up your shop first.': 'Sediakan kedai anda dahulu.',
+  'Pick between 1 and 31 days.': 'Pilih antara 1 hingga 31 hari.',
+  'Pick days from today up to 60 days ahead.': 'Pilih hari dari hari ini hingga 60 hari ke depan.',
+  'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.':
+    'Ada tempahan pada hari tersebut. Batalkan dahulu (dan maklumkan kepada pelanggan), kemudian tutup kedai.',
   'Add a service before you go live, so customers have something to book.':
     'Tambah servis dahulu sebelum buka tempahan, supaya pelanggan ada sesuatu untuk ditempah.',
   'Change your booking link?': 'Tukar pautan tempahan anda?',

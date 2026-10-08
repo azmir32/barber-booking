@@ -112,6 +112,7 @@ export function Button({
   disabled,
   loading,
   style,
+  accessibilityLabel,
 }: {
   title: string;
   onPress?: () => void;
@@ -120,6 +121,8 @@ export function Button({
   disabled?: boolean;
   loading?: boolean;
   style?: ViewStyle;
+  /** When the title alone is ambiguous, e.g. one "Reopen" per row: "Reopen Fri, 20 Mar". */
+  accessibilityLabel?: string;
 }) {
   const theme = useTheme();
   const bg =
@@ -136,7 +139,7 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={title}
+      accessibilityLabel={accessibilityLabel ?? title}
       aria-busy={loading}
       aria-disabled={disabled}
       // While loading the button keeps its size, name and focus; presses are ignored.

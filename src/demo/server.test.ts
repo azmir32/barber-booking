@@ -377,3 +377,46 @@ test('ids stay unique and rows that others point at keep theirs', async () => {
   const moved = await ali.from('barbers').update({ id: '00000000-0000-4000-8000-000000000999' }).eq('id', myChair.id);
   assert.equal(moved.error?.code, '23503');
 });
+
+test('a barber closes the shop for Hari Raya, customers see it, and it reopens', async () => {
+  const barber = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(barber, 'ali-barber');
+  const from = addDays(today(), 40);
+  const closed = async (c: ReturnType<typeof client>) =>
+    (await c.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: from, p_to: addDays(from, 5) })).data as {
+      day: string;
+      reason: string | null;
+    }[];
+
+  const close = await barber.rpc('close_shop_days', { p_from: from, p_days: 3, p_reason: '  Hari Raya ' });
+  assert.equal(close.error, null);
+  assert.equal(close.data, 3);
+  assert.deepEqual(await closed(barber), [0, 1, 2].map((i) => ({ day: addDays(from, i), reason: 'Hari Raya' })));
+  // Guests see the days, not the reason, and no free times on them.
+  const guest = client();
+  assert.deepEqual(await closed(guest), [0, 1, 2].map((i) => ({ day: addDays(from, i), reason: null })));
+  const { data: service } = await guest.from('services').select('id').eq('shop_id', shop.id).limit(1).single();
+  const slots = await guest.rpc('available_slots', { p_service_id: service!.id, p_day: addDays(from, 1) });
+  assert.deepEqual(slots.data, []);
+  const denied = await guest.rpc('close_shop_days', { p_from: from, p_days: 1 });
+  assert.equal(denied.error?.code, '42501');
+
+  // A customer's booking stops the shop closing over it.
+  const customer = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const next = await customer.rpc('available_slots', { p_service_id: service!.id, p_day: addDays(from, 4) });
+  const booked = await customer.rpc('book_appointment', { p_service_id: service!.id, p_starts_at: next.data[0].starts_at });
+  assert.equal(booked.error, null);
+  const refused = await barber.rpc('close_shop_days', { p_from: addDays(from, 3), p_days: 2, p_reason: 'Kenduri' });
+  assert.equal(refused.error?.code, 'P0001');
+  assert.match(refused.error!.message, /^There are bookings on those days/);
+  assert.equal(tables().bookings.filter((b) => b.service_name === 'Kenduri').length, 0);
+  const notMine = await customer.rpc('close_shop_days', { p_from: from, p_days: 1 });
+  assert.equal(notMine.error?.message, 'Set up your shop first.');
+  const tooMany = await barber.rpc('close_shop_days', { p_from: from, p_days: 32 });
+  assert.equal(tooMany.error?.code, '22023');
+
+  const reopen = await barber.rpc('reopen_shop_days', { p_from: from, p_days: 3 });
+  assert.equal(reopen.error, null);
+  assert.ok((reopen.data as number) >= 3);
+  assert.deepEqual(await closed(guest), []);
+});

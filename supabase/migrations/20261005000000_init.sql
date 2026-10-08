@@ -620,6 +620,133 @@ begin
 end;
 $$;
 
+-- Close the whole shop for a run of days, like Hari Raya: a whole-day block
+-- for every barber on each day, so customers see those days as closed. It
+-- refuses while customers are booked on any of them, so nobody turns up to a
+-- locked door. Blocks already on those days give way to the closure.
+create function public.close_shop_days(p_from date, p_days int, p_reason text default null)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_today date;
+  v_start timestamptz;
+  v_end timestamptz;
+  v_reason text := coalesce(left(nullif(trim(p_reason), ''), 80), 'Closed');
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    raise exception 'Set up your shop first.' using errcode = 'P0002';
+  end if;
+  if p_days is null or p_days < 1 or p_days > 31 then
+    raise exception 'Pick between 1 and 31 days.' using errcode = '22023';
+  end if;
+  v_today := (now() at time zone v_shop.time_zone)::date;
+  if p_from < v_today or p_from + p_days - 1 > v_today + public.booking_horizon_days() then
+    raise exception 'Pick days from today up to 60 days ahead.' using errcode = '22023';
+  end if;
+  v_start := p_from::timestamp at time zone v_shop.time_zone;
+  v_end := (p_from + p_days)::timestamp at time zone v_shop.time_zone;
+
+  perform public.lock_shop_diary(v_shop.id);
+  if exists (
+    select 1 from bookings
+    where shop_id = v_shop.id
+      and not is_block
+      and status = 'confirmed'
+      and tstzrange(starts_at, ends_at) && tstzrange(v_start, v_end)
+  ) then
+    raise exception 'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.'
+      using errcode = 'P0001';
+  end if;
+
+  update bookings set status = 'cancelled'
+  where shop_id = v_shop.id
+    and is_block
+    and status = 'confirmed'
+    and tstzrange(starts_at, ends_at) && tstzrange(v_start, v_end);
+
+  -- Same shape as a whole-day block from add_shop_booking: midnight, 24 hours.
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  select v_shop.id, b.id, true, v_reason, 0,
+         d::date::timestamp at time zone v_shop.time_zone,
+         (d::date::timestamp at time zone v_shop.time_zone) + make_interval(mins => 1440)
+  from barbers b
+  cross join generate_series(p_from, p_from + p_days - 1, interval '1 day') as d
+  where b.shop_id = v_shop.id and b.is_active;
+
+  return p_days;
+end;
+$$;
+
+-- Undo a closure: removes the whole-day blocks on those days.
+create function public.reopen_shop_days(p_from date, p_days int)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_count int;
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    raise exception 'Set up your shop first.' using errcode = 'P0002';
+  end if;
+  perform public.lock_shop_diary(v_shop.id);
+  update bookings set status = 'cancelled'
+  where shop_id = v_shop.id
+    and is_block
+    and status = 'confirmed'
+    and ends_at - starts_at >= interval '24 hours'
+    and starts_at >= p_from::timestamp at time zone v_shop.time_zone
+    and starts_at < (p_from + greatest(p_days, 0))::timestamp at time zone v_shop.time_zone;
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
+-- Days in a range when every barber of a shop has a whole-day block, so the
+-- booking page can show them as closed. Only the owner sees the reason.
+create function public.shop_closed_days(p_shop_id uuid, p_from date, p_to date)
+returns table (day date, reason text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with shop as (
+    select sh.id, sh.time_zone, sh.owner_id = (select auth.uid()) as mine
+    from shops sh
+    where sh.id = p_shop_id and (public.shop_is_live(sh) or sh.owner_id = (select auth.uid()))
+  ),
+  team as (
+    select count(*) as n from barbers b join shop on b.shop_id = shop.id where b.is_active
+  ),
+  closed as (
+    select (bk.starts_at at time zone shop.time_zone)::date as day,
+           count(distinct bk.barber_id) as n,
+           min(bk.service_name) as reason
+    from bookings bk
+    join shop on bk.shop_id = shop.id
+    join barbers b on b.id = bk.barber_id and b.is_active
+    where bk.is_block
+      and bk.status = 'confirmed'
+      and bk.ends_at - bk.starts_at >= interval '24 hours'
+      and bk.starts_at >= p_from::timestamp at time zone shop.time_zone
+      and bk.starts_at < (least(p_to, p_from + 90) + 1)::timestamp at time zone shop.time_zone
+    group by 1
+  )
+  select closed.day, case when shop.mine then closed.reason end
+  from closed, team, shop
+  where closed.n = team.n and team.n > 0
+  order by closed.day;
+$$;
+
 -- People can delete their own account (the app stores require it).
 -- A customer's upcoming bookings are cancelled, and their past ones stay in
 -- the shop's history without their name or phone. An owner's shop goes
@@ -658,3 +785,7 @@ revoke execute on function public.set_barber_hours(uuid, jsonb) from public, ano
 grant execute on function public.book_appointment(uuid, timestamptz, uuid, text) to authenticated;
 grant execute on function public.set_booking_status(uuid, public.booking_status) to authenticated;
 grant execute on function public.set_barber_hours(uuid, jsonb) to authenticated;
+revoke execute on function public.close_shop_days(date, int, text) from public, anon;
+revoke execute on function public.reopen_shop_days(date, int) from public, anon;
+grant execute on function public.close_shop_days(date, int, text) to authenticated;
+grant execute on function public.reopen_shop_days(date, int) to authenticated;

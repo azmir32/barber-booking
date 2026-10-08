@@ -539,7 +539,8 @@ function BlockRow({ booking: b, tz, onRemove }: { booking: ShopBooking; tz: stri
       </View>
       <View style={styles.info}>
         <T>
-          {b.service_name}
+          {/* Blocks saved without a reason get these English defaults from the database. */}
+          {b.service_name === 'Blocked' || b.service_name === 'Closed' ? t(b.service_name) : b.service_name}
           {b.barbers ? ` · ${b.barbers.name}` : ''}
         </T>
         <Badge label={t('Blocked')} />

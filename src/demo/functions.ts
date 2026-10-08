@@ -322,6 +322,106 @@ export function addShopBooking(c: Caller, args: ShopBookingArgs) {
   );
 }
 
+// Closing the shop for a few days ---------------------------------------------
+
+const WHOLE_DAY_MS = 24 * 60 * 60_000;
+const isWholeDayBlock = (b: Row) => b.is_block === true && ms(b.ends_at) - ms(b.starts_at) >= WHOLE_DAY_MS;
+
+function myShop(c: Caller): Row {
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  if (!shop) throw new PgError('P0002', 'Set up your shop first.', 500);
+  return shop;
+}
+
+export function closeShopDays(c: Caller, fromArg: unknown, daysArg: unknown, reasonArg: unknown = null) {
+  const shop = myShop(c);
+  const days = daysArg == null ? null : Number(daysArg);
+  if (days == null || !Number.isInteger(days) || days < 1 || days > 31) {
+    throw new PgError('22023', 'Pick between 1 and 31 days.', 400);
+  }
+  const from = parseDate(fromArg);
+  const tz = String(shop.time_zone);
+  const today = localDateString(new Date(now()), tz);
+  if (from < today || addDays(from, days - 1) > addDays(today, BOOKING_HORIZON_DAYS)) {
+    throw new PgError('22023', 'Pick days from today up to 60 days ahead.', 400);
+  }
+  const start = dayBounds(from, tz).start.getTime();
+  const end = dayBounds(addDays(from, days), tz).start.getTime();
+  const overlaps = (b: Row) => b.shop_id === shop.id && ms(b.starts_at) < end && start < ms(b.ends_at);
+  if (tables().bookings.some((b) => overlaps(b) && !b.is_block && b.status === 'confirmed')) {
+    throw new PgError(
+      'P0001',
+      'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.',
+      400,
+    );
+  }
+  updateRows(
+    'bookings',
+    tables().bookings.filter((b) => overlaps(b) && b.is_block && b.status === 'confirmed'),
+    { status: 'cancelled' },
+  );
+  const reason = trimmed(reasonArg);
+  for (const barber of tables().barbers) {
+    if (barber.shop_id !== shop.id || !barber.is_active) continue;
+    for (let i = 0; i < days; i++) {
+      const at = dayBounds(addDays(from, i), tz).start.getTime();
+      insertRow('bookings', {
+        shop_id: shop.id,
+        barber_id: barber.id,
+        is_block: true,
+        service_name: reason == null ? 'Closed' : [...reason].slice(0, 80).join(''),
+        price: 0,
+        starts_at: new Date(at).toISOString(),
+        ends_at: new Date(at + WHOLE_DAY_MS).toISOString(),
+      });
+    }
+  }
+  return days;
+}
+
+export function reopenShopDays(c: Caller, fromArg: unknown, daysArg: unknown) {
+  const shop = myShop(c);
+  const tz = String(shop.time_zone);
+  const from = parseDate(fromArg);
+  const start = dayBounds(from, tz).start.getTime();
+  const end = dayBounds(addDays(from, Math.max(Number(daysArg) || 0, 0)), tz).start.getTime();
+  const blocks = tables().bookings.filter(
+    (b) =>
+      b.shop_id === shop.id &&
+      b.status === 'confirmed' &&
+      isWholeDayBlock(b) &&
+      ms(b.starts_at) >= start &&
+      ms(b.starts_at) < end,
+  );
+  updateRows('bookings', blocks, { status: 'cancelled' });
+  return blocks.length;
+}
+
+export function shopClosedDays(c: Caller, shopId: unknown, fromArg: unknown, toArg: unknown) {
+  const shop = findById('shops', shopId);
+  const mine = shop != null && c.uid != null && shop.owner_id === c.uid;
+  if (!shop || !(shopIsLive(shop) || mine)) return [];
+  const tz = String(shop.time_zone);
+  const from = parseDate(fromArg);
+  const to = parseDate(toArg);
+  const last = to < addDays(from, 90) ? to : addDays(from, 90);
+  const team = new Set(tables().barbers.filter((b) => b.shop_id === shop.id && b.is_active).map((b) => b.id));
+  const byDay = new Map<string, { barbers: Set<unknown>; reasons: string[] }>();
+  for (const b of tables().bookings) {
+    if (b.shop_id !== shop.id || b.status !== 'confirmed' || !isWholeDayBlock(b) || !team.has(b.barber_id)) continue;
+    const day = localDateString(new Date(ms(b.starts_at)), tz);
+    if (day < from || day > last) continue;
+    const entry = byDay.get(day) ?? { barbers: new Set(), reasons: [] };
+    entry.barbers.add(b.barber_id);
+    entry.reasons.push(String(b.service_name));
+    byDay.set(day, entry);
+  }
+  return [...byDay.entries()]
+    .filter(([, e]) => team.size > 0 && e.barbers.size === team.size)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([day, e]) => ({ day, reason: mine ? e.reasons.sort()[0] : null }));
+}
+
 export function deleteMyAccount(c: Caller) {
   if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
   const mine = tables().bookings.filter((b) => b.customer_id === c.uid);
@@ -345,6 +445,8 @@ const SIGNED_IN_ONLY = new Set([
   'set_barber_hours',
   'add_shop_booking',
   'delete_my_account',
+  'close_shop_days',
+  'reopen_shop_days',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -369,6 +471,12 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: setBarberHours(c, args.p_barber_id, args.p_hours) };
     case 'add_shop_booking':
       return { status: 200, body: addShopBooking(c, args) };
+    case 'close_shop_days':
+      return { status: 200, body: closeShopDays(c, args.p_from, args.p_days, args.p_reason ?? null) };
+    case 'reopen_shop_days':
+      return { status: 200, body: reopenShopDays(c, args.p_from, args.p_days) };
+    case 'shop_closed_days':
+      return { status: 200, body: shopClosedDays(c, args.p_shop_id, args.p_from, args.p_to) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };
