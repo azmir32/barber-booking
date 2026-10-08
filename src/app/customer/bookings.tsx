@@ -98,6 +98,14 @@ export default function MyBookings() {
     });
   }
 
+  // Opens the shop page set to move this booking, on its service and barber.
+  function changeTime(b: MyBooking) {
+    router.push({
+      pathname: '/shop/[slug]',
+      params: { slug: b.shops!.slug, name: b.shops!.name, move: b.id, service: b.service_id!, barber: b.barber_id },
+    });
+  }
+
   async function cancel(b: MyBooking) {
     const tz = b.shops?.time_zone;
     const ok = await confirmAction(
@@ -164,6 +172,10 @@ export default function MyBookings() {
                   ) : null}
                   {shop ? (
                     <Button title={t('Directions')} variant="secondary" onPress={() => Linking.openURL(directionsUrl(shop))} />
+                  ) : null}
+                  {/* Needs the service to find free times, and can't move once the time has started. */}
+                  {shop && b.service_id && new Date(b.starts_at).getTime() > now ? (
+                    <Button title={t('Change time')} variant="secondary" onPress={() => changeTime(b)} />
                   ) : null}
                   <Button title={t('Cancel')} variant="ghost" onPress={() => cancel(b)} />
                 </Row>

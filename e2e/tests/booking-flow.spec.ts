@@ -149,6 +149,28 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Upcoming')).toBeVisible();
     await expect(page.getByText(`Haircut with ${barber.name} · RM20`)).toBeVisible();
     await snap(page, '12-my-bookings');
+
+    // Plans change: move it to another free time tomorrow instead of cancelling.
+    await button(page, 'Change time').click();
+    await expect(page.getByText('Changing your booking')).toBeVisible();
+    await choice(page, /^Tomorrow/).click();
+    // The booking's own time shows but can't be picked, so the first plain time is a new one.
+    await expect(choice(page, `${bookedTime}, your current time`)).toBeVisible();
+    const newTime = page.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
+    await expect(newTime).toBeVisible();
+    const movedTo = (await newTime.textContent()) ?? '';
+    // Later tests block 12:00 pm, add a booking at 3:00 pm and expect 11:00 am to be free.
+    expect(['11:00 am', '12:00 pm', '12:30 pm', '3:00 pm', bookedTime]).not.toContain(movedTo);
+    await newTime.click();
+    await snap(page, '12b-change-time');
+    await button(page, 'Move to this time').click();
+    await expect(page.getByText('Booking moved')).toBeVisible();
+    await expect(page.getByText(new RegExp(`^Was .* at ${bookedTime}\\.$`))).toBeVisible();
+    await expect(button(page, 'WhatsApp shop')).toBeVisible();
+    bookedTime = movedTo;
+    await button(page, 'See my bookings').click();
+    await expect(page.getByText(new RegExp(`, ${bookedTime}$`))).toBeVisible();
+    await expect(page.getByText('“Low fade please”')).toBeVisible();
     await signOut(page);
   });
 

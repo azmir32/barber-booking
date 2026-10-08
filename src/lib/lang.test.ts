@@ -59,6 +59,7 @@ const DYNAMIC_KEYS = [
   'This service is no longer available.',
   'You can mark this once the appointment has started.',
   'You can only cancel an upcoming booking.',
+  'You can only change an upcoming booking.',
   'Invalid login credentials',
   'User already registered',
   'Email not confirmed',

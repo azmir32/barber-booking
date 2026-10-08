@@ -336,11 +336,13 @@ revoke execute on function public.lock_shop_diary(uuid) from public, anon, authe
 -- Free start times for a service on a given local day, per barber.
 -- Slots start every 15 minutes inside each barber's working hours, skip
 -- anything already booked, skip times that have passed, and stop at the
--- booking horizon.
+-- booking horizon. p_ignore_booking leaves one booking out of the taken
+-- times, so a booking being moved doesn't block its own neighbouring slots.
 create function public.available_slots(
   p_service_id uuid,
   p_day date,
-  p_barber_id uuid default null
+  p_barber_id uuid default null,
+  p_ignore_booking uuid default null
 )
 returns table (barber_id uuid, starts_at timestamptz)
 language sql
@@ -348,7 +350,14 @@ stable
 security definer
 set search_path = public
 as $$
-  with svc as (
+  with ignored as (
+    -- Only the caller's own booking, or one at their shop, so nobody can
+    -- find out when someone else is booked.
+    select bk.id from bookings bk
+    where bk.id = p_ignore_booking
+      and (bk.customer_id = auth.uid() or public.owns_shop(bk.shop_id))
+  ),
+  svc as (
     select s.id, s.shop_id, s.duration_min, sh.time_zone
     from services s
     join shops sh on sh.id = s.shop_id
@@ -380,6 +389,7 @@ as $$
       select 1 from bookings bk
       where bk.barber_id = c.barber_id
         and bk.status <> 'cancelled'
+        and bk.id is distinct from (select id from ignored)
         and tstzrange(bk.starts_at, bk.ends_at)
             && tstzrange(c.starts_at, c.starts_at + make_interval(mins => c.duration_min))
     )
@@ -508,6 +518,92 @@ begin
   exception when exclusion_violation then
     raise exception 'That time has been booked by someone else since.' using errcode = 'P0001';
   end;
+  return v_booking;
+end;
+$$;
+
+-- Move a booking to another free time instead of cancelling and booking
+-- again, so it keeps its place in the diary, its note and its price.
+-- Customers move their own upcoming bookings; shop owners move any of their
+-- shop's bookings except blocked time, including one whose time has started
+-- (a customer running late). The new time follows the same rules as
+-- booking, except that the booking's own time doesn't count as taken, so
+-- moving 15 minutes later works. With no barber given it stays with the
+-- same barber if they are free, else goes to whoever is least busy that day.
+create function public.reschedule_booking(
+  p_booking_id uuid,
+  p_starts_at timestamptz,
+  p_barber_id uuid default null
+)
+returns public.bookings
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_booking bookings;
+  v_service services;
+  v_tz text;
+  v_day date;
+  v_barber uuid;
+begin
+  -- Lock before reading, so nobody cancels or moves it in between.
+  perform public.lock_shop_diary(shop_id) from bookings where id = p_booking_id;
+  select * into v_booking from bookings where id = p_booking_id;
+  if not found or v_booking.is_block then
+    raise exception 'Booking not found.' using errcode = 'P0002';
+  end if;
+
+  if public.owns_shop(v_booking.shop_id) then
+    if v_booking.status <> 'confirmed' then
+      raise exception 'You can only change an upcoming booking.' using errcode = '42501';
+    end if;
+  elsif v_booking.customer_id = auth.uid() then
+    if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
+      raise exception 'You can only change an upcoming booking.' using errcode = '42501';
+    end if;
+  else
+    raise exception 'Booking not found.' using errcode = 'P0002';
+  end if;
+
+  select * into v_service from services where id = v_booking.service_id and is_active;
+  if not found then
+    raise exception 'This service is no longer available.' using errcode = 'P0002';
+  end if;
+
+  select time_zone into v_tz from shops where id = v_booking.shop_id;
+  v_day := (p_starts_at at time zone v_tz)::date;
+
+  select a.barber_id into v_barber
+  from public.available_slots(v_service.id, v_day, p_barber_id, v_booking.id) a
+  where a.starts_at = p_starts_at
+  order by
+    a.barber_id = v_booking.barber_id desc,
+    (
+      select count(*) from bookings bk
+      where bk.barber_id = a.barber_id
+        and bk.status <> 'cancelled'
+        and tstzrange(bk.starts_at, bk.ends_at)
+            && tstzrange(v_day::timestamp at time zone v_tz, (v_day + 1)::timestamp at time zone v_tz)
+    ),
+    a.barber_id
+  limit 1;
+
+  if v_barber is null then
+    raise exception 'Sorry, that time was just taken. Please pick another.' using errcode = 'P0001';
+  end if;
+
+  begin
+    update bookings set
+      barber_id = v_barber,
+      starts_at = p_starts_at,
+      ends_at = p_starts_at + make_interval(mins => v_service.duration_min)
+    where id = v_booking.id
+    returning * into v_booking;
+  exception when exclusion_violation then
+    raise exception 'Sorry, that time was just taken. Please pick another.' using errcode = 'P0001';
+  end;
+
   return v_booking;
 end;
 $$;
@@ -654,7 +750,9 @@ revoke execute on function public.add_shop_booking(uuid, date, time, int, uuid, 
 grant execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) to authenticated;
 revoke execute on function public.book_appointment(uuid, timestamptz, uuid, text) from public, anon;
 revoke execute on function public.set_booking_status(uuid, public.booking_status) from public, anon;
+revoke execute on function public.reschedule_booking(uuid, timestamptz, uuid) from public, anon;
 revoke execute on function public.set_barber_hours(uuid, jsonb) from public, anon;
 grant execute on function public.book_appointment(uuid, timestamptz, uuid, text) to authenticated;
 grant execute on function public.set_booking_status(uuid, public.booking_status) to authenticated;
+grant execute on function public.reschedule_booking(uuid, timestamptz, uuid) to authenticated;
 grant execute on function public.set_barber_hours(uuid, jsonb) to authenticated;
