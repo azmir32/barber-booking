@@ -54,6 +54,15 @@ test('guests browse live shops with their services, barbers and free times', asy
   );
   assert.equal(shops![0].from_price, 12);
   assert.equal(shops![0].barber_count, 2);
+  // Today's hours: Pak Mat's chairs work 8 to 6 every day (the Friday prayers
+  // break doesn't count), and The Fade Room is shut on Sundays.
+  const hoursOf = (slug: string) => {
+    const s = shops!.find((x: { slug: string }) => x.slug === slug);
+    return [s.opens_today, s.closes_today];
+  };
+  assert.deepEqual(hoursOf('gunting-pak-mat'), ['08:00:00', '18:00:00']);
+  const sunday = new Date(`${today()}T00:00:00Z`).getUTCDay() === 0;
+  assert.deepEqual(hoursOf('the-fade-room'), sunday ? [null, null] : ['12:00:00', '22:00:00']);
   // Search looks in the name, area and address; areas match whatever the case.
   const search = async (args: Record<string, unknown>) =>
     ((await c.rpc('find_shops', args)).data as { slug: string }[]).map((s) => s.slug);
@@ -91,6 +100,68 @@ test('guests browse live shops with their services, barbers and free times', asy
   const missing = await c.from('shops').select('*').eq('slug', 'nope').maybeSingle();
   assert.equal(missing.data, null);
   assert.equal(missing.error, null);
+});
+
+test('today\'s hours leave out barbers who are away and follow the shop\'s clock', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const listed = async () => {
+    const { data } = await client().rpc('find_shops', { p_search: 'Ali Barber' });
+    return [data[0].opens_today, data[0].closes_today];
+  };
+  const everyDay = (opens: string, closes: string) =>
+    [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens_at: opens, closes_at: closes }));
+  await ali.rpc('set_barber_hours', { p_barber_id: barbers![0].id, p_hours: everyDay('09:00', '13:00') });
+  await ali.rpc('set_barber_hours', { p_barber_id: barbers![1].id, p_hours: everyDay('11:00', '21:30') });
+  assert.deepEqual(await listed(), ['09:00:00', '21:30:00']);
+  await ali.from('barbers').update({ is_active: false }).eq('id', barbers![1].id);
+  assert.deepEqual(await listed(), ['09:00:00', '13:00:00']);
+  // Nor is a barber with the whole day off.
+  await ali.from('barbers').update({ is_active: true }).eq('id', barbers![1].id);
+  for (const b of tables().bookings) if (b.barber_id === barbers![1].id) b.status = 'cancelled';
+  const off = await ali.rpc('add_shop_booking', {
+    p_barber_id: barbers![1].id,
+    p_day: today(),
+    p_time: '00:00',
+    p_duration_min: 1440,
+    p_is_block: true,
+  });
+  assert.equal(off.error, null);
+  assert.deepEqual(await listed(), ['09:00:00', '13:00:00']);
+
+  // Kiritimati and Pago Pago are 25 hours apart, so never on the same day.
+  const weekdayIn = (tz: string) => new Date(`${localDateString(new Date(), tz)}T00:00:00Z`).getUTCDay();
+  await ali.rpc('set_barber_hours', {
+    p_barber_id: barbers![0].id,
+    p_hours: [{ weekday: weekdayIn('Pacific/Kiritimati'), opens_at: '09:00', closes_at: '12:00' }],
+  });
+  const row = tables().shops.find((s) => s.id === shop.id)!;
+  row.time_zone = 'Pacific/Kiritimati';
+  assert.deepEqual(await listed(), ['09:00:00', '12:00:00']);
+  row.time_zone = 'Pacific/Pago_Pago';
+  assert.deepEqual(await listed(), [null, null]);
+});
+
+test('a paused shop\'s link still says whose shop it is', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const guest = client();
+  assert.deepEqual((await guest.rpc('shop_public_status', { p_slug: 'ali-barber' })).data, [
+    { name: 'Ali Barber Sungai Chua', phone: '012-345 6789', is_live: true },
+  ]);
+
+  await ali.from('shops').update({ is_published: false }).eq('id', shop.id);
+  assert.equal((await guest.from('shops').select('*').eq('slug', 'ali-barber').maybeSingle()).data, null);
+  const paused = await guest.rpc('shop_public_status', { p_slug: 'ali-barber' });
+  assert.equal(paused.error, null);
+  assert.deepEqual(paused.data, [{ name: 'Ali Barber Sungai Chua', phone: '012-345 6789', is_live: false }]);
+  // The owner still sees their own shop.
+  assert.equal((await shopBySlug(ali, 'ali-barber')).name, 'Ali Barber Sungai Chua');
+
+  assert.deepEqual((await guest.rpc('shop_public_status', { p_slug: 'nope' })).data, []);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  assert.equal((await hakim.rpc('shop_public_status', { p_slug: 'ali-barber' })).data[0].is_live, false);
 });
 
 test('a customer books, sees and cancels, and the same time cannot be taken twice', async () => {

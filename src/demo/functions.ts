@@ -44,6 +44,10 @@ const trimmed = (v: unknown) => (v == null ? null : pgTrim(String(v)) || null);
 const clash = (bk: Row, barberId: unknown, start: number, end: number) =>
   bk.barber_id === barberId && bk.status !== 'cancelled' && ms(bk.starts_at) < end && start < ms(bk.ends_at);
 
+const WHOLE_DAY_MS = 24 * 60 * 60_000;
+/** A day off: a block of a whole day or more. */
+const isWholeDayBlock = (b: Row) => b.is_block === true && ms(b.ends_at) - ms(b.starts_at) >= WHOLE_DAY_MS;
+
 /** Runs an insert or update, turning a double booking into the function's own message. */
 function guarded<T>(fn: () => T, overlapMessage: string, checkMessage?: string): T {
   try {
@@ -82,6 +86,22 @@ export function findShops(args: Record<string, unknown>) {
       const prices = tables()
         .services.filter((v) => v.shop_id === s.id && v.is_active)
         .map((v) => Number(v.price));
+      const barbers = tables().barbers.filter((b) => b.shop_id === s.id && b.is_active);
+      // Today's hours by the shop's clock, from the first barber in to the last one out.
+      const date = localDateString(new Date(now()), String(s.time_zone));
+      const weekday = weekdayOf(date);
+      // A barber with the whole day off (or the shop closed for Hari Raya) isn't in.
+      const off = (barberId: unknown) =>
+        tables().bookings.some(
+          (bk) =>
+            bk.barber_id === barberId &&
+            bk.status === 'confirmed' &&
+            isWholeDayBlock(bk) &&
+            localDateString(new Date(ms(bk.starts_at)), String(s.time_zone)) === date,
+        );
+      const today = tables().working_hours.filter(
+        (wh) => wh.weekday === weekday && barbers.some((b) => b.id === wh.barber_id) && !off(wh.barber_id),
+      );
       return {
         id: s.id,
         name: s.name,
@@ -90,9 +110,18 @@ export function findShops(args: Record<string, unknown>) {
         address: s.address,
         about: s.about,
         from_price: prices.length ? Math.min(...prices) : null,
-        barber_count: tables().barbers.filter((b) => b.shop_id === s.id && b.is_active).length,
+        barber_count: barbers.length,
+        opens_today: today.length ? today.map((wh) => String(wh.opens_at)).sort()[0] : null,
+        closes_today: today.length ? today.map((wh) => String(wh.closes_at)).sort().at(-1) : null,
       };
     });
+}
+
+/** A booking link's shop even when it is hidden, so the page can say it isn't live. */
+export function shopPublicStatus(slug: unknown) {
+  return tables()
+    .shops.filter((s) => slug != null && s.slug === String(slug))
+    .map((s) => ({ name: s.name, phone: s.phone, is_live: shopIsLive(s) }));
 }
 
 export function shopAreas() {
@@ -381,9 +410,6 @@ export function addShopBooking(c: Caller, args: ShopBookingArgs) {
 
 // Closing the shop for a few days ---------------------------------------------
 
-const WHOLE_DAY_MS = 24 * 60 * 60_000;
-const isWholeDayBlock = (b: Row) => b.is_block === true && ms(b.ends_at) - ms(b.starts_at) >= WHOLE_DAY_MS;
-
 function myShop(c: Caller): Row {
   const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
   if (!shop) throw new PgError('P0002', 'Set up your shop first.', 500);
@@ -516,6 +542,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: findShops(args) };
     case 'shop_areas':
       return { status: 200, body: shopAreas() };
+    case 'shop_public_status':
+      return { status: 200, body: shopPublicStatus(args.p_slug) };
     case 'available_slots':
       return {
         status: 200,

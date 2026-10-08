@@ -140,8 +140,6 @@ export const ms: Record<string, string> = {
 
   // Booking at a shop
   'Shop not found': 'Kedai tidak dijumpai',
-  'This booking link may be wrong, or the shop isn’t taking bookings right now.':
-    'Pautan tempahan ini mungkin salah, atau kedai tidak menerima tempahan buat masa ini.',
   'Find another barber': 'Cari barber lain',
   'Not taking online bookings yet': 'Belum menerima tempahan dalam talian',
   'Message the shop to book for now.': 'Hubungi kedai untuk menempah buat masa ini.',
@@ -506,4 +504,15 @@ export const ms: Record<string, string> = {
   'It may have been cancelled or already started, or the shop no longer offers this service.':
     'Mungkin tempahan ini sudah dibatalkan atau sudah bermula, atau kedai tidak lagi menawarkan servis ini.',
   'You can only change an upcoming booking.': 'Anda hanya boleh menukar tempahan yang akan datang.',
+
+  // Open now, and links to shops that are not live
+  'Opens {time}': 'Buka jam {time}',
+  'Open now · until {time}': 'Buka sekarang · hingga {time}',
+  'Closed today': 'Tutup hari ini',
+  '{shop} isn’t taking online bookings right now': '{shop} tidak menerima tempahan dalam talian buat masa ini',
+  'Message them on WhatsApp to book, or find another barber.':
+    'Hubungi mereka melalui WhatsApp untuk menempah, atau cari barber lain.',
+  'Check back later, or find another barber.': 'Cuba lagi nanti, atau cari barber lain.',
+  'This booking link may be wrong. Check it with the shop.':
+    'Pautan tempahan ini mungkin salah. Sila semak dengan pihak kedai.',
 };

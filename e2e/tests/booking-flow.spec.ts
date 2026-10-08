@@ -9,6 +9,8 @@ const barber = { name: 'Ali Rahman', phone: '012-345 6789', email: `ali-${run}@t
 const customer = { name: 'Ben Lim', phone: '013-222 3333', email: `ben-${run}@test.my`, password: 'password123' };
 const customer2 = { name: 'Chong Wei', phone: '014-555 6666', email: `chong-${run}@test.my`, password: 'password123' };
 const shopName = `Kemas Barber ${run}`;
+/** The booking link the app makes from the shop name. */
+const shopSlug = `kemas-barber-${run}`;
 
 /** Saves a screenshot when SCREENSHOTS=<dir> is set (handy for reviewing UI). */
 async function snap(page: Page, name: string) {
@@ -121,6 +123,15 @@ test.describe.serial('booking flow', () => {
     await button(page, 'Save hours').click();
     await expect(page.getByText('Every day · 10:00 am–8:00 pm · Fri break 1:00 pm–2:30 pm')).toBeVisible();
 
+    // Not live yet: a customer opening the link is pointed to WhatsApp instead of "Shop not found".
+    await signOut(page);
+    await page.goto(`/shop/${shopSlug}`);
+    await expect(page.getByText(`${shopName} isn’t taking online bookings right now`)).toBeVisible();
+    await expect(button(page, `WhatsApp ${shopName}`)).toBeVisible();
+    await expect(button(page, 'Find another barber')).toBeVisible();
+    await snap(page, '07b-shop-not-live');
+    await signIn(page, barber);
+
     // Go live.
     await page.getByRole('tab', { name: /My shop/ }).click();
     await expect(page.getByText('Not live yet')).toBeVisible();
@@ -137,6 +148,10 @@ test.describe.serial('booking flow', () => {
     await snap(page, '09-explore');
     await page.getByText(shopName).click();
     await expect(page.getByText('1. Pick a service')).toBeVisible();
+    // Open 10 am to 8 pm every day, so whatever the time it is one of these. The
+    // list underneath says the same, hidden, so only the visible line counts.
+    const openLine = /^(Opens 10:00 am|Open now · until 8:00 pm|Closed today)$/;
+    await expect(page.getByText(openLine).filter({ visible: true })).toBeVisible();
 
     const time = await pickHaircutTomorrow(page);
     bookedTime = (await time.textContent()) ?? '';
