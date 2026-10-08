@@ -320,6 +320,7 @@ export const ms: Record<string, string> = {
   'That name or link is already taken.': 'Nama atau pautan itu sudah digunakan.',
   'Something there is too long or not allowed. Please check and try again.':
     'Ada maklumat yang terlalu panjang atau tidak dibenarkan. Sila semak dan cuba lagi.',
+  'No internet connection. Check your data and try again.': 'Tiada sambungan internet. Semak data anda dan cuba lagi.',
   'Something went wrong. Please try again.': 'Ada masalah. Sila cuba lagi.',
   'You already have {count} upcoming bookings here. Cancel one to book another.':
     'Anda sudah ada {count} tempahan akan datang di sini. Batalkan satu untuk menempah lagi.',
@@ -365,4 +366,7 @@ export const ms: Record<string, string> = {
   'Demo accounts: {customer} (customer) or {barber} (barber). Password: {password}':
     'Akaun demo: {customer} (pelanggan) atau {barber} (barber). Kata laluan: {password}',
   'This is the demo, so no email is sent. Use code {code}.': 'Ini demo, jadi tiada e-mel dihantar. Gunakan kod {code}.',
+
+  // Picking a time (components/time-field.tsx)
+  'Pick a time': 'Pilih masa',
 };

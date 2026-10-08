@@ -1,6 +1,7 @@
 // Small set of shared building blocks so every screen looks the same.
 
-import { useState, type ReactNode } from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { useState, type ComponentProps, type ReactNode, type Ref } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -24,12 +25,20 @@ export function Screen({
   scroll = true,
   edges = ['top'],
   onRefresh,
+  footer,
+  overlay,
+  scrollRef,
 }: {
   children: ReactNode;
   scroll?: boolean;
   edges?: ('top' | 'bottom')[];
   /** Enables pull to refresh. */
   onRefresh?: () => Promise<unknown>;
+  /** Stays at the bottom of the screen while the content scrolls, e.g. a confirm bar. */
+  footer?: ReactNode;
+  /** Floats over the content, e.g. an undo bar or an add button. Position it absolutely. */
+  overlay?: ReactNode;
+  scrollRef?: Ref<ScrollView>;
 }) {
   const theme = useTheme();
   const [refreshing, setRefreshing] = useState(false);
@@ -50,9 +59,12 @@ export function Screen({
     />
   ) : undefined;
   return (
-    <SafeAreaView edges={edges} style={[styles.screen, { backgroundColor: theme.background }]}>
+    <SafeAreaView
+      edges={footer ? edges.filter((e) => e !== 'bottom') : edges}
+      style={[styles.screen, { backgroundColor: theme.background }]}>
       {scroll ? (
         <ScrollView
+          ref={scrollRef}
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
           refreshControl={refreshControl}>
@@ -61,6 +73,12 @@ export function Screen({
       ) : (
         inner
       )}
+      {footer ? (
+        <SafeAreaView edges={['bottom']} style={[styles.footer, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={styles.footerInner}>{footer}</View>
+        </SafeAreaView>
+      ) : null}
+      {overlay}
     </SafeAreaView>
   );
 }
@@ -146,30 +164,65 @@ export function Chip({
   label,
   sublabel,
   selected,
+  disabled,
   onPress,
 }: {
   label: string;
   sublabel?: string;
   selected?: boolean;
+  /** Shown faded and can't be tapped, e.g. a day the shop is closed. */
+  disabled?: boolean;
   onPress?: () => void;
 }) {
   const theme = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected }}
+      accessibilityState={{ selected, disabled }}
+      disabled={disabled}
       onPress={onPress}
       style={[
         styles.chip,
         {
           backgroundColor: selected ? theme.accent : theme.chip,
           borderColor: selected ? theme.accent : theme.border,
+          opacity: disabled ? 0.45 : 1,
         },
       ]}>
       <Text style={[styles.chipText, { color: selected ? theme.accentText : theme.text }]}>{label}</Text>
       {sublabel ? (
         <Text style={[styles.chipSub, { color: selected ? theme.accentText : theme.textSecondary }]}>{sublabel}</Text>
       ) : null}
+    </Pressable>
+  );
+}
+
+/** A square button with just an icon, as big as a regular button so it is easy to hit. */
+export function IconButton({
+  icon,
+  label,
+  onPress,
+  variant = 'secondary',
+  color,
+}: {
+  icon: ComponentProps<typeof Ionicons>['name'];
+  /** Read out by screen readers, since there is no visible text. */
+  label: string;
+  onPress?: () => void;
+  variant?: 'primary' | 'secondary' | 'ghost';
+  color?: string;
+}) {
+  const theme = useTheme();
+  const bg = variant === 'primary' ? theme.accent : variant === 'secondary' ? theme.chip : 'transparent';
+  const fg = color ?? (variant === 'primary' ? theme.accentText : theme.text);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      hitSlop={4}
+      style={({ pressed }) => [styles.iconButton, { backgroundColor: bg, opacity: pressed ? 0.8 : 1 }]}>
+      <Ionicons name={icon} size={22} color={fg} />
     </Pressable>
   );
 }
@@ -282,6 +335,22 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     alignItems: 'center',
     minWidth: 64,
+  },
+  iconButton: {
+    minWidth: 48,
+    minHeight: 48,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footer: { borderTopWidth: StyleSheet.hairlineWidth },
+  footerInner: {
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    alignSelf: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.sm,
   },
   chipText: { fontSize: 15, fontWeight: '600' },
   chipSub: { fontSize: 12 },

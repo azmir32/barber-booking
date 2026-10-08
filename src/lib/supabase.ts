@@ -50,6 +50,10 @@ export function errorMessage(error: unknown): string {
     if ('code' in error && error.code === '23514') {
       return t('Something there is too long or not allowed. Please check and try again.');
     }
+    // Requests that never reached the server have no code, only the browser's or phone's own words.
+    if (!('code' in error && error.code) && /fetch|network|timed? ?out/i.test(error.message)) {
+      return t('No internet connection. Check your data and try again.');
+    }
     const limit = /^You already have (\d+) upcoming bookings here\./.exec(error.message);
     if (limit) {
       return t('You already have {count} upcoming bookings here. Cancel one to book another.', { count: limit[1] });
