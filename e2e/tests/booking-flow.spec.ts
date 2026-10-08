@@ -19,7 +19,16 @@ async function snap(page: Page, name: string) {
 }
 
 const button = (page: Page, name: string | RegExp) => page.getByRole('button', { name, exact: typeof name === 'string' });
+/** A chip that is one choice of several, like a day, a time or a service. */
+const choice = (page: Page, name: string | RegExp) => page.getByRole('radio', { name, exact: typeof name === 'string' });
 const field = (page: Page, label: string) => page.getByLabel(label, { exact: true });
+
+/** Opens a time picker by its label and picks a time such as "2:30 pm". */
+async function pickClock(page: Page, label: string, time: string) {
+  await page.getByRole('button', { name: new RegExp(`^${label}:`) }).click();
+  await page.getByRole('dialog', { name: label }).getByRole('radio', { name: time, exact: true }).click();
+  await expect(page.getByRole('dialog', { name: label })).toHaveCount(0);
+}
 
 async function signUp(page: Page, who: typeof barber) {
   await field(page, 'Full name').fill(who.name);
@@ -56,9 +65,9 @@ async function signOut(page: Page) {
 
 /** On a shop page: picks Haircut and tomorrow, returns the first free time. */
 async function pickHaircutTomorrow(page: Page) {
-  await page.getByText('Haircut', { exact: true }).click();
-  await button(page, /^Tomorrow/).click();
-  const firstTime = page.getByRole('button', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
+  await choice(page, /^Haircut/).click();
+  await choice(page, /^Tomorrow/).click();
+  const firstTime = page.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
   await expect(firstTime).toBeVisible();
   return firstTime;
 }
@@ -94,17 +103,16 @@ test.describe.serial('booking flow', () => {
     // Barbers: the owner got the first chair; open Sundays too.
     await page.getByRole('tab', { name: /Barbers/ }).click();
     await expect(page.getByText(barber.name, { exact: true })).toBeVisible();
-    await expect(page.getByText('Mon–Sat · 10:00–20:00')).toBeVisible();
+    await expect(page.getByText('Mon–Sat · 10:00 am–8:00 pm')).toBeVisible();
     await snap(page, '06-barbers');
     await button(page, 'Hours').click();
     await expect(field(page, 'Barber name')).toBeVisible();
     await snap(page, '07-hours');
-    await button(page, 'Open').last().click(); // Sunday is listed last
+    await page.getByRole('group', { name: 'Sun' }).getByRole('radio', { name: 'Open' }).click();
     await button(page, '+ Add break (e.g. Friday prayers)').click();
-    await field(page, 'Break from').fill('13:00');
-    await field(page, 'Break to').fill('14:30');
+    await pickClock(page, 'Break to', '2:30 pm');
     await button(page, 'Save hours').click();
-    await expect(page.getByText('Every day · 10:00–20:00')).toBeVisible();
+    await expect(page.getByText('Every day · 10:00 am–8:00 pm · Fri break 1:00 pm–2:30 pm')).toBeVisible();
 
     // Go live.
     await page.getByRole('tab', { name: /My shop/ }).click();
@@ -126,15 +134,14 @@ test.describe.serial('booking flow', () => {
     const time = await pickHaircutTomorrow(page);
     bookedTime = (await time.textContent()) ?? '';
     await time.click();
-    await snap(page, '10-shop-page');
-    await button(page, 'Sign in to book').click();
-
-    // Not signed in yet: sign up and land back on the shop with the slot still picked.
-    await button(page, 'Create an account').click();
-    await signUp(page, customer);
-    await expect(button(page, 'Confirm booking')).toBeVisible();
     await field(page, 'Note for your barber (optional)').fill('Low fade please');
-    await button(page, 'Confirm booking').click();
+    await snap(page, '10-shop-page');
+    await button(page, 'Continue to book').click();
+
+    // Not signed in yet: the account is made for this booking, then it books straight away.
+    await expect(page.getByText('Your booking')).toBeVisible();
+    await expect(page.getByText(new RegExp(`^Haircut · .*, ${bookedTime}$`))).toBeVisible();
+    await signUp(page, customer);
 
     await expect(page.getByText('You’re booked!')).toBeVisible();
     await snap(page, '11-booked');
@@ -151,52 +158,59 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Find a barber')).toBeVisible();
     await page.getByText(shopName).click();
     await pickHaircutTomorrow(page);
-    await expect(page.getByRole('button', { name: bookedTime, exact: true })).toHaveCount(0);
+    await expect(choice(page, bookedTime)).toHaveCount(0);
     await signOut(page);
   });
 
   test('barber sees the booking and cancels it', async ({ page }) => {
     await signIn(page, barber);
     await expect(page.getByText('Bookings').first()).toBeVisible();
-    await button(page, /^Tomorrow/).click();
+    await choice(page, /^Tomorrow/).click();
     await expect(page.getByText(customer.name, { exact: true })).toBeVisible();
     await expect(page.getByText('“Low fade please”')).toBeVisible();
     await snap(page, '13-barber-day');
-    await button(page, 'Cancel').click();
+    await button(page, `More actions for ${customer.name}`).click();
+    await button(page, 'Cancel booking').click();
     await expect(page.getByText('Cancel this booking?')).toBeVisible();
     await snap(page, '13b-confirm-cancel');
-    await confirm(page, 'Cancel booking');
-    await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
+    await confirm(page, 'Cancel and WhatsApp');
+    // The browser can't open WhatsApp without another tap, so the app offers one.
+    await expect(page.getByText(`Booking cancelled. Let ${customer.name} know.`)).toBeVisible();
+    await expect(button(page, `WhatsApp ${customer.name}`).first()).toBeVisible();
+    await expect(page.getByText('Cancelled (1)')).toBeVisible();
     await signOut(page);
   });
 
   test('barber blocks lunch and adds a WhatsApp booking', async ({ page }) => {
     await signIn(page, barber);
-    await button(page, /^Tomorrow/).click();
+    await choice(page, /^Tomorrow/).click();
 
     await button(page, '+ Add booking or block time').click();
-    await button(page, 'Block time').first().click();
-    await button(page, /^1 hr$/).click();
-    await field(page, 'Start time').fill('12:00');
+    await choice(page, 'Block time').click();
+    await choice(page, /^1 hr$/).click();
+    await pickClock(page, 'Start time', '12:00 pm');
     await field(page, 'Reason (optional)').fill('Lunch');
-    await button(page, 'Block time').last().click();
+    await button(page, 'Block time').click();
     await expect(page.getByText(`Lunch · ${barber.name}`)).toBeVisible();
 
     await button(page, '+ Add booking or block time').click();
-    await button(page, /^Haircut/).click();
-    await field(page, 'Start time').fill('15:00');
-    await field(page, 'Customer name').fill('Pak Abu');
+    await choice(page, /^Haircut/).click();
+    // Lunch is blocked, so the free times skip 12:00 pm.
+    await choice(page, /^Afternoon/).click();
+    await expect(choice(page, '12:00 pm')).toHaveCount(0);
+    await choice(page, '3:00 pm').click();
+    await field(page, 'Customer name (optional)').fill('Pak Abu');
     await field(page, 'Customer phone (optional)').fill('019-111 2222');
     await snap(page, '14-add-booking');
     await button(page, 'Add booking').click();
     await expect(page.getByText('Pak Abu (added by you)')).toBeVisible();
     await snap(page, '15-barber-day-with-guest');
 
-    await button(page, dayChip(2)).click();
+    await choice(page, dayChip(2)).click();
     await button(page, '+ Add booking or block time').click();
-    await button(page, 'Block time').first().click();
-    await button(page, 'Whole day').click();
-    await expect(field(page, 'Start time')).toHaveCount(0);
+    await choice(page, 'Block time').click();
+    await choice(page, 'Whole day').click();
+    await expect(page.getByRole('button', { name: /^Start time:/ })).toHaveCount(0);
     await field(page, 'Reason (optional)').fill('Day off');
     await button(page, 'Block the day').click();
     await expect(page.getByText('Whole day', { exact: true })).toBeVisible();
@@ -208,11 +222,13 @@ test.describe.serial('booking flow', () => {
     await signIn(page, customer2);
     await page.getByText(shopName).click();
     await pickHaircutTomorrow(page);
-    await expect(page.getByRole('button', { name: '11:00 am', exact: true })).toBeVisible();
+    await expect(choice(page, '11:00 am')).toBeVisible();
+    await choice(page, /^Afternoon/).click();
+    await expect(choice(page, '2:00 pm')).toBeVisible();
     for (const taken of ['12:00 pm', '12:30 pm', '3:00 pm']) {
-      await expect(page.getByRole('button', { name: taken, exact: true })).toHaveCount(0);
+      await expect(choice(page, taken)).toHaveCount(0);
     }
-    await button(page, dayChip(2)).click();
+    await choice(page, dayChip(2)).click();
     await expect(page.getByText(/^No free times this day/)).toBeVisible();
     await signOut(page);
   });
@@ -220,7 +236,7 @@ test.describe.serial('booking flow', () => {
   test('customer sees the cancellation', async ({ page }) => {
     await signIn(page, customer);
     await page.getByRole('tab', { name: /My bookings/ }).click();
-    await expect(page.getByText('Past')).toBeVisible();
+    await expect(page.getByText('Earlier')).toBeVisible();
     await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
     await expect(page.getByText('Upcoming')).toHaveCount(0);
   });

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { formatClock, summarizeWeek } from './hours.ts';
 import { setCurrentLang, t } from './lang.ts';
 import { ms } from './strings-ms.ts';
-import { formatDay, formatDuration, upcomingDays } from './time.ts';
+import { formatDay, formatDuration, formatTime, groupByPartOfDay, upcomingDays } from './time.ts';
 import { WEEKDAYS } from './types.ts';
 
 const SRC = path.resolve(import.meta.dirname, '..');
@@ -36,6 +36,7 @@ function literalKeys(): Set<string> {
 const DYNAMIC_KEYS = [
   ...WEEKDAYS,
   'Morning',
+  'Midday',
   'Afternoon',
   'Evening',
   'Haircut',
@@ -98,9 +99,17 @@ test('dates, times and hours read naturally in Malay', () => {
     );
     assert.equal(formatDay('2026-10-06T02:00:00Z', 'Asia/Kuala_Lumpur'), 'Sel, 6 Okt');
     assert.equal(formatDuration(90), '1 jam 30 min');
-    assert.equal(formatClock('20:00'), '8:00 PTG');
+    assert.equal(formatClock('20:00'), '8.00 malam');
+    assert.equal(formatClock('13:30'), '1.30 tengah hari');
+    assert.equal(formatClock('17:00'), '5.00 petang');
+    assert.equal(formatTime('2026-10-06T01:15:00Z', 'Asia/Kuala_Lumpur'), '9.15 pagi');
     const week = [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens_at: '10:00', closes_at: '20:00' }));
-    assert.equal(summarizeWeek(week), 'Isn–Sab · 10:00–20:00');
+    assert.equal(summarizeWeek(week), 'Isn–Sab · 10.00 pagi–8.00 malam');
+    const slots = ['2026-10-06T03:00:00Z', '2026-10-06T05:00:00Z', '2026-10-06T07:00:00Z', '2026-10-06T12:00:00Z'];
+    assert.deepEqual(
+      groupByPartOfDay(slots, 'Asia/Kuala_Lumpur').map(([part, [at]]) => `${t(part)}: ${formatTime(at, 'Asia/Kuala_Lumpur')}`),
+      ['Pagi: 11.00 pagi', 'Tengah hari: 1.00 tengah hari', 'Petang: 3.00 petang', 'Malam: 8.00 malam'],
+    );
   } finally {
     setCurrentLang('en');
   }

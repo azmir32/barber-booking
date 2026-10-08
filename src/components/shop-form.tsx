@@ -1,8 +1,11 @@
 import { useState } from 'react';
+import { View } from 'react-native';
 
-import { Button, ErrorText, Field } from '@/components/ui';
+import { Button, ErrorText, Field, Row, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
+import { Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
+import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { addBarber } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -15,6 +18,10 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   const [name, setName] = useState(shop?.name ?? '');
   const [slug, setSlug] = useState(shop?.slug ?? '');
   const [slugEdited, setSlugEdited] = useState(Boolean(shop));
+  // Once customers have the link, changing it breaks every copy already
+  // shared, so a live shop has to ask for it first.
+  const [slugUnlocked, setSlugUnlocked] = useState(false);
+  const slugLocked = Boolean(shop?.is_published) && !slugUnlocked;
   const [about, setAbout] = useState(shop?.about ?? '');
   const [address, setAddress] = useState(shop?.address ?? '');
   const [area, setArea] = useState(shop?.area ?? 'Kajang');
@@ -24,6 +31,15 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   const [error, setError] = useState<string | null>(null);
 
   const cleanSlug = slugify(slug);
+
+  async function unlockSlug() {
+    const ok = await confirmAction(
+      t('Change your booking link?'),
+      t('Links you already shared, in your Instagram bio, WhatsApp status or posters, will stop working.'),
+      t('Change link'),
+    );
+    if (ok) setSlugUnlocked(true);
+  }
 
   async function save() {
     if (!session) return;
@@ -42,6 +58,7 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
       const { error } = await supabase.from('shops').update(fields).eq('id', shop.id);
       setBusy(false);
       if (error) return setError(errorMessage(error));
+      setSlugUnlocked(false);
       return onSaved();
     }
     const { data, error } = await supabase
@@ -71,17 +88,30 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
         placeholder={t('e.g. Kemas Barber Kajang')}
         maxLength={80}
       />
-      <Field
-        label={t('Booking link')}
-        value={slug}
-        onChangeText={(v) => {
-          setSlugEdited(true);
-          setSlug(v);
-        }}
-        autoCapitalize="none"
-        maxLength={40}
-        hint={cleanSlug ? bookingLink(cleanSlug) : t('Letters, numbers and dashes.')}
-      />
+      {slugLocked ? (
+        <View style={{ gap: Spacing.xs }}>
+          <T variant="label">{t('Booking link')}</T>
+          <Row style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
+            <T selectable style={{ flex: 1 }}>
+              {bookingLink(cleanSlug)}
+            </T>
+            <Button title={t('Change link')} variant="ghost" onPress={unlockSlug} />
+          </Row>
+        </View>
+      ) : (
+        <Field
+          label={t('Booking link')}
+          value={slug}
+          onChangeText={(v) => {
+            setSlugEdited(true);
+            setSlug(v);
+          }}
+          autoCapitalize="none"
+          autoFocus={slugUnlocked}
+          maxLength={40}
+          hint={cleanSlug ? bookingLink(cleanSlug) : t('Letters, numbers and dashes.')}
+        />
+      )}
       <Field
         label={t('About')}
         value={about}

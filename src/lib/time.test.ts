@@ -9,6 +9,7 @@ import {
   formatPrice,
   formatTime,
   groupByPartOfDay,
+  localClock,
   localDateString,
   normalizeTime,
   slugify,
@@ -63,11 +64,41 @@ test('formatPrice and formatDuration', () => {
   assert.equal(formatDuration(75), '1 hr 15 min');
 });
 
-test('normalizeTime', () => {
+test('normalizeTime reads 24-hour times', () => {
   assert.equal(normalizeTime('9:00'), '09:00');
   assert.equal(normalizeTime('17.30'), '17:30');
+  assert.equal(normalizeTime('1430'), '14:30');
+  assert.equal(normalizeTime('930'), '09:30');
+  // Without am/pm it is 24-hour time, as before.
+  assert.equal(normalizeTime('2.30'), '02:30');
   assert.equal(normalizeTime('24:00'), null);
+  assert.equal(normalizeTime('9:75'), null);
   assert.equal(normalizeTime('noon'), null);
+  // A bare hour could be morning or afternoon.
+  assert.equal(normalizeTime('2'), null);
+});
+
+test('normalizeTime reads am/pm in English and Malay', () => {
+  assert.equal(normalizeTime('2pm'), '14:00');
+  assert.equal(normalizeTime('2.30pm'), '14:30');
+  assert.equal(normalizeTime('2:30 pm'), '14:30');
+  assert.equal(normalizeTime(' 2:30 P.M. '), '14:30');
+  assert.equal(normalizeTime('9 am'), '09:00');
+  assert.equal(normalizeTime('12pm'), '12:00');
+  assert.equal(normalizeTime('12am'), '00:00');
+  assert.equal(normalizeTime('2.30 ptg'), '14:30');
+  assert.equal(normalizeTime('3 petang'), '15:00');
+  assert.equal(normalizeTime('9 pagi'), '09:00');
+  assert.equal(normalizeTime('10.15 PG'), '10:15');
+  assert.equal(normalizeTime('13pm'), null);
+  assert.equal(normalizeTime('0am'), null);
+});
+
+test('localClock gives the shop-local 24-hour time, rounded down', () => {
+  // 06:07Z is 2:07 pm in Kajang; 16:03Z is just after midnight.
+  assert.equal(localClock('2026-10-06T06:07:00Z'), '14:07');
+  assert.equal(localClock('2026-10-06T06:07:00Z', 'Asia/Kuala_Lumpur', 5), '14:05');
+  assert.equal(localClock(new Date('2026-10-05T16:03:00Z'), 'Asia/Kuala_Lumpur', 5), '00:00');
 });
 
 test('slugify', () => {

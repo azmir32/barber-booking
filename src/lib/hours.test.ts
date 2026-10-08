@@ -13,16 +13,17 @@ test('formatClock', () => {
   assert.equal(formatClock('20:15'), '8:15 pm');
 });
 
-test('summarizeWeek reads Monday first', () => {
+test('summarizeWeek reads Monday first, in am/pm', () => {
   const monSat = [1, 2, 3, 4, 5, 6].map((d) => range(d, '10:00', '20:00'));
-  assert.equal(summarizeWeek(monSat), 'Mon–Sat · 10:00–20:00');
-  assert.equal(summarizeWeek([...monSat, range(0, '10:00', '20:00')]), 'Every day · 10:00–20:00');
+  assert.equal(summarizeWeek(monSat), 'Mon–Sat · 10:00 am–8:00 pm');
+  assert.equal(summarizeWeek([...monSat, range(0, '10:00', '20:00')]), 'Every day · 10:00 am–8:00 pm');
   // Friday off: not a run any more.
   const noFri = monSat.filter((h) => h.weekday !== 5);
-  assert.equal(summarizeWeek(noFri), 'Mon, Tue, Wed, Thu, Sat · 10:00–20:00');
+  assert.equal(summarizeWeek(noFri), 'Mon, Tue, Wed, Thu, Sat · 10:00 am–8:00 pm');
   // Thu to Sun wraps over the weekend.
-  const thuSun = [4, 5, 6, 0].map((d) => range(d, '09:00', '18:00'));
-  assert.equal(summarizeWeek(thuSun), 'Thu–Sun · 09:00–18:00');
+  const thuSun = [4, 5, 6, 0].map((d) => range(d, '09:00:00', '18:00:00'));
+  assert.equal(summarizeWeek(thuSun), 'Thu–Sun · 9:00 am–6:00 pm');
+  assert.equal(summarizeWeek([...noFri, range(5, '09:00', '18:00')]), 'Mon–Sat · varied hours');
   assert.equal(summarizeWeek([]), 'No hours set, so not bookable');
 });
 
@@ -33,11 +34,29 @@ test('shopWeek spans all barbers per day', () => {
   assert.equal(week[0], null);
 });
 
-test('summarizeWeek ignores breaks', () => {
-  const withBreak = [1, 2, 3, 4, 5, 6].flatMap((d) =>
-    d === 5 ? [range(d, '10:00', '13:00'), range(d, '14:30', '20:00')] : [range(d, '10:00', '20:00')],
+test('summarizeWeek shows breaks', () => {
+  // Ali breaks for Friday prayers only.
+  const friBreak = [1, 2, 3, 4, 5, 6].flatMap((d) =>
+    d === 5 ? [range(d, '14:30', '20:00'), range(d, '10:00', '12:45')] : [range(d, '10:00', '20:00')],
   );
-  assert.equal(summarizeWeek(withBreak), 'Mon–Sat · 10:00–20:00');
+  assert.equal(summarizeWeek(friBreak), 'Mon–Sat · 10:00 am–8:00 pm · Fri break 12:45 pm–2:30 pm');
+  // The same lunch break every day needs no day names.
+  const lunch = [1, 2, 3, 4, 5, 6].flatMap((d) => [range(d, '10:00', '13:00'), range(d, '14:00', '20:00')]);
+  assert.equal(summarizeWeek(lunch), 'Mon–Sat · 10:00 am–8:00 pm · break 1:00 pm–2:00 pm');
+  // Lunch Mon–Thu, prayers on Friday, no break on Saturday.
+  const mixed = [1, 2, 3, 4, 5, 6].flatMap((d) =>
+    d === 6
+      ? [range(d, '10:00', '20:00')]
+      : d === 5
+        ? [range(d, '10:00', '12:45'), range(d, '14:30', '20:00')]
+        : [range(d, '10:00', '13:00'), range(d, '14:00', '20:00')],
+  );
+  assert.equal(
+    summarizeWeek(mixed),
+    'Mon–Sat · 10:00 am–8:00 pm · Mon–Thu break 1:00 pm–2:00 pm · Fri break 12:45 pm–2:30 pm',
+  );
+  // Ranges that touch are not a break.
+  assert.equal(summarizeWeek([range(1, '10:00', '13:00'), range(1, '13:00', '20:00')]), 'Mon · 10:00 am–8:00 pm');
 });
 
 test('day plans round-trip with a break', () => {
@@ -60,5 +79,5 @@ test('rangesFromPlan explains mistakes', () => {
   assert.equal(rangesFromPlan({ ...base, closes: '09:00' }), 'closing time must be after opening time.');
   assert.equal(rangesFromPlan({ ...base, breakFrom: '09:00' }), 'the break must sit inside opening hours.');
   assert.equal(rangesFromPlan({ ...base, opens: 'ten' }), 'use times like 09:00 or 21:30.');
-  assert.equal(rangesFromPlan({ ...base, breakTo: '2pm' }), 'use times like 13:00 for the break.');
+  assert.equal(rangesFromPlan({ ...base, breakTo: 'after lunch' }), 'use times like 13:00 for the break.');
 });

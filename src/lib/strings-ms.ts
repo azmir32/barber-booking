@@ -20,9 +20,9 @@ export const ms: Record<string, string> = {
   Edit: 'Ubah',
   Email: 'E-mel',
   From: 'Dari',
-  Go: 'Pergi',
+  Go: 'Mula',
   Hide: 'Sorok',
-  Hours: 'Waktu',
+  Hours: 'Waktu kerja',
   Language: 'Bahasa',
   Me: 'Saya',
   Minutes: 'Minit',
@@ -31,7 +31,8 @@ export const ms: Record<string, string> = {
   Off: 'Cuti',
   Open: 'Buka',
   Password: 'Kata laluan',
-  Past: 'Lepas',
+  Past: 'Sudah lalu',
+  Earlier: 'Sebelum ini',
   Preview: 'Pratonton',
   Remove: 'Buang',
   Save: 'Simpan',
@@ -57,10 +58,9 @@ export const ms: Record<string, string> = {
   Today: 'Hari ini',
   Tomorrow: 'Esok',
   Morning: 'Pagi',
-  Afternoon: 'Tengah hari',
-  Evening: 'Petang & malam',
-  am: 'PG',
-  pm: 'PTG',
+  Midday: 'Tengah hari',
+  Afternoon: 'Petang',
+  Evening: 'Malam',
   '{m} min': '{m} min',
   '{h} hr': '{h} jam',
   '{h} hr {m} min': '{h} jam {m} min',
@@ -158,7 +158,6 @@ export const ms: Record<string, string> = {
   'Note for your barber (optional)': 'Nota untuk barber anda (pilihan)',
   'e.g. low fade, keep the top long': 'cth. low fade, rambut atas kekal panjang',
   'Confirm booking': 'Sahkan tempahan',
-  'Sign in to book': 'Log masuk untuk tempah',
   'Opening hours': 'Waktu operasi',
   'You’re booked!': 'Tempahan berjaya!',
   '{service} with {barber}': '{service} bersama {barber}',
@@ -179,7 +178,6 @@ export const ms: Record<string, string> = {
   'Cancel booking': 'Batalkan tempahan',
   'your barber': 'barber anda',
   'WhatsApp shop': 'WhatsApp kedai',
-  '{service} at {shop}': '{service} di {shop}',
   'Book again': 'Tempah lagi',
 
   // Barber: bookings for the day
@@ -189,7 +187,7 @@ export const ms: Record<string, string> = {
   'Go live and share your booking link': 'Buka tempahan dan kongsi pautan tempahan anda',
   '+ Add booking or block time': '+ Tambah tempahan atau sekat masa',
   'No bookings': 'Tiada tempahan',
-  'Share your booking link to fill this day.': 'Kongsi pautan tempahan anda untuk penuhkan hari ini.',
+  'Share your booking link to fill this day.': 'Kongsi pautan tempahan anda untuk penuhkan hari tersebut.',
   'Whole day': 'Sepanjang hari',
   Blocked: 'Disekat',
   '{name} (added by you)': '{name} (ditambah oleh anda)',
@@ -211,7 +209,6 @@ export const ms: Record<string, string> = {
     'Untuk rehat, urusan peribadi atau cuti. Pelanggan dalam talian tidak boleh menempah masa ini.',
   'How long': 'Berapa lama',
   'Start time': 'Masa mula',
-  '24-hour time.': 'Format 24 jam.',
   'Customer name': 'Nama pelanggan',
   'e.g. Pak Abu': 'cth. Pak Abu',
   'Customer phone (optional)': 'Telefon pelanggan (pilihan)',
@@ -221,13 +218,11 @@ export const ms: Record<string, string> = {
   'e.g. Hari Raya, day off': 'cth. Hari Raya, cuti',
   'e.g. lunch, errand': 'cth. makan tengah hari, urusan',
   'Add booking': 'Tambah tempahan',
-  'Block the day': 'Sekat hari ini',
+  'Block the day': 'Sekat sepanjang hari',
   'Pick a barber.': 'Pilih barber.',
   'Pick a service.': 'Pilih servis.',
-  'Enter the start time, e.g. 14:30.': 'Masukkan masa mula, cth. 14:30.',
-  'Add the customer’s name.': 'Masukkan nama pelanggan.',
   'There are bookings on this day. Cancel them first (and let the customers know), then block the day.':
-    'Ada tempahan pada hari ini. Batalkan dahulu (dan maklumkan kepada pelanggan), kemudian sekat hari ini.',
+    'Ada tempahan pada hari tersebut. Batalkan dahulu (dan maklumkan kepada pelanggan), kemudian sekat hari tersebut.',
 
   // Barber: services
   'Your menu': 'Menu anda',
@@ -274,7 +269,6 @@ export const ms: Record<string, string> = {
   'Remove break': 'Buang rehat',
   '+ Add break (e.g. Friday prayers)': '+ Tambah rehat (cth. solat Jumaat)',
   '+ Add break': '+ Tambah rehat',
-  'Use 24-hour time, e.g. 21:30 for 9:30pm.': 'Guna format 24 jam, cth. 21:30 untuk 9:30 malam.',
   'Save hours': 'Simpan waktu',
   'use times like 09:00 or 21:30.': 'guna masa seperti 09:00 atau 21:30.',
   'closing time must be after opening time.': 'waktu tutup mesti selepas waktu buka.',
@@ -369,4 +363,105 @@ export const ms: Record<string, string> = {
 
   // Picking a time (components/time-field.tsx)
   'Pick a time': 'Pilih masa',
+
+  // Booking page (shop/[slug].tsx, day picker)
+  'Couldn’t load this shop': 'Tidak dapat memuatkan kedai ini',
+  'Couldn’t load free times.': 'Tidak dapat memuatkan masa kosong.',
+  'No times left today. Showing {day}.': 'Tiada masa kosong lagi hari ini. Menunjukkan masa untuk {day}.',
+  'See {day}': 'Lihat {day}',
+  '{count} free': '{count} kosong',
+  '{service} with {names}, whoever is free': '{service} bersama {names}, sesiapa yang lapang',
+  or: 'atau',
+  'Continue to book': 'Teruskan untuk tempah',
+
+  // Signing up to book, my bookings (sign-up, sign-in, customer/bookings.tsx)
+  'Your booking': 'Tempahan anda',
+  'Create an account to finish booking.': 'Daftar akaun untuk selesaikan tempahan anda.',
+  'Sign in to finish booking.': 'Log masuk untuk selesaikan tempahan anda.',
+  'Already have an account? Sign in': 'Sudah ada akaun? Log masuk',
+  'Not booked yet. Once your email is confirmed, sign in to finish booking.':
+    'Belum ditempah lagi. Selepas e-mel anda disahkan, log masuk untuk selesaikan tempahan.',
+  Directions: 'Arah ke kedai',
+  'Hi {shop}, this is {name}. I booked {service} on {day} at {time}.':
+    'Hai {shop}, saya {name}. Saya dah tempah {service} pada {day} jam {time}.',
+
+  // Barber: the day's bookings (barber/(tabs)/index.tsx)
+  'Mark done?': 'Tanda selesai?',
+  'Needs marking': 'Perlu ditanda',
+  'Mark all as done': 'Tanda semua selesai',
+  Now: 'Sekarang',
+  Next: 'Seterusnya',
+  'Finished ({count})': 'Sudah berakhir ({count})',
+  'Cancelled ({count})': 'Dibatalkan ({count})',
+  '1 booking': '1 tempahan',
+  '{count} bookings': '{count} tempahan',
+  '{money} expected': 'jangkaan {money}',
+  '{money} done': '{money} selesai',
+  'Show bookings for': 'Tunjuk tempahan untuk',
+  Everyone: 'Semua',
+  'Add booking or block time': 'Tambah tempahan atau sekat masa',
+  'Marked {name} as done': '{name} ditanda selesai',
+  'Marked {name} as no-show': '{name} ditanda tidak hadir',
+  'Marked {count} as done': '{count} tempahan ditanda selesai',
+  Undo: 'Buat asal',
+  'Undo “{status}”': 'Batalkan tanda “{status}”',
+  'WhatsApp {name}': 'WhatsApp {name}',
+  'More actions for {name}': 'Pilihan lain untuk {name}',
+  'Hide actions for {name}': 'Sorok pilihan untuk {name}',
+  Call: 'Telefon',
+  'Remove block': 'Buang sekatan',
+  'Cancel and WhatsApp': 'Batalkan dan WhatsApp',
+  Day: 'Hari',
+  Add: 'Tambah',
+  'Part of the day': 'Waktu',
+  'Free times': 'Masa kosong',
+  'Booking cancelled. Let {name} know.': 'Tempahan dibatalkan. Maklumkan kepada {name}.',
+  '{who} · {service} at {time}.': '{who} · {service} jam {time}.',
+  'Hi {who}, sorry, {shop} has to cancel your {service} on {day} at {time}. Reply here and we will find you another time.':
+    'Hai {who}, maaf, {shop} terpaksa batalkan {service} anda pada {day} jam {time}. Balas di sini dan kami akan carikan masa lain untuk anda.',
+  Change: 'Tukar',
+  'Looks right': 'Sudah betul',
+  'Closed on some days, or a break for Friday prayers? Tap Change.':
+    'Tutup pada hari tertentu, atau rehat untuk solat Jumaat? Tekan Tukar.',
+
+  // Barber: adding walk-ins and blocking time, team
+  'Other time': 'Masa lain',
+  'Walk-in': 'Walk-in',
+  'Free times for {name}': 'Masa kosong untuk {name}',
+  '{name} has no free times this day.': '{name} tiada masa kosong pada hari itu.',
+  'Customer name (optional)': 'Nama pelanggan (pilihan)',
+  'Pick a start time.': 'Pilih masa mula.',
+  'Outside working hours': 'Di luar waktu kerja',
+  '{time} is outside {name}’s hours ({hours}). Add it anyway?':
+    '{time} di luar waktu kerja {name} ({hours}). Tambah juga?',
+  'not working this day': 'tidak bekerja pada hari itu',
+  'Add anyway': 'Tambah juga',
+  'Change time': 'Tukar masa',
+  'Everyone (shop closed)': 'Semua (kedai tutup)',
+  'Blocked for {names}.': 'Sudah disekat untuk {names}.',
+  'Not blocked:': 'Tidak dapat disekat:',
+  'Mark {name} away?': 'Tanda {name} bercuti?',
+  '{name} has 1 upcoming booking. Away only stops new bookings, so it stays booked until you cancel it.':
+    '{name} ada 1 tempahan akan datang. Bercuti hanya menghentikan tempahan baharu, jadi tempahan itu kekal sehingga anda membatalkannya.',
+  '{name} has {count} upcoming bookings. Away only stops new bookings, so they stay booked until you cancel them.':
+    '{name} ada {count} tempahan akan datang. Bercuti hanya menghentikan tempahan baharu, jadi tempahan itu kekal sehingga anda membatalkannya.',
+  'Not now': 'Bukan sekarang',
+
+  // Barber: hours, services, shop settings
+  'break {time}': 'rehat {time}',
+  '{days} break {time}': 'rehat {days} {time}',
+  'Copy hours from': 'Salin waktu daripada',
+  'Copy hours from {name}': 'Salin waktu daripada {name}',
+  'Days with their own break, like Friday prayers, keep it.':
+    'Hari yang ada waktu rehat sendiri, seperti solat Jumaat, kekal seperti biasa.',
+  'Pause online bookings?': 'Tutup tempahan dalam talian?',
+  'Customers can’t find your shop or book from your link until you go live again. Bookings already made are not cancelled. For a day off or a break, use Block time on the Bookings tab instead.':
+    'Pelanggan tidak dapat mencari kedai anda atau menempah melalui pautan anda sehingga anda buka tempahan semula. Tempahan sedia ada tidak dibatalkan. Untuk cuti sehari atau rehat, guna Sekat masa di tab Tempahan.',
+  'Keep bookings open': 'Biarkan tempahan dibuka',
+  'Add a service before you go live, so customers have something to book.':
+    'Tambah servis dahulu sebelum buka tempahan, supaya pelanggan ada sesuatu untuk ditempah.',
+  'Change your booking link?': 'Tukar pautan tempahan anda?',
+  'Links you already shared, in your Instagram bio, WhatsApp status or posters, will stop working.':
+    'Pautan yang anda sudah kongsi di bio Instagram, status WhatsApp atau poster tidak akan berfungsi lagi.',
+  'Change link': 'Tukar pautan',
 };

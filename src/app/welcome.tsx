@@ -40,7 +40,7 @@ export default function Welcome() {
         </T>
         <Button
           title={t('Set up my shop')}
-          variant="ghost"
+          variant="secondary"
           onPress={() => router.push({ pathname: '/sign-up', params: { role: 'barber' } })}
         />
       </View>

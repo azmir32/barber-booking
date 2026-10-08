@@ -51,8 +51,8 @@ export function DemoPanel() {
   }
 
   return (
-    <View style={[styles.box, { backgroundColor: theme.card, borderColor: theme.accent }]}>
-      <T variant="label" style={{ color: theme.accent }}>
+    <View style={[styles.box, { backgroundColor: theme.card, borderColor: theme.tint }]}>
+      <T variant="label" style={{ color: theme.tint }}>
         {t('Demo')}
       </T>
       <T variant="heading">{t('Try it with sample shops in Kajang')}</T>

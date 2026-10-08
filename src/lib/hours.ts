@@ -1,7 +1,7 @@
 // Working-hours helpers shared by the barber and customer screens.
 
 import { t } from './lang.ts';
-import { normalizeTime } from './time.ts';
+import { clockLabel, normalizeTime } from './time.ts';
 import { WEEKDAYS, type WorkingHours } from './types.ts';
 
 type Range = Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>;
@@ -9,12 +9,10 @@ type Range = Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>;
 /** Monday first, the way most people read a week. */
 export const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 
-/** "20:00" or "20:00:00" -> "8:00 pm". */
+/** "20:00" or "20:00:00" -> "8:00 pm" ("8.00 malam" in Malay). */
 export function formatClock(time: string): string {
   const [h, m] = time.split(':').map(Number);
-  const suffix = h < 12 ? t('am') : t('pm');
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${String(m).padStart(2, '0')} ${suffix}`;
+  return clockLabel(h, m);
 }
 
 /**
@@ -31,24 +29,53 @@ export function shopWeek(hours: Range[]): ({ opens: string; closes: string } | n
   });
 }
 
-/** "Mon–Sat · 10:00–20:00" style summary of one barber's week (breaks aside). */
-export function summarizeWeek(hours: Range[]): string {
-  if (hours.length === 0) return t('No hours set, so not bookable');
-  const days = [...new Set(hours.map((h) => h.weekday))].sort((a, b) => a - b);
-  const spans = shopWeek(hours);
-  const ranges = [...new Set(days.map((d) => `${spans[d]!.opens}–${spans[d]!.closes}`))];
+/** "10:00 am–8:00 pm". */
+const clockRange = (from: string, to: string) => `${formatClock(from)}–${formatClock(to)}`;
+
+/** "Mon–Sat", "Mon, Wed, Fri" or "Every day". */
+function dayNames(days: number[]): string {
+  if (days.length === 7) return t('Every day');
   // Read the week Monday first so Mon–Sat is a run, with Sunday at the end.
   const ordered = WEEK_ORDER.filter((d) => days.includes(d));
   const positions = ordered.map((d) => WEEK_ORDER.indexOf(d));
   const consecutive = positions.every((p, i) => i === 0 || p === positions[i - 1] + 1);
-  const dayName = (d: number) => t(WEEKDAYS[d]);
-  const dayText =
-    days.length === 7
-      ? t('Every day')
-      : consecutive && ordered.length > 2
-        ? `${dayName(ordered[0])}–${dayName(ordered[ordered.length - 1])}`
-        : ordered.map(dayName).join(', ');
-  return `${dayText} · ${ranges.length === 1 ? ranges[0] : t('varied hours')}`;
+  const name = (d: number) => t(WEEKDAYS[d]);
+  return consecutive && ordered.length > 2
+    ? `${name(ordered[0])}–${name(ordered[ordered.length - 1])}`
+    : ordered.map(name).join(', ');
+}
+
+/**
+ * One barber's week, breaks included so a missing Friday prayers break is
+ * easy to spot: "Mon–Sat · 10:00 am–8:00 pm · Fri break 12:45 pm–2:30 pm".
+ */
+export function summarizeWeek(hours: Range[]): string {
+  if (hours.length === 0) return t('No hours set, so not bookable');
+  const days = WEEK_ORDER.filter((d) => hours.some((h) => h.weekday === d));
+  const spans = shopWeek(hours);
+  const ranges = [...new Set(days.map((d) => clockRange(spans[d]!.opens, spans[d]!.closes)))];
+  const parts = [dayNames(days), ranges.length === 1 ? ranges[0] : t('varied hours')];
+  // The gaps between a day's ranges are its breaks; days with the same break share a line.
+  const breaks = new Map<string, number[]>();
+  for (const d of days) {
+    const day = hours.filter((h) => h.weekday === d).sort((a, b) => a.opens_at.localeCompare(b.opens_at));
+    const gaps = day.slice(1).flatMap((h, i) => {
+      const from = day[i].closes_at.slice(0, 5);
+      const to = h.opens_at.slice(0, 5);
+      return from < to ? [clockRange(from, to)] : [];
+    });
+    if (gaps.length === 0) continue;
+    const time = gaps.join(', ');
+    breaks.set(time, [...(breaks.get(time) ?? []), d]);
+  }
+  for (const [time, breakDays] of breaks) {
+    parts.push(
+      breakDays.length === days.length
+        ? t('break {time}', { time })
+        : t('{days} break {time}', { days: dayNames(breakDays), time }),
+    );
+  }
+  return parts.join(' · ');
 }
 
 /** One day in the hours editor: open or off, with an optional break. */

@@ -1,12 +1,13 @@
 import * as Clipboard from 'expo-clipboard';
-import { router } from 'expo-router';
-import { useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Share } from 'react-native';
 
 import { AccountPanel } from '@/components/account-panel';
 import { ShopForm } from '@/components/shop-form';
 import { Badge, Button, Card, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
+import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -31,12 +32,43 @@ export default function MyShop() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // Whether customers have anything to book; null until known (or if it can't be loaded).
+  const [hasServices, setHasServices] = useState<boolean | null>(null);
+  const shopId = shop?.id;
+
+  // On focus, so adding a service on the Services tab shows Go live here right away.
+  useFocusEffect(
+    useCallback(() => {
+      if (!shopId) return;
+      supabase
+        .from('services')
+        .select('id')
+        .eq('shop_id', shopId)
+        .eq('is_active', true)
+        .limit(1)
+        .then(({ data }) => setHasServices(data ? data.length > 0 : null));
+    }, [shopId]),
+  );
 
   if (!shop) return null;
   const link = bookingLink(shop.slug);
   const billing = billingText(shop);
+  const needsService = !shop.is_published && hasServices === false;
 
   async function togglePublished() {
+    // Pausing hides the whole shop, which is too much for a day off or a
+    // break, so say what it does and point to Block time.
+    if (shop!.is_published) {
+      const ok = await confirmAction(
+        t('Pause online bookings?'),
+        t(
+          'Customers can’t find your shop or book from your link until you go live again. Bookings already made are not cancelled. For a day off or a break, use Block time on the Bookings tab instead.',
+        ),
+        t('Pause bookings'),
+        t('Keep bookings open'),
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     const { error } = await supabase.from('shops').update({ is_published: !shop!.is_published }).eq('id', shop!.id);
     setBusy(false);
@@ -66,7 +98,9 @@ export default function MyShop() {
         <T variant="muted">
           {shop.is_published
             ? t('Customers can find you and book. Share your link everywhere.')
-            : t('Go live when your services and hours are ready.')}
+            : needsService
+              ? t('Add a service before you go live, so customers have something to book.')
+              : t('Go live when your services and hours are ready.')}
         </T>
         {shop.subscription_status === 'trialing' ? (
           <T variant="small">
@@ -74,12 +108,16 @@ export default function MyShop() {
           </T>
         ) : null}
         <ErrorText message={error} />
-        <Button
-          title={shop.is_published ? t('Pause bookings') : t('Go live')}
-          variant={shop.is_published ? 'secondary' : 'primary'}
-          onPress={togglePublished}
-          loading={busy}
-        />
+        {needsService ? (
+          <Button title={t('Add a service')} onPress={() => router.push('/barber/services')} />
+        ) : (
+          <Button
+            title={shop.is_published ? t('Pause bookings') : t('Go live')}
+            variant={shop.is_published ? 'secondary' : 'primary'}
+            onPress={togglePublished}
+            loading={busy}
+          />
+        )}
       </Card>
 
       <Card>

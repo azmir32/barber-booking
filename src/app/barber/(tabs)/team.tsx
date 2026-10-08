@@ -2,6 +2,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 
 import { Button, Card, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
+import { confirmAction } from '@/lib/confirm';
 import { summarizeWeek } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { addBarber, useMyShop } from '@/lib/my-shop';
@@ -15,6 +16,7 @@ export default function Team() {
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [toggling, setToggling] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -46,8 +48,40 @@ export default function Team() {
     load();
   }
 
+  /** Away only stops new bookings, so first say how many are still in that barber's diary. */
+  async function okToMarkAway(b: Barber): Promise<boolean> {
+    const { count, error } = await supabase
+      .from('bookings')
+      .select('id', { count: 'exact', head: true })
+      .eq('barber_id', b.id)
+      .eq('status', 'confirmed')
+      .eq('is_block', false)
+      .gte('starts_at', new Date().toISOString());
+    if (error) {
+      setError(errorMessage(error));
+      return false;
+    }
+    if (!count) return true;
+    return confirmAction(
+      t('Mark {name} away?', { name: b.name }),
+      count === 1
+        ? t('{name} has 1 upcoming booking. Away only stops new bookings, so it stays booked until you cancel it.', {
+            name: b.name,
+          })
+        : t(
+            '{name} has {count} upcoming bookings. Away only stops new bookings, so they stay booked until you cancel them.',
+            { name: b.name, count },
+          ),
+      t('Mark away'),
+      t('Not now'),
+    );
+  }
+
   async function toggle(b: Barber) {
+    setToggling(b.id);
+    if (b.is_active && !(await okToMarkAway(b))) return setToggling(null);
     const { error } = await supabase.from('barbers').update({ is_active: !b.is_active }).eq('id', b.id);
+    setToggling(null);
     if (error) return setError(errorMessage(error));
     load();
   }
@@ -71,7 +105,12 @@ export default function Team() {
                 variant="secondary"
                 onPress={() => router.push({ pathname: '/barber/hours/[id]', params: { id: b.id } })}
               />
-              <Button title={b.is_active ? t('Mark away') : t('Back at work')} variant="ghost" onPress={() => toggle(b)} />
+              <Button
+                title={b.is_active ? t('Mark away') : t('Back at work')}
+                variant="ghost"
+                loading={toggling === b.id}
+                onPress={() => toggle(b)}
+              />
             </Row>
           </Card>
         ))}

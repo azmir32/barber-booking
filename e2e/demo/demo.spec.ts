@@ -52,9 +52,9 @@ test('a customer books a cut, it survives a reload, then cancels it', async ({ p
   await snap(page, 'demo-02-explore');
   await app.getByText('Ali Barber Sungai Chua').click();
 
-  await app.getByText('Haircut', { exact: true }).click();
-  await button(app, /^Tomorrow/).click();
-  const time = app.getByRole('button', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  const time = app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
   await expect(time).toBeVisible();
   await time.click();
   await snap(page, 'demo-03-shop');
@@ -88,7 +88,7 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   await button(app, 'See the barber side').click();
 
   await expect(app.getByText('Bookings').first()).toBeVisible();
-  await button(app, /^Tomorrow/).click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
   await expect(app.getByText('Hakim', { exact: true })).toBeVisible();
   await expect(app.getByText('“Same as last time”')).toBeVisible();
   await snap(page, 'demo-07-barber-day');
@@ -100,6 +100,7 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
 
   // Pause bookings, then start over: the shop is live again.
   await button(app, 'Pause bookings').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Pause bookings', exact: true }).click();
   await expect(app.getByText('Not live yet')).toBeVisible();
   await button(app, 'See the customer side').click();
   await expect(app.getByText('Kemas Barber Kajang')).toBeVisible();

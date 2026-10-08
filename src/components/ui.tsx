@@ -4,6 +4,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState, type ComponentProps, type ReactNode, type Ref } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -13,6 +14,7 @@ import {
   View,
   type TextInputProps,
   type TextProps,
+  type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -46,8 +48,8 @@ export function Screen({
   const refreshControl = onRefresh ? (
     <RefreshControl
       refreshing={refreshing}
-      tintColor={theme.accent}
-      colors={[theme.accent]}
+      tintColor={theme.tint}
+      colors={[theme.tint]}
       onRefresh={async () => {
         setRefreshing(true);
         try {
@@ -88,13 +90,25 @@ type Variant = 'title' | 'heading' | 'body' | 'muted' | 'small' | 'label';
 export function T({ variant = 'body', style, ...rest }: TextProps & { variant?: Variant }) {
   const theme = useTheme();
   const color = variant === 'muted' || variant === 'small' ? theme.textSecondary : theme.text;
-  return <Text style={[{ color, fontFamily: Fonts?.sans }, textStyles[variant], style]} {...rest} />;
+  // Titles and headings are headings to screen readers too (h1/h2 on the web).
+  const heading =
+    variant === 'title' || variant === 'heading'
+      ? ({ role: 'heading', 'aria-level': variant === 'title' ? 1 : 2 } as TextProps)
+      : null;
+  return <Text {...heading} style={[{ color, fontFamily: Fonts?.sans }, textStyles[variant], style]} {...rest} />;
 }
 
+/**
+ * primary: the one main action (solid brand red). secondary: other actions
+ * (outlined). danger: destructive actions (soft red, so Cancel never looks
+ * like Confirm). ghost: quiet text actions; tone="danger" makes a ghost or
+ * secondary button's text red for destructive ones.
+ */
 export function Button({
   title,
   onPress,
   variant = 'primary',
+  tone,
   disabled,
   loading,
   style,
@@ -102,69 +116,142 @@ export function Button({
   title: string;
   onPress?: () => void;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  tone?: 'danger';
   disabled?: boolean;
   loading?: boolean;
   style?: ViewStyle;
 }) {
   const theme = useTheme();
   const bg =
-    variant === 'primary' ? theme.accent : variant === 'danger' ? theme.danger : variant === 'secondary' ? theme.chip : 'transparent';
-  const fg = variant === 'primary' || variant === 'danger' ? theme.accentText : theme.text;
+    variant === 'primary'
+      ? theme.accent
+      : variant === 'danger'
+        ? theme.dangerSoft
+        : variant === 'secondary'
+          ? theme.card
+          : 'transparent';
+  const border = variant === 'danger' ? theme.danger : variant === 'secondary' ? theme.inputBorder : 'transparent';
+  const fg =
+    variant === 'primary' ? theme.accentText : variant === 'danger' || tone === 'danger' ? theme.danger : theme.text;
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={onPress}
-      disabled={disabled || loading}
+      accessibilityLabel={title}
+      aria-busy={loading}
+      aria-disabled={disabled}
+      // While loading the button keeps its size, name and focus; presses are ignored.
+      onPress={loading ? undefined : onPress}
+      disabled={disabled}
       style={({ pressed }) => [
         styles.button,
-        { backgroundColor: bg, opacity: disabled ? 0.5 : pressed ? 0.8 : 1 },
+        { backgroundColor: bg, borderColor: border, opacity: disabled ? 0.5 : pressed ? 0.8 : 1 },
         style,
       ]}>
-      {loading ? (
-        <ActivityIndicator color={fg} />
-      ) : (
-        <Text style={[styles.buttonText, { color: fg }]}>{title}</Text>
-      )}
+      <Text style={[styles.buttonText, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
+      {loading ? <ActivityIndicator color={fg} style={StyleSheet.absoluteFill} /> : null}
     </Pressable>
   );
 }
 
-export function Field({ label, hint, ...props }: TextInputProps & { label: string; hint?: string }) {
+export function Field({
+  label,
+  hint,
+  error,
+  ...props
+}: TextInputProps & {
+  label: string;
+  hint?: string;
+  /** Shown under the field in red, and read out, when what was typed is not right. */
+  error?: string | null;
+}) {
   const theme = useTheme();
+  const [focused, setFocused] = useState(false);
   return (
     <View style={styles.field}>
       <T variant="label">{label}</T>
       <TextInput
         accessibilityLabel={label}
+        accessibilityHint={hint}
+        aria-invalid={Boolean(error)}
         placeholderTextColor={theme.textSecondary}
+        {...props}
+        onFocus={(e) => {
+          setFocused(true);
+          props.onFocus?.(e);
+        }}
+        onBlur={(e) => {
+          setFocused(false);
+          props.onBlur?.(e);
+        }}
         style={[
           styles.input,
-          { color: theme.text, backgroundColor: theme.card, borderColor: theme.border },
+          {
+            color: theme.text,
+            backgroundColor: theme.card,
+            borderColor: error ? theme.danger : focused ? theme.tint : theme.inputBorder,
+            borderWidth: focused || error ? 2 : 1,
+          },
+          // The coloured border shows focus, so the browser's own outline is not needed.
+          Platform.OS === 'web' && ({ outlineStyle: 'none' } as unknown as TextStyle),
           props.multiline && { minHeight: 88, textAlignVertical: 'top' },
+          props.style,
         ]}
-        {...props}
       />
-      {hint ? <T variant="small">{hint}</T> : null}
+      {error ? <ErrorText message={error} /> : hint ? <T variant="small">{hint}</T> : null}
     </View>
   );
 }
 
-export function Card({ children, onPress, style }: { children: ReactNode; onPress?: () => void; style?: ViewStyle }) {
+export function Card({
+  children,
+  onPress,
+  style,
+  role = 'button',
+  selected,
+  accessibilityLabel,
+}: {
+  children: ReactNode;
+  onPress?: () => void;
+  style?: ViewStyle;
+  /** What a tappable card is to a screen reader: a button, a link to another page, or one choice of several. */
+  role?: 'button' | 'link' | 'radio';
+  /** For role="radio": whether this card is the one picked. */
+  selected?: boolean;
+  accessibilityLabel?: string;
+}) {
   const theme = useTheme();
-  const cardStyle = [styles.card, { backgroundColor: theme.card, borderColor: theme.border }, style];
+  const cardStyle = [
+    styles.card,
+    { backgroundColor: theme.card, borderColor: theme.border },
+    selected && { borderColor: theme.tint, borderWidth: 2 },
+    style,
+  ];
   if (!onPress) return <View style={cardStyle}>{children}</View>;
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [...cardStyle, pressed && { opacity: 0.8 }]}>
+    <Pressable
+      role={role}
+      aria-checked={role === 'radio' ? Boolean(selected) : undefined}
+      accessibilityState={role === 'radio' ? { checked: Boolean(selected) } : undefined}
+      accessibilityLabel={accessibilityLabel}
+      onPress={onPress}
+      style={({ pressed }) => [...cardStyle, pressed && { opacity: 0.8 }]}>
       {children}
     </Pressable>
   );
 }
 
+/**
+ * A choice. With `selected` set it is one option of a set (a radio button to
+ * screen readers, or an on/off switch with mode="toggle"); without it, it is
+ * a plain button such as a suggestion.
+ */
 export function Chip({
   label,
   sublabel,
   selected,
   disabled,
+  mode = 'radio',
+  accessibilityLabel,
   onPress,
 }: {
   label: string;
@@ -172,20 +259,32 @@ export function Chip({
   selected?: boolean;
   /** Shown faded and can't be tapped, e.g. a day the shop is closed. */
   disabled?: boolean;
+  mode?: 'radio' | 'toggle';
+  accessibilityLabel?: string;
   onPress?: () => void;
 }) {
   const theme = useTheme();
+  const choice = selected !== undefined;
+  // react-native-web only passes aria-* props to the page, so set both kinds.
+  const state = choice
+    ? mode === 'toggle'
+      ? ({ 'aria-pressed': selected } as object)
+      : { 'aria-checked': selected }
+    : null;
   return (
     <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected, disabled }}
+      role={choice && mode === 'radio' ? 'radio' : 'button'}
+      {...state}
+      aria-disabled={disabled}
+      accessibilityState={{ checked: choice && mode === 'radio' ? selected : undefined, selected, disabled }}
+      accessibilityLabel={accessibilityLabel}
       disabled={disabled}
       onPress={onPress}
       style={[
         styles.chip,
         {
           backgroundColor: selected ? theme.accent : theme.chip,
-          borderColor: selected ? theme.accent : theme.border,
+          borderColor: selected ? theme.accent : theme.inputBorder,
           opacity: disabled ? 0.45 : 1,
         },
       ]}>
@@ -213,7 +312,8 @@ export function IconButton({
   color?: string;
 }) {
   const theme = useTheme();
-  const bg = variant === 'primary' ? theme.accent : variant === 'secondary' ? theme.chip : 'transparent';
+  const bg = variant === 'primary' ? theme.accent : variant === 'secondary' ? theme.card : 'transparent';
+  const border = variant === 'secondary' ? theme.inputBorder : 'transparent';
   const fg = color ?? (variant === 'primary' ? theme.accentText : theme.text);
   return (
     <Pressable
@@ -221,7 +321,7 @@ export function IconButton({
       accessibilityLabel={label}
       onPress={onPress}
       hitSlop={4}
-      style={({ pressed }) => [styles.iconButton, { backgroundColor: bg, opacity: pressed ? 0.8 : 1 }]}>
+      style={({ pressed }) => [styles.iconButton, { backgroundColor: bg, borderColor: border, opacity: pressed ? 0.8 : 1 }]}>
       <Ionicons name={icon} size={22} color={fg} />
     </Pressable>
   );
@@ -238,8 +338,23 @@ export function Badge({ label, tone = 'neutral' }: { label: string; tone?: 'neut
   );
 }
 
-export function Row({ children, style }: { children: ReactNode; style?: ViewStyle }) {
-  return <View style={[styles.row, style]}>{children}</View>;
+export function Row({
+  children,
+  style,
+  role,
+  accessibilityLabel,
+}: {
+  children: ReactNode;
+  style?: ViewStyle;
+  /** "radiogroup" around a set of chips where one is picked, with a label saying what is being picked. */
+  role?: 'radiogroup' | 'group';
+  accessibilityLabel?: string;
+}) {
+  return (
+    <View role={role} accessibilityLabel={accessibilityLabel} style={[styles.row, style]}>
+      {children}
+    </View>
+  );
 }
 
 export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
@@ -258,7 +373,7 @@ export function Loading() {
   const theme = useTheme();
   return (
     <View style={[styles.center, { backgroundColor: theme.background }]}>
-      <ActivityIndicator color={theme.accent} />
+      <ActivityIndicator color={theme.tint} />
     </View>
   );
 }
@@ -266,7 +381,11 @@ export function Loading() {
 export function ErrorText({ message }: { message: string | null }) {
   const theme = useTheme();
   if (!message) return null;
-  return <Text style={{ color: theme.danger }}>{message}</Text>;
+  return (
+    <Text role="alert" accessibilityLiveRegion="polite" style={{ color: theme.danger }}>
+      {message}
+    </Text>
+  );
 }
 
 export function Empty({ title, body, children }: { title: string; body?: string; children?: ReactNode }) {
@@ -308,6 +427,7 @@ const styles = StyleSheet.create({
   button: {
     minHeight: 48,
     borderRadius: Radius.md,
+    borderWidth: 1,
     paddingHorizontal: Spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
@@ -334,12 +454,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     alignItems: 'center',
+    justifyContent: 'center',
     minWidth: 64,
+    minHeight: 48,
   },
   iconButton: {
     minWidth: 48,
     minHeight: 48,
     borderRadius: Radius.md,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, Fragment, useContext, useEffect, useState, type ReactNode } from 'react';
+import { Platform } from 'react-native';
 
 import { getLang, setCurrentLang, type Lang } from '@/lib/lang';
 
@@ -33,6 +34,11 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       .catch(() => {})
       .finally(() => setReady(true));
   }, []);
+
+  // Tells the browser and screen readers which language the page is in.
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') document.documentElement.lang = lang;
+  }, [lang]);
 
   if (!ready) return null;
 

@@ -6,7 +6,7 @@ import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { formatClock } from '@/lib/hours';
 import { t } from '@/lib/lang';
-import type { PartOfDay } from '@/lib/time';
+import { groupTimes, type PartOfDay } from '@/lib/time';
 
 const toMinutes = (time: string) => {
   const [h, m] = time.split(':').map(Number);
@@ -17,12 +17,9 @@ const fromMinutes = (minutes: number) =>
 
 /** Clock times ("HH:MM") from `from` to `to`, every `step` minutes, grouped like the customer's free times. */
 export function timeChoices(from: string, to: string, step: number): [PartOfDay, string[]][] {
-  const groups: Record<PartOfDay, string[]> = { Morning: [], Afternoon: [], Evening: [] };
-  for (let m = toMinutes(from); m <= toMinutes(to); m += step) {
-    const h = Math.floor(m / 60);
-    groups[h < 12 ? 'Morning' : h < 17 ? 'Afternoon' : 'Evening'].push(fromMinutes(m));
-  }
-  return (Object.entries(groups) as [PartOfDay, string[]][]).filter(([, list]) => list.length > 0);
+  const times: string[] = [];
+  for (let m = toMinutes(from); m <= toMinutes(to); m += step) times.push(fromMinutes(m));
+  return groupTimes(times, (time) => Number(time.slice(0, 2)));
 }
 
 /**

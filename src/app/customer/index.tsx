@@ -122,8 +122,8 @@ export default function Explore() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            tintColor={theme.accent}
-            colors={[theme.accent]}
+            tintColor={theme.tint}
+            colors={[theme.tint]}
             onRefresh={async () => {
               setRefreshing(true);
               await Promise.all([load(), loadAreas()]);
@@ -182,7 +182,10 @@ export default function Explore() {
           )
         ) : null}
         {shops.map((shop) => (
-          <Card key={shop.id} onPress={() => router.push(`/shop/${shop.slug}`)}>
+          <Card
+            key={shop.id}
+            role="link"
+            onPress={() => router.push({ pathname: '/shop/[slug]', params: { slug: shop.slug, name: shop.name } })}>
             <T variant="heading">{shop.name}</T>
             <T variant="muted">{shop.address || shop.area}</T>
             {shop.about ? (

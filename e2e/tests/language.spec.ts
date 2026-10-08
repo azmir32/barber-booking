@@ -6,6 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 const run = Date.now().toString(36);
 
 const button = (page: Page, name: string | RegExp) => page.getByRole('button', { name, exact: typeof name === 'string' });
+const choice = (page: Page, name: string | RegExp) => page.getByRole('radio', { name, exact: typeof name === 'string' });
 const field = (page: Page, label: string) => page.getByLabel(label, { exact: true });
 
 async function snap(page: Page, name: string) {
@@ -46,7 +47,7 @@ test.describe('on a phone set to Malay', () => {
     await field(page, 'Nama kedai').fill(`Gunting Hafiz ${run}`);
     await button(page, 'Cipta kedai saya').click();
     await expect(page.getByText('Bersedia untuk menerima tempahan')).toBeVisible();
-    await expect(button(page, /^Hari ini/)).toBeVisible();
+    await expect(choice(page, /^Hari ini/)).toBeVisible();
     await snap(page, 'ms-03-bookings');
 
     await page.getByRole('tab', { name: /Servis/ }).click();
@@ -56,9 +57,19 @@ test.describe('on a phone set to Malay', () => {
     await snap(page, 'ms-04-services');
 
     await page.getByRole('tab', { name: /Barber/ }).click();
-    await expect(page.getByText('Isn–Sab · 10:00–20:00')).toBeVisible();
-    await button(page, 'Waktu').click();
+    await expect(page.getByText('Isn–Sab · 10.00 pagi–8.00 malam')).toBeVisible();
+    await button(page, 'Waktu kerja').click();
     await expect(button(page, '+ Tambah rehat (cth. solat Jumaat)')).toBeVisible();
+    // Times read the Malay way, and the picker groups them by pagi, tengah hari, petang and malam.
+    await expect(button(page, 'Dari: 10.00 pagi')).toHaveCount(6);
+    await button(page, 'Hingga: 8.00 malam').first().click();
+    const picker = page.getByRole('dialog', { name: 'Hingga' });
+    for (const part of ['Pagi', 'Tengah hari', 'Petang', 'Malam']) {
+      await expect(picker.getByText(part, { exact: true })).toBeVisible();
+    }
+    await expect(picker.getByRole('radio', { name: '1.30 tengah hari', exact: true })).toBeVisible();
+    await expect(picker.getByRole('radio', { name: '8.00 malam', exact: true })).toBeChecked();
+    await picker.getByRole('button', { name: 'Batal', exact: true }).click();
     await snap(page, 'ms-05-hours');
     await button(page, 'Batal').click();
 
@@ -70,9 +81,9 @@ test.describe('on a phone set to Malay', () => {
 
     await page.getByRole('tab', { name: 'Tempahan' }).click();
     await button(page, '+ Tambah tempahan atau sekat masa').click();
-    await button(page, 'Sekat masa').first().click();
-    await button(page, 'Sepanjang hari').click();
-    await button(page, 'Sekat hari ini').click();
+    await choice(page, 'Sekat masa').click();
+    await choice(page, 'Sepanjang hari').click();
+    await button(page, 'Sekat sepanjang hari').click();
     await expect(page.getByText('Sepanjang hari', { exact: true })).toBeVisible();
     await snap(page, 'ms-07-day-blocked');
   });

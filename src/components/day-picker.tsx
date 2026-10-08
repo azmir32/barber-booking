@@ -1,34 +1,75 @@
-import { ScrollView, StyleSheet } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Chip } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { t } from '@/lib/lang';
 import type { DayOption } from '@/lib/time';
 
-/** A horizontal strip of day chips ("Today 5 Oct", "Tomorrow 6 Oct", ...). */
+/** A horizontal strip of day chips ("Today 5 Oct", "Tomorrow 6 Oct", ...). Closed days show but can't be picked. */
 export function DayPicker({
   days,
   selected,
   onSelect,
+  closed,
+  closedLabel = t('Closed'),
 }: {
   days: DayOption[];
   selected: string | null;
   onSelect: (date: string) => void;
+  /** Dates (YYYY-MM-DD) that can't be picked. */
+  closed?: Set<string>;
+  /** What those days say instead of the date, e.g. "Off" when one barber doesn't work that day. */
+  closedLabel?: string;
 }) {
+  const strip = useRef<ScrollView>(null);
+  // Where each chip sits and which part of the strip is on screen, so a day picked
+  // from outside the strip (e.g. a "See Mon, 12 Oct" button) is scrolled into view.
+  const chips = useRef<Record<string, { x: number; width: number }>>({});
+  const view = useRef({ x: 0, width: 0 });
+
+  useEffect(() => {
+    const chip = selected ? chips.current[selected] : undefined;
+    const { x, width } = view.current;
+    if (!chip || width === 0) return;
+    if (chip.x < x) strip.current?.scrollTo({ x: chip.x, animated: true });
+    else if (chip.x + chip.width > x + width) strip.current?.scrollTo({ x: chip.x + chip.width - width, animated: true });
+  }, [selected]);
+
   return (
     <ScrollView
+      ref={strip}
       horizontal
+      role="radiogroup"
+      accessibilityLabel={t('Day')}
       showsHorizontalScrollIndicator={false}
+      onLayout={(e) => {
+        view.current.width = e.nativeEvent.layout.width;
+      }}
+      onScroll={(e) => {
+        view.current.x = e.nativeEvent.contentOffset.x;
+      }}
+      scrollEventThrottle={100}
       style={styles.strip}
       contentContainerStyle={styles.content}>
-      {days.map((d) => (
-        <Chip
-          key={d.date}
-          label={d.label}
-          sublabel={`${d.dayOfMonth} ${d.month}`}
-          selected={selected === d.date}
-          onPress={() => onSelect(d.date)}
-        />
-      ))}
+      {days.map((d) => {
+        const isClosed = closed?.has(d.date) ?? false;
+        return (
+          <View
+            key={d.date}
+            onLayout={(e) => {
+              chips.current[d.date] = { x: e.nativeEvent.layout.x, width: e.nativeEvent.layout.width };
+            }}>
+            <Chip
+              label={d.label}
+              sublabel={isClosed ? closedLabel : `${d.dayOfMonth} ${d.month}`}
+              selected={selected === d.date}
+              disabled={isClosed}
+              onPress={() => onSelect(d.date)}
+            />
+          </View>
+        );
+      })}
     </ScrollView>
   );
 }

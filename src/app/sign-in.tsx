@@ -1,13 +1,14 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 
-import { Button, ErrorText, Field, Screen, T } from '@/components/ui';
+import { Button, Card, ErrorText, Field, Screen, T } from '@/components/ui';
 import { t } from '@/lib/lang';
 import { returnAfterAuth } from '@/lib/navigation';
 import { demo, errorMessage, supabase } from '@/lib/supabase';
 
 export default function SignIn() {
-  const { next } = useLocalSearchParams<{ next?: string }>();
+  // summary: the booking a customer picked on a shop page before being asked to sign in.
+  const { next, summary } = useLocalSearchParams<{ next?: string; summary?: string }>();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -24,6 +25,13 @@ export default function SignIn() {
 
   return (
     <Screen edges={[]}>
+      {summary ? (
+        <Card>
+          <T variant="label">{t('Your booking')}</T>
+          <T variant="heading">{summary}</T>
+          <T variant="muted">{t('Sign in to finish booking.')}</T>
+        </Card>
+      ) : null}
       <Field
         label={t('Email')}
         value={email}
@@ -68,7 +76,12 @@ export default function SignIn() {
       <Button
         title={t('Create an account')}
         variant="secondary"
-        onPress={() => router.replace({ pathname: '/sign-up', params: next ? { next } : {} })}
+        onPress={() =>
+          router.replace({
+            pathname: '/sign-up',
+            params: { ...(next ? { next } : {}), ...(summary ? { summary, role: 'customer' } : {}) },
+          })
+        }
       />
     </Screen>
   );

@@ -33,8 +33,9 @@ export function ConfirmHost() {
           <T variant="heading">{request.title}</T>
           <T variant="muted">{request.message}</T>
           <View style={styles.actions}>
-            <Button title={request.confirmLabel} variant="danger" onPress={() => answer(true)} />
+            {/* The safe answer comes first, so it is the one keyboard focus reaches first. */}
             <Button title={request.cancelLabel} variant="secondary" onPress={() => answer(false)} />
+            <Button title={request.confirmLabel} variant="danger" onPress={() => answer(true)} />
           </View>
         </View>
       </View>

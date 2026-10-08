@@ -3,6 +3,7 @@ import { useState } from 'react';
 
 import { DemoSwitch } from '@/components/demo-panel';
 import { Button, Card, Chip, ErrorText, Field, Row, T } from '@/components/ui';
+import { Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
 import { useLanguage } from '@/lib/i18n';
@@ -42,7 +43,7 @@ function LanguagePicker() {
   return (
     <Card>
       <T variant="label">{t('Language')}</T>
-      <Row>
+      <Row role="radiogroup" accessibilityLabel={t('Language')}>
         {LANGUAGES.map((l) => (
           <Chip key={l.code} label={l.name} selected={lang === l.code} onPress={() => setLang(l.code)} />
         ))}
@@ -108,7 +109,14 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
           router.replace('/welcome');
         }}
       />
-      <Button title={t('Delete account')} variant="ghost" onPress={deleteAccount} disabled={busy} />
+      <Button
+        title={t('Delete account')}
+        variant="ghost"
+        tone="danger"
+        onPress={deleteAccount}
+        disabled={busy}
+        style={{ marginTop: Spacing.lg }}
+      />
     </Card>
   );
 }

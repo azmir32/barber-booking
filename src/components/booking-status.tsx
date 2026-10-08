@@ -3,7 +3,14 @@ import { useNow } from '@/hooks/use-now';
 import { t } from '@/lib/lang';
 import type { Booking } from '@/lib/types';
 
-export function BookingStatusBadge({ booking }: { booking: Pick<Booking, 'status' | 'ends_at'> }) {
+export function BookingStatusBadge({
+  booking,
+  forShop,
+}: {
+  booking: Pick<Booking, 'status' | 'ends_at'>;
+  /** The shop's view: a past booking nobody has marked still needs Done or No-show. */
+  forShop?: boolean;
+}) {
   const now = useNow();
   switch (booking.status) {
     case 'completed':
@@ -13,10 +20,7 @@ export function BookingStatusBadge({ booking }: { booking: Pick<Booking, 'status
     case 'no_show':
       return <Badge label={t('No-show')} tone="danger" />;
     default:
-      return new Date(booking.ends_at).getTime() < now ? (
-        <Badge label={t('Past')} />
-      ) : (
-        <Badge label={t('Confirmed')} tone="success" />
-      );
+      if (new Date(booking.ends_at).getTime() >= now) return <Badge label={t('Confirmed')} tone="success" />;
+      return forShop ? <Badge label={t('Mark done?')} tone="warning" /> : <Badge label={t('Past')} />;
   }
 }
