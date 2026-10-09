@@ -5,6 +5,7 @@ import { Share, type ViewStyle } from 'react-native';
 
 import { AccountPanel } from '@/components/account-panel';
 import { ClosedDaysCard } from '@/components/closed-days-card';
+import { CustomersCard } from '@/components/customers-card';
 import { ShopForm } from '@/components/shop-form';
 import { Badge, Button, Card, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
@@ -134,6 +135,8 @@ export default function MyShop() {
           />
         )}
       </Card>
+
+      <CustomersCard />
 
       <ClosedDaysCard shop={shop} />
 

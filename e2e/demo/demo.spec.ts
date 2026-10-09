@@ -234,6 +234,50 @@ test('a reminder that can’t be saved still opens WhatsApp, and says so', async
   await expect(notSaved).toHaveCount(0);
 });
 
+test('the barber sees who is due for a cut and invites them back on WhatsApp', async ({ page, context }) => {
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+
+  // My shop says how many customers there are, and how many are due.
+  const card = app.getByRole('link', { name: /^Customers: \d+ customers · 4 due for a cut$/ });
+  await expect(card).toBeVisible();
+  await snap(page, 'demo-12-customers-card');
+  await card.click();
+
+  // Due for a cut comes first, longest overdue at the top, then everyone else.
+  await expect(app.getByRole('heading', { name: 'Due for a cut' })).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Everyone' })).toBeVisible();
+  await expect(app.getByText('Daniel Tan', { exact: true })).toBeVisible();
+  await expect(app.getByText('Last cut 6 weeks ago')).toBeVisible();
+  await expect(app.getByText('3 visits · Comes about every 4 weeks').first()).toBeVisible();
+  // Only those due get an invite; everyone with a number can still be messaged or called.
+  await expect(button(app, /^Invite .* to book on WhatsApp$/)).toHaveCount(4);
+  await expect(button(app, 'Call Mr Wong')).toBeVisible();
+  await snap(page, 'demo-13-customers');
+
+  const opened = context.waitForEvent('page');
+  await button(app, 'Invite Daniel Tan to book on WhatsApp').click();
+  const whatsapp = await opened;
+  await whatsapp.waitForLoadState();
+  const url = new URL(whatsapp.url());
+  await whatsapp.close();
+  expect(url.pathname).toBe('/60167782301');
+  expect(url.searchParams.get('text')).toMatch(
+    /^Hi Daniel Tan, it’s been 6 weeks since your last cut at Ali Barber Sungai Chua\. Want to book a time\? https?:\/\/\S+\/shop\/ali-barber$/,
+  );
+  // The row remembers it, so nobody gets asked twice by mistake.
+  await expect(app.getByText('✓ Invited today')).toBeVisible();
+  await expect(button(app, 'Invite Daniel Tan to book on WhatsApp')).toHaveText('Invite again');
+
+  // Search finds a number however it is typed.
+  await app.getByLabel('Search', { exact: true }).fill('012-688');
+  await expect(app.getByText('Encik Kamal', { exact: true })).toBeVisible();
+  await expect(app.getByText('Daniel Tan', { exact: true })).toHaveCount(0);
+  await expect(app.getByText('1 customer · 1 due for a cut')).toBeVisible();
+});
+
 test('a customer moves their cut, and can put the new time in their calendar', async ({ page }) => {
   const app = await open(page);
   await button(app, 'Try as a customer').click();

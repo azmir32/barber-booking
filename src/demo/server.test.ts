@@ -5,7 +5,7 @@ import { beforeEach, test } from 'node:test';
 import { createClient } from '@supabase/supabase-js';
 
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { reloadTables, save, setClock, tables } from './db.ts';
+import { insertRow, reloadTables, save, setClock, tables, type Row } from './db.ts';
 import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
@@ -843,4 +843,210 @@ test('a day every barber is off reads as closed, and closing today works once cu
   ]);
   assert.deepEqual(await hours(), { opens_today: null, closes_today: null });
   assert.deepEqual(await listed(), [null, null]);
+});
+
+type Customer = {
+  customer_key: string;
+  customer_id: string | null;
+  name: string;
+  phone: string | null;
+  visits: number;
+  no_shows: number;
+  last_visit_at: string | null;
+  next_booking_at: string | null;
+  usual_gap_days: number;
+  is_due: boolean;
+  total_count: number;
+  due_count: number;
+};
+
+async function customers(c: ReturnType<typeof client>, search: string | null = null, limit: number | null = 30, offset: number | null = 0) {
+  const { data, error } = await c.rpc('shop_customers', { p_search: search, p_limit: limit, p_offset: offset });
+  assert.equal(error, null);
+  return data as Customer[];
+}
+
+/** An instant at a Kajang clock time, days from today. */
+const kajang = (days: number, clock: string) => {
+  const [h, m] = clock.split(':').map(Number);
+  return new Date(dayBounds(addDays(today(), days), TZ).start.getTime() + (h * 60 + m) * 60_000).toISOString();
+};
+
+test('the customer list works out visits, usual gaps and who is due, as the database does', async () => {
+  // The same diary as supabase/tests/booking_test.sql, in Ali's shop.
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const chair = tables().barbers.find((b) => b.shop_id === shop.id)!;
+  const profile = (email: string) => {
+    const user = tables().users.find((u) => u.email === email)!;
+    return tables().profiles.find((p) => p.id === user.id)!;
+  };
+  const ben = Object.assign(profile(DEMO_CUSTOMER_EMAIL), { full_name: 'Ben', phone: null });
+  const chong = Object.assign(profile('ravi@demo.potongku.my'), { full_name: 'Chong', phone: '013-222 3333' });
+  tables().bookings.splice(0);
+  const diary: [Row | null, string | null, string | null, boolean, number, string, string][] = [
+    [ben, null, null, false, -70, '09:00', 'completed'],
+    [ben, null, null, false, -49, '09:00', 'completed'],
+    [ben, null, null, false, -49, '09:30', 'completed'],
+    [ben, null, null, false, -28, '09:00', 'completed'],
+    [ben, null, null, false, -14, '09:00', 'no_show'],
+    [chong, null, null, false, -40, '10:00', 'cancelled'],
+    [chong, null, null, false, -20, '10:00', 'completed'],
+    [chong, null, null, false, 3, '10:00', 'confirmed'],
+    [null, 'Pak Abu', '019-111 2222', false, -60, '10:30', 'completed'],
+    [null, 'Abu', '+60 19-111 2222', false, -30, '10:30', 'completed'],
+    [null, 'Kamal', '012-555 0000', false, -50, '11:00', 'completed'],
+    [null, 'Kamal', '012-555 0000', false, -25, '11:00', 'completed'],
+    [null, 'Kamal', '012-555 0000', false, 5, '11:00', 'confirmed'],
+    [null, 'Uncle Lim', null, false, -10, '11:30', 'completed'],
+    [null, 'uncle  LIM', null, false, -3, '11:30', 'completed'],
+    [null, 'Zaki', '011-1234 5678', false, -40, '12:00', 'completed'],
+    [null, 'Old Timer', '017-000 1111', false, -200, '12:30', 'completed'],
+    [null, 'Median', '016-000 2222', false, -130, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -120, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -100, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -70, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -45, '13:00', 'completed'],
+    [null, 'Kumar', '016-210 3398', false, -2, '13:30', 'confirmed'],
+    [null, 'Twice', '018-000 3333', false, -6, '14:00', 'completed'],
+    [null, 'Twice', '018-000 3333', false, -5, '14:00', 'completed'],
+    [null, 'Flake', '012-444 5555', false, -8, '16:30', 'no_show'],
+    [null, 'Ghost', '019-999 0000', false, -10, '14:30', 'cancelled'],
+    [null, 'Deleted account', null, false, -15, '15:00', 'completed'],
+    [null, null, null, true, -1, '15:30', 'confirmed'],
+    [null, 'Ancient', '012-777 8888', false, -800, '16:00', 'completed'],
+  ];
+  for (const [customer, guestName, guestPhone, isBlock, days, clock, status] of diary) {
+    const at = kajang(days, clock);
+    insertRow('bookings', {
+      shop_id: shop.id,
+      barber_id: chair.id,
+      customer_id: customer?.id ?? null,
+      guest_name: guestName,
+      guest_phone: guestPhone,
+      is_block: isBlock,
+      service_name: 'Haircut',
+      price: 25,
+      starts_at: at,
+      ends_at: new Date(Date.parse(at) + 30 * 60_000).toISOString(),
+      status,
+    });
+  }
+
+  // Due first, longest overdue first (Median 22 days, Zaki 12, Ben 7, Abu 0),
+  // then everyone else by their last visit, with nothing yet last.
+  const all = await customers(ali);
+  const names = (rows: Customer[]) => rows.map((r) => r.name);
+  assert.deepEqual(names(all), ['Median', 'Zaki', 'Ben', 'Abu', 'Kumar', 'uncle  LIM', 'Twice', 'Chong', 'Kamal', 'Old Timer', 'Flake']);
+  assert.ok(all.every((r) => r.total_count === 11 && r.due_count === 4));
+  assert.deepEqual(names(all.filter((r) => r.is_due)), ['Median', 'Zaki', 'Ben', 'Abu']);
+  const row = (name: string) => all.find((r) => r.name === name)!;
+  assert.deepEqual(
+    { ...row('Ben'), last_visit_at: Date.parse(row('Ben').last_visit_at!) },
+    {
+      customer_key: `c:${ben.id}`,
+      customer_id: ben.id,
+      name: 'Ben',
+      phone: null,
+      visits: 3,
+      no_shows: 1,
+      last_visit_at: Date.parse(kajang(-28, '09:00')),
+      next_booking_at: null,
+      usual_gap_days: 21,
+      is_due: true,
+      total_count: 11,
+      due_count: 4,
+    },
+  );
+  assert.equal(row('Chong').phone, '013-222 3333');
+  assert.equal(row('Chong').visits, 1);
+  assert.equal(Date.parse(row('Chong').next_booking_at!), Date.parse(kajang(3, '10:00')));
+  assert.equal(row('Chong').is_due, false);
+  assert.deepEqual(
+    [row('Abu').customer_key, row('Abu').phone, row('Abu').visits, row('Abu').usual_gap_days],
+    ['p:60191112222', '+60 19-111 2222', 2, 30],
+  );
+  assert.equal(row('Kamal').is_due, false);
+  assert.deepEqual(
+    [row('uncle  LIM').customer_key, row('uncle  LIM').phone, row('uncle  LIM').visits, row('uncle  LIM').usual_gap_days],
+    ['n:uncle lim', null, 2, 7],
+  );
+  assert.deepEqual([row('Zaki').usual_gap_days, row('Zaki').is_due], [28, true]);
+  assert.deepEqual([row('Old Timer').usual_gap_days, row('Old Timer').is_due], [28, false]);
+  assert.equal(row('Median').usual_gap_days, 23);
+  assert.equal(row('Kumar').visits, 1);
+  assert.equal(Date.parse(row('Kumar').last_visit_at!), Date.parse(kajang(-2, '13:30')));
+  assert.deepEqual([row('Twice').usual_gap_days, row('Twice').is_due], [7, false]);
+  assert.deepEqual([row('Flake').visits, row('Flake').no_shows, row('Flake').last_visit_at], [0, 1, null]);
+
+  // Search: a name, or a number however it is typed. Not a pattern.
+  assert.deepEqual(names(await customers(ali, '  ABU ')), ['Abu']);
+  assert.deepEqual(names(await customers(ali, '0191112')), ['Abu']);
+  assert.deepEqual(names(await customers(ali, '+60 19-111')), ['Abu']);
+  assert.deepEqual(names(await customers(ali, '013-222')), ['Chong']);
+  const twos = await customers(ali, '2222');
+  assert.deepEqual(names(twos).sort(), ['Abu', 'Median']);
+  assert.ok(twos.every((r) => r.total_count === 2 && r.due_count === 2));
+  assert.deepEqual(names(await customers(ali, 'lim')), ['uncle  LIM']);
+  assert.deepEqual(await customers(ali, '%'), []);
+
+  // Pages, with odd sizes made sensible.
+  assert.deepEqual(names(await customers(ali, null, 2, 0)), ['Median', 'Zaki']);
+  assert.deepEqual(names(await customers(ali, null, 2, 2)), ['Ben', 'Abu']);
+  assert.deepEqual(names(await customers(ali, null, 2, 10)), ['Flake']);
+  assert.deepEqual(await customers(ali, null, 2, 11), []);
+  assert.equal((await customers(ali, null, 0, 0)).length, 1);
+  assert.equal((await customers(ali, null, null, -5)).length, 11);
+  for (let k = 1; k <= 60; k++) {
+    const at = kajang(-k, '16:00');
+    insertRow('bookings', {
+      shop_id: shop.id,
+      barber_id: tables().barbers.filter((b) => b.shop_id === shop.id)[1].id,
+      guest_name: `Guest ${k}`,
+      guest_phone: `012-900 ${String(k).padStart(4, '0')}`,
+      service_name: 'Haircut',
+      price: 25,
+      starts_at: at,
+      ends_at: new Date(Date.parse(at) + 30 * 60_000).toISOString(),
+      status: 'completed',
+    });
+  }
+  assert.equal((await customers(ali, null, 1000)).length, 50);
+  assert.equal((await customers(ali, null, 1))[0].total_count, 71);
+
+  // Nobody else sees them: not a customer, another shop's owner, or a guest.
+  assert.deepEqual(await customers(await signedIn(DEMO_CUSTOMER_EMAIL)), []);
+  assert.deepEqual(await customers(await signedIn('rahman@demo.potongku.my')), []);
+  const guest = await client().rpc('shop_customers', { p_search: null, p_limit: 30, p_offset: 0 });
+  assert.equal(guest.error?.code, '42501');
+});
+
+test('the sample shop has regulars, and a few are due for a cut whatever the day', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const all = await customers(ali, null, 50);
+  const due = all.filter((r) => r.is_due);
+  assert.deepEqual(
+    due.map((r) => r.name),
+    ['Daniel Tan', 'Ahmad Zaki', 'Amirul', 'Encik Kamal'],
+  );
+  assert.deepEqual(all.slice(0, 4), due);
+  assert.ok(all.length >= 12 && all.every((r) => r.total_count === all.length && r.due_count === 4));
+  const [daniel] = due;
+  assert.deepEqual(
+    [daniel.phone, daniel.visits, daniel.usual_gap_days, daniel.next_booking_at],
+    ['016-778 2301', 3, 28, null],
+  );
+  assert.equal(Date.parse(daniel.last_visit_at!), Date.parse(kajang(-44, '18:00')));
+  // Two gaps of 30 and 29 days: 29.5, so 30.
+  assert.equal(due[3].usual_gap_days, 30);
+  // Everyone else by their last visit, and Mr Wong has been away too long to nudge.
+  const rest = all.slice(4).map((r) => (r.last_visit_at == null ? 0 : Date.parse(r.last_visit_at)));
+  assert.deepEqual(rest, [...rest].sort((a, b) => b - a));
+  assert.equal(all.find((r) => r.name === 'Mr Wong')?.is_due, false);
+  assert.equal(all.find((r) => r.name === 'Hakim')?.is_due, false);
+
+  // My shop's card asks for one row, for the counts.
+  const one = await customers(ali, null, 1);
+  assert.deepEqual(one, [all[0]]);
+  assert.deepEqual((await customers(ali, 'daniel')).map((r) => r.name), ['Daniel Tan']);
 });

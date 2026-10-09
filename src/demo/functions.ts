@@ -3,6 +3,7 @@
 // Like the originals they run with full access (security definer) and
 // decide for themselves what the caller may do.
 
+import { toWhatsAppNumber } from '../lib/phone.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import {
   deleteRows,
@@ -572,6 +573,126 @@ export function shopClosedDays(c: Caller, shopId: unknown, fromArg: unknown, toA
   return [...closures, ...allOff].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }
 
+// The shop's customers --------------------------------------------------------
+
+/** Digits only, with a leading 0 written as 60, as WhatsApp wants it. */
+const phoneKey = (phone: unknown) => toWhatsAppNumber(String(phone ?? ''));
+const daysBetween = (from: string, to: string) =>
+  Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / WHOLE_DAY_MS);
+/** `now() + interval 'n years'`. */
+const yearsFromNow = (years: number) => {
+  const at = new Date(now());
+  at.setUTCFullYear(at.getUTCFullYear() + years);
+  return at.getTime();
+};
+const descNullsLast = (a: number | null, b: number | null) => (a === b ? 0 : a == null ? 1 : b == null ? -1 : b - a);
+const ascNullsLast = (a: string | null, b: string | null) =>
+  a === b ? 0 : a == null ? 1 : b == null ? -1 : a < b ? -1 : 1;
+
+export function shopCustomers(c: Caller, args: Record<string, unknown>) {
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  if (!shop) return [];
+  const tz = String(shop.time_zone);
+  const today = localDateString(new Date(now()), tz);
+  const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
+  // Only something typed like a number looks at phone numbers, so "Ali 2"
+  // doesn't find everyone with a 2 in theirs.
+  const digits = search != null && /^[0-9 +()-]+$/.test(search) ? search.replace(/\D/g, '') || null : null;
+
+  // Each person's bookings in date order: online customers by account,
+  // guests by phone number, or by name when there is none.
+  const from = yearsFromNow(-2);
+  const until = yearsFromNow(1);
+  const people = new Map<string, Row[]>();
+  const booked = tables()
+    .bookings.filter(
+      (b) =>
+        b.shop_id === shop.id &&
+        ms(b.starts_at) >= from &&
+        ms(b.starts_at) < until &&
+        !b.is_block &&
+        b.status !== 'cancelled' &&
+        // What delete_my_account leaves behind: history, but nobody to contact.
+        (b.customer_id != null || b.guest_name !== 'Deleted account'),
+    )
+    .sort((a, b) => ms(a.starts_at) - ms(b.starts_at));
+  for (const b of booked) {
+    const key =
+      b.customer_id != null
+        ? `c:${b.customer_id}`
+        : phoneKey(b.guest_phone)
+          ? `p:${phoneKey(b.guest_phone)}`
+          : `n:${pgTrim(String(b.guest_name)).replace(/\s+/g, ' ').toLowerCase()}`;
+    people.set(key, [...(people.get(key) ?? []), b]);
+  }
+
+  const found = [...people.entries()].flatMap(([key, bookings]) => {
+    const visited = bookings.filter((b) => b.status === 'completed' || (b.status === 'confirmed' && ms(b.starts_at) <= now()));
+    // A visit is a day they had a cut, however many bookings it took.
+    const days = [...new Set(visited.map((b) => localDateString(new Date(ms(b.starts_at)), tz)))];
+    const gaps = days
+      .slice(1)
+      .map((day, i) => daysBetween(days[i], day))
+      .sort((a, b) => a - b);
+    const mid = gaps.length >> 1;
+    const median = gaps.length % 2 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
+    const gap = days.length >= 2 ? Math.max(Math.round(median), 7) : 28;
+    const upcoming = bookings.filter((b) => b.status === 'confirmed' && ms(b.starts_at) > now());
+
+    // A guest's name and number as last given.
+    const latest = bookings.at(-1)!;
+    const customerId = (latest.customer_id as string | null) ?? null;
+    const profile = customerId == null ? undefined : findById('profiles', customerId);
+    const name = customerId == null ? String(latest.guest_name) : trimmed(profile?.full_name);
+    const phone =
+      customerId == null
+        ? key.startsWith('p:')
+          ? String(latest.guest_phone)
+          : null
+        : ((profile?.phone as string | null | undefined) ?? null);
+    const matches =
+      search == null || name?.toLowerCase().includes(search) || (digits != null && phoneKey(phone).includes(digits));
+    if (!matches) return [];
+
+    const since = days.length ? daysBetween(days.at(-1)!, today) : null;
+    const due = since != null && upcoming.length === 0 && since >= gap && since < Math.max(3 * gap, 90);
+    return [
+      {
+        row: {
+          customer_key: key,
+          customer_id: customerId,
+          name,
+          phone,
+          visits: days.length,
+          no_shows: bookings.filter((b) => b.status === 'no_show').length,
+          last_visit_at: visited.length ? String(visited.at(-1)!.starts_at) : null,
+          next_booking_at: upcoming.length ? String(upcoming[0].starts_at) : null,
+          usual_gap_days: gap,
+          is_due: due,
+        },
+        overdue: due ? since! - gap : null,
+        lastVisit: visited.length ? ms(visited.at(-1)!.starts_at) : null,
+      },
+    ];
+  });
+
+  // Due first, longest overdue first, then everyone by their last visit.
+  found.sort(
+    (a, b) =>
+      Number(b.row.is_due) - Number(a.row.is_due) ||
+      descNullsLast(a.overdue, b.overdue) ||
+      descNullsLast(a.lastVisit, b.lastVisit) ||
+      ascNullsLast(a.row.name?.toLowerCase() ?? null, b.row.name?.toLowerCase() ?? null) ||
+      ascNullsLast(a.row.customer_key, b.row.customer_key),
+  );
+  const limit = Math.min(Math.max(Number(args.p_limit ?? 30), 1), 50);
+  const offset = Math.max(Number(args.p_offset ?? 0), 0);
+  const dueCount = found.filter((f) => f.row.is_due).length;
+  return found
+    .slice(offset, offset + limit)
+    .map(({ row }) => ({ ...row, total_count: found.length, due_count: dueCount }));
+}
+
 export function deleteMyAccount(c: Caller) {
   if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
   const mine = tables().bookings.filter((b) => b.customer_id === c.uid);
@@ -599,6 +720,7 @@ const SIGNED_IN_ONLY = new Set([
   'delete_my_account',
   'close_shop_days',
   'reopen_shop_days',
+  'shop_customers',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -643,6 +765,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: reopenShopDays(c, args.p_from, args.p_days) };
     case 'shop_closed_days':
       return { status: 200, body: shopClosedDays(c, args.p_shop_id, args.p_from, args.p_to) };
+    case 'shop_customers':
+      return { status: 200, body: shopCustomers(c, args) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };

@@ -283,6 +283,34 @@ function seed() {
   book(f.shop, { barber: f.barbers[0], day: 1, at: '20:00', service: f.services[0], customer: ravi });
   book(m.shop, { barber: m.barbers[0], day: 0, at: '09:00', service: m.services[0], guest: ['Pak Long'] });
   book(m.shop, { barber: m.barbers[1], day: 0, at: '15:00', service: m.services[1], guest: ['Adik Amin'] });
+
+  // A few months of regulars at Ali's, for the customer list. Added last so
+  // the ids above stay the same.
+  const amirul = user('amirul@demo.potongku.my', 'customer', 'Amirul', '011-1987 2210');
+  const danielTan = user('daniel@demo.potongku.my', 'customer', 'Daniel Tan', '016-778 2301');
+  const cuts = (who: Pick<Booked, 'customer' | 'guest'>, days: number[], at: string, status = 'completed') => {
+    for (const day of days) {
+      const cut = { day, at, service: haircut, status, ...who };
+      book(sa, { barber: aliChair, ...cut }) || book(sa, { barber: danial, ...cut });
+    }
+  };
+  // Due for a cut whatever day the demo opens: their usual gap has passed and
+  // nothing is booked.
+  cuts({ customer: danielTan }, [-100, -72, -44], '18:00');
+  cuts({ guest: ['Ahmad Zaki', '013-245 9087'] }, [-40], '17:00');
+  cuts({ customer: amirul }, [-68, -47, -26], '15:00');
+  cuts({ guest: ['Encik Kamal', '012-688 4521'] }, [-92, -62, -33], '16:00');
+  // Not due yet, even on days their bookings above don't land.
+  cuts({ customer: farid }, [-58, -37, -16], '19:00');
+  cuts({ customer: weiJie }, [-49, -35, -21, -7], '16:00');
+  cuts({ customer: ravi }, [-70, -45, -20], '15:00');
+  cuts({ guest: ['Uncle Lim'] }, [-41, -27, -13], '17:00');
+  cuts({ guest: ['Pak Abu', '013-456 7788'] }, [-20], '19:00');
+  cuts({ guest: ['Kumar', '016-210 3398'] }, [-21], '19:00');
+  cuts({ customer: jason }, [-25], '18:00');
+  cuts({ customer: jason }, [-12], '18:00', 'no_show');
+  // Not in for months: most likely goes to another barber now.
+  cuts({ guest: ['Mr Wong', '012-330 1188'] }, [-150], '15:00');
 }
 
 setSeed(seed);
