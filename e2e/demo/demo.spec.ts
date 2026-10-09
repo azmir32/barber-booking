@@ -102,10 +102,31 @@ test('a customer books a cut, it survives a reload, then cancels it', async ({ p
 
   await button(app, 'Cancel').first().click();
   await expect(app.getByRole('alertdialog')).toBeVisible();
+  await expect(app.getByRole('alertdialog').getByText(/Added it to your calendar\? Delete it there too\.$/)).toBeVisible();
   await snap(page, 'demo-06-confirm');
   await app.getByRole('alertdialog').getByRole('button', { name: 'Cancel booking', exact: true }).click();
   await expect(booked).toHaveCount(0);
   await expect(app.getByText('Cancelled', { exact: true }).first()).toBeVisible();
+});
+
+test('a customer moves their cut, and can put the new time in their calendar', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(app.getByText(/^Skin fade with (Ali|Danial) · RM25$/)).toBeVisible();
+  const before = await addsToGoogleCalendar(page, () => button(app, 'Add to calendar').click());
+
+  await button(app, 'Change time').click();
+  await expect(app.getByText('Changing your booking')).toBeVisible();
+  // The booking's own time is marked as current, so the first plain time is a new one.
+  await app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first().click();
+  await button(app, 'Move to this time').click();
+  await expect(app.getByText('Booking moved')).toBeVisible();
+  await expect(app.getByText('Added it to your calendar before? Delete the old one there.')).toBeVisible();
+  await snap(page, 'demo-06b-moved');
+  const after = await addsToGoogleCalendar(page, () => button(app, 'Add to calendar').click());
+  expect(after.get('text')).toBe('Skin fade at Ali Barber Sungai Chua');
+  expect(after.get('dates')).not.toBe(before.get('dates'));
 });
 
 test('one tap across to the barber side, and the demo starts over cleanly', async ({ page }) => {

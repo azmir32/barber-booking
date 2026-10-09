@@ -555,4 +555,7 @@ export const ms: Record<string, string> = {
   'Barber: {name}': 'Barber: {name}',
   'Shop page: {link}': 'Halaman kedai: {link}',
   'To change or cancel, go to My bookings in {app}.': 'Untuk tukar atau batal, pergi ke Tempahan saya dalam {app}.',
+  'Added it to your calendar before? Delete the old one there.':
+    'Sudah tambah ke kalendar sebelum ini? Padam yang lama di sana.',
+  'Added it to your calendar? Delete it there too.': 'Sudah tambah ke kalendar? Padam di sana juga.',
 };

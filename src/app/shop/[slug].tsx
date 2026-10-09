@@ -472,6 +472,21 @@ export default function ShopPage() {
               ? t('Was {service} on {day} at {time}.', { service: withBarber(moving), ...when(moving.starts_at) })
               : t('Was {day} at {time}.', when(moving.starts_at))}
           </T>
+          {/* An entry at the old time would remind them at the wrong time. Adding again
+              doesn't move it in Google Calendar, so the old one has to be deleted there. */}
+          <Button
+            title={t('Add to calendar')}
+            variant="secondary"
+            style={{ marginTop: Spacing.sm }}
+            onPress={() =>
+              addToCalendar(
+                bookingEvent({ booking: moved, shop, barber: newBarber, link: bookingLink(shop.slug), app: APP_NAME }),
+              )
+            }
+          />
+          <T variant="small" style={{ textAlign: 'center' }}>
+            {t('Added it to your calendar before? Delete the old one there.')}
+          </T>
         </Empty>
         <Card>
           <T variant="label">{shop.name}</T>

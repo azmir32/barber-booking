@@ -69,6 +69,22 @@ test('bookingEvent leaves out what it does not know', () => {
   assert.equal(event({ shop: { ...SHOP, address: '  ' } }).location, 'Kajang town');
 });
 
+test('bookingEvent links the shop page only when it is a web address', () => {
+  // A build with no web URL makes app links, which a calendar can't open.
+  for (const link of ['potongku://shop/kemas-barber-kajang', 'exp://192.168.1.5:8081/--/shop/kemas-barber-kajang']) {
+    const e = event({ link });
+    assert.ok(!e.description.includes('Shop page'), e.description);
+    assert.ok(!e.description.includes(link));
+    assert.equal(
+      e.description,
+      ['Barber: Ali', 'RM20 · Pay at the shop.', 'To change or cancel, go to My bookings in PotongKu.'].join('\n'),
+    );
+    assert.ok(!new URL(googleCalendarUrl(e)).searchParams.get('details')!.includes(link));
+    assert.ok(!icsFile(e, 'PotongKu').includes(link));
+  }
+  assert.ok(event({ link: 'http://127.0.0.1:8081/shop/kemas' }).description.includes('Shop page: http://127.0.0.1:8081/shop/kemas'));
+});
+
 test('bookingEvent is in the app language', () => {
   try {
     setCurrentLang('ms');
@@ -226,6 +242,14 @@ test('opensIcsFiles is true for Safari on Apple devices only', () => {
       'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 350.0.0.0.0',
     iPhoneFacebook:
       'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/480.0.0.0]',
+    // Says "like Safari/", but can't download a file.
+    iPhoneSnapchat:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Snapchat/12.10.0.39 (like Safari/8614.2.9.0.10, panda)',
+    // Has Version/ like Safari, so it is left out by name.
+    iPhoneEdge:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 EdgiOS/129.2792.84 Mobile/15E148 Safari/605.1.15',
+    iPhoneFirefox:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/131.0 Mobile/15E148 Safari/605.1.15',
     macChrome:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
     macFirefox: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:131.0) Gecko/20100101 Firefox/131.0',

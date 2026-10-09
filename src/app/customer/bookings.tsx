@@ -111,13 +111,15 @@ export default function MyBookings() {
 
   async function cancel(b: MyBooking) {
     const tz = b.shops?.time_zone;
+    const what = t('{service} on {day} at {time}', {
+      service: b.service_name,
+      day: formatDay(b.starts_at, tz),
+      time: formatTime(b.starts_at, tz),
+    });
+    // The app can't take it out of their calendar, and its reminder would still go off.
     const ok = await confirmAction(
       t('Cancel booking?'),
-      t('{service} on {day} at {time}', {
-        service: b.service_name,
-        day: formatDay(b.starts_at, tz),
-        time: formatTime(b.starts_at, tz),
-      }),
+      `${what}\n\n${t('Added it to your calendar? Delete it there too.')}`,
       t('Cancel booking'),
     );
     if (!ok) return;

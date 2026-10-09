@@ -33,7 +33,7 @@ export function bookingEvent({
   shop: Pick<Shop, 'name' | 'address' | 'area' | 'time_zone'>;
   /** Left out when it isn't known, e.g. a barber who has since left. */
   barber?: string | null;
-  /** bookingLink(shop.slug), so the customer can find the shop again. */
+  /** bookingLink(shop.slug), so the customer can find the shop again. Only a web link goes in the notes. */
   link: string;
   /** The app's name, to say where to change or cancel. */
   app: string;
@@ -41,7 +41,8 @@ export function bookingEvent({
   const lines = [
     barber ? t('Barber: {name}', { name: barber }) : null,
     `${formatPrice(booking.price)} · ${t('Pay at the shop.')}`,
-    t('Shop page: {link}', { link }),
+    // An app link (potongku://, or exp:// in Expo Go) is dead text in a calendar, and means nothing on another device.
+    /^https?:\/\//.test(link) ? t('Shop page: {link}', { link }) : null,
     t('To change or cancel, go to My bookings in {app}.', { app }),
   ];
   return {
@@ -165,7 +166,10 @@ export function icsFileName(event: CalendarEvent): string {
  */
 export function opensIcsFiles(userAgent: string): boolean {
   const apple = /iPhone|iPad|iPod|Macintosh/.test(userAgent);
-  // Chrome, Firefox and Edge on Apple devices also say Safari; in-app browsers don't.
-  const safari = /Safari\//.test(userAgent) && !/Chrome|Chromium|CriOS|FxiOS|EdgiOS|Edg\/|OPR|OPiOS|GSA\//.test(userAgent);
+  // Safari says "Version/x ... Safari/". In-app browsers that mention Safari, like
+  // Snapchat's "like Safari/", leave out Version/; other browsers are named.
+  const safari =
+    /Version\/[\d.]+.*Safari\//.test(userAgent) &&
+    !/Chrome|Chromium|CriOS|FxiOS|EdgiOS|Edg\/|OPR|OPiOS|GSA\//.test(userAgent);
   return apple && safari;
 }
