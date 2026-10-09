@@ -565,4 +565,11 @@ export const ms: Record<string, string> = {
     'Hai {who}, peringatan daripada {shop}: {service} anda esok jam {time}. Tidak dapat datang? Balas sahaja di sini supaya kami boleh beri slot itu kepada orang lain.',
   'Hi {who}, a reminder from {shop}: your {service} is on {day} at {time}. Can’t make it? Just reply here so we can give the slot to someone else.':
     'Hai {who}, peringatan daripada {shop}: {service} anda pada {day} jam {time}. Tidak dapat datang? Balas sahaja di sini supaya kami boleh beri slot itu kepada orang lain.',
+
+  // Barber: reminders that didn't save, and taking one back (barber/(tabs)/index.tsx)
+  'Reminder not saved. {reason}': 'Peringatan tidak disimpan. {reason}',
+  'This booking has changed. Check the new time.': 'Tempahan ini telah berubah. Semak masa baharunya.',
+  'Mark as reminded': 'Tandakan sudah diingatkan',
+  'Mark {name} as reminded': 'Tandakan {name} sudah diingatkan',
+  OK: 'OK',
 };

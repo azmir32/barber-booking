@@ -70,6 +70,7 @@ export type Booking = {
   customer_note: string | null;
   /** When the shop last sent a WhatsApp reminder; cleared when the booking moves. */
   reminded_at: string | null;
+  created_at: string;
 };
 
 export type Slot = { barber_id: string; starts_at: string };

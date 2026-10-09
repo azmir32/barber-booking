@@ -16,9 +16,24 @@ export function canRemind(b: Remindable, phone: string | null, now: number, time
   return !b.is_block && b.status === 'confirmed' && Boolean(phone) && at > now && at < endOfTomorrow;
 }
 
-/** A booking nobody in the shop has reminded yet. */
-export function needsReminder(b: Remindable, phone: string | null, now: number, timeZone: string): boolean {
-  return !b.reminded_at && canRemind(b, phone, now, timeZone);
+/**
+ * A booking due its day-before reminder that nobody in the shop has sent:
+ * tomorrow on the shop's clock, and booked before today. Someone who booked
+ * today has only just agreed the time, often with the barber on WhatsApp.
+ */
+export function needsReminder(
+  b: Remindable & Pick<Booking, 'created_at'>,
+  phone: string | null,
+  now: number,
+  timeZone: string,
+): boolean {
+  const today = localDateString(new Date(now), timeZone);
+  return (
+    !b.reminded_at &&
+    canRemind(b, phone, now, timeZone) &&
+    localDateString(new Date(b.starts_at), timeZone) === addDays(today, 1) &&
+    localDateString(new Date(b.created_at), timeZone) < today
+  );
 }
 
 /** The WhatsApp message, saying "today" or "tomorrow" when it is. */

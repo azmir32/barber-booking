@@ -115,6 +115,62 @@ test('the barber reminds tomorrow’s customers on WhatsApp', async ({ page, con
 
   await app.getByRole('radio', { name: /^Today/ }).click();
   await expect(left).toHaveText(`${before - 1} still to remind`);
+  // Later today's customers can be reminded too, but only from More.
+  await expect(button(app, /^Remind .* on WhatsApp$/)).toHaveCount(0);
+
+  // The message never went out after all: take it back, and Hakim counts again.
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await button(app, 'More actions for Hakim').click();
+  await button(app, 'Undo “Reminded”').click();
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
+  await app.getByRole('radio', { name: /^Today/ }).click();
+  await expect(left).toHaveText(`${before} still to remind`);
+});
+
+test('a reminder sent from a screen that missed a move says so, and the new time can have one', async ({
+  page,
+  context,
+}) => {
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const sent = async (opened: Promise<Page>) => {
+    const whatsapp = await opened;
+    await whatsapp.waitForLoadState();
+    await whatsapp.close();
+    return new URL(whatsapp.url()).searchParams.get('text');
+  };
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
+
+  // Hakim moves his cut an hour later on his own phone; this screen hasn't reloaded yet.
+  await page.evaluate(() => {
+    const key = 'potongku.demo.v1';
+    const saved = JSON.parse(localStorage.getItem(key)!);
+    type Row = Record<string, string | null>;
+    const hakim = (saved.tables.profiles as Row[]).find((p) => p.full_name === 'Hakim')!;
+    const cut = (saved.tables.bookings as Row[]).find(
+      (b) => b.customer_id === hakim.id && b.status === 'confirmed' && Date.parse(b.starts_at!) > Date.now(),
+    )!;
+    const later = (at: string | null) => new Date(Date.parse(at!) + 3_600_000).toISOString();
+    Object.assign(cut, { starts_at: later(cut.starts_at), ends_at: later(cut.ends_at), reminded_at: null });
+    localStorage.setItem(key, JSON.stringify(saved));
+  });
+
+  const opened = context.waitForEvent('page');
+  await button(app, 'Remind Hakim on WhatsApp').click();
+  expect(await sent(opened)).toMatch(/is tomorrow at 4:30 pm\./);
+  // The row now shows the new time, says the reminder wasn't saved, and still offers one.
+  const notSaved = app.getByRole('alert');
+  await expect(notSaved).toHaveText('Reminder not saved. This booking has changed. Check the new time.');
+  await expect(app.getByText('5:30 pm', { exact: true })).toBeVisible();
+  await snap(page, 'demo-11-reminder-not-saved');
+
+  const again = context.waitForEvent('page');
+  await button(app, 'Remind Hakim on WhatsApp').click();
+  expect(await sent(again)).toMatch(/is tomorrow at 5:30 pm\./);
+  await expect(notSaved).toHaveCount(0);
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
 });
 
 test('a reminder that can’t be saved still opens WhatsApp, and says so', async ({ page, context }) => {
@@ -139,11 +195,15 @@ test('a reminder that can’t be saved still opens WhatsApp, and says so', async
   const opened = context.waitForEvent('page');
   await button(app, 'Remind Hakim on WhatsApp').click();
   expect((await opened).url()).toMatch(/^https:\/\/wa\.me\/601122334455\?text=Hi%20Hakim/);
-  await expect(app.getByRole('alert')).toHaveText(
-    'Reminder for Hakim not saved. You can only remind a customer about an upcoming booking.',
-  );
+  // Hakim's row has gone to Cancelled, so the bar says it, and stays until it is seen.
+  const notSaved = app.getByText('Reminder for Hakim not saved. You can only remind a customer about an upcoming booking.');
+  await expect(notSaved).toBeVisible();
   await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
   await expect(app.getByText('✓ Reminded')).toHaveCount(reminded);
+  await page.waitForTimeout(9000);
+  await expect(notSaved).toBeVisible();
+  await button(app, 'OK').click();
+  await expect(notSaved).toHaveCount(0);
 });
 
 test('one tap across to the barber side, and the demo starts over cleanly', async ({ page }) => {

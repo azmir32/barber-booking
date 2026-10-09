@@ -461,7 +461,7 @@ test('the barber sees the day with customer details and runs the diary', async (
   assert.equal(taken.error?.code, '23505');
 });
 
-test('the shop records who it reminded on WhatsApp, and a move clears it', async () => {
+test('the shop records who it reminded on WhatsApp, for the time it named, and a move clears it', async () => {
   const ali = await signedIn(DEMO_BARBER_EMAIL);
   const shop = await shopBySlug(ali, 'ali-barber');
   const tomorrow = dayBounds(addDays(today(), 1), TZ);
@@ -490,7 +490,9 @@ test('the shop records who it reminded on WhatsApp, and a move clears it', async
     (b) => b.customer_id === hakimId && b.shop_id === shop.id && Date.parse(String(b.starts_at)) > Date.now(),
   )!;
   assert.equal(mine.reminded_at, null);
-  const marked = await ali.rpc('mark_booking_reminded', { p_booking_id: mine.id });
+  const remind = (c: ReturnType<typeof client>, id: unknown, startsAt: unknown = mine.starts_at, reminded?: boolean) =>
+    c.rpc('mark_booking_reminded', { p_booking_id: id, p_starts_at: startsAt, ...(reminded === undefined ? {} : { p_reminded: reminded }) });
+  const marked = await remind(ali, mine.id);
   assert.equal(marked.error, null);
   assert.ok(Math.abs(Date.parse(marked.data.reminded_at) - Date.now()) < 5000);
   // Every phone in the shop sees it, and it drops off the list still to remind.
@@ -498,11 +500,17 @@ test('the shop records who it reminded on WhatsApp, and a move clears it', async
   assert.equal(seen.data!.reminded_at, marked.data.reminded_at);
   assert.equal((await toRemind()).length, before.length - 1);
 
+  // A message that never went out can be taken back, and marked again.
+  const cleared = await remind(ali, mine.id, mine.starts_at, false);
+  assert.equal(cleared.error, null);
+  assert.equal(cleared.data.reminded_at, null);
+  assert.equal((await toRemind()).length, before.length);
+  assert.equal((await remind(ali, mine.id)).error, null);
+
   // Only the shop's owner: not the customer, another shop's owner or a guest.
-  const remind = (c: ReturnType<typeof client>, id: unknown) => c.rpc('mark_booking_reminded', { p_booking_id: id });
   assert.equal((await remind(hakim, mine.id)).error?.message, 'Booking not found.');
   const rahman = await signedIn('rahman@demo.potongku.my');
-  assert.equal((await remind(rahman, mine.id)).error?.message, 'Booking not found.');
+  assert.equal((await remind(rahman, mine.id, mine.starts_at, false)).error?.message, 'Booking not found.');
   assert.equal((await remind(client(), mine.id)).error?.code, '42501');
 
   // Not blocked time, a cancelled booking or one that has started.
@@ -515,7 +523,7 @@ test('the shop records who it reminded on WhatsApp, and a move clears it', async
     p_duration_min: 30,
     p_is_block: true,
   });
-  assert.equal((await remind(ali, block.data.id)).error?.message, 'Booking not found.');
+  assert.equal((await remind(ali, block.data.id, block.data.starts_at)).error?.message, 'Booking not found.');
   const walkIn = await ali.rpc('add_shop_booking', {
     p_barber_id: barbers![0].id,
     p_day: later,
@@ -525,12 +533,13 @@ test('the shop records who it reminded on WhatsApp, and a move clears it', async
     p_guest_phone: '019-111 2222',
   });
   await ali.rpc('set_booking_status', { p_booking_id: walkIn.data.id, p_status: 'cancelled' });
-  const cancelled = await remind(ali, walkIn.data.id);
+  const cancelled = await remind(ali, walkIn.data.id, walkIn.data.starts_at);
   assert.equal(cancelled.error?.code, '42501');
   assert.equal(cancelled.error?.message, 'You can only remind a customer about an upcoming booking.');
   setClock(() => Date.parse(String(mine.starts_at)) + 60_000);
   try {
     assert.equal((await remind(ali, mine.id)).error?.code, '42501');
+    assert.equal((await remind(ali, mine.id, mine.starts_at, false)).error?.code, '42501');
   } finally {
     setClock(() => Date.now());
   }
@@ -545,6 +554,18 @@ test('the shop records who it reminded on WhatsApp, and a move clears it', async
   const moved = await hakim.rpc('reschedule_booking', { p_booking_id: mine.id, p_starts_at: slots[0].starts_at });
   assert.equal(moved.error, null);
   assert.equal(moved.data.reminded_at, null);
+
+  // A phone still showing the old time sends a reminder for it: that one doesn't
+  // count, so the new time still gets its own.
+  const stale = await remind(ali, mine.id, mine.starts_at);
+  assert.equal(stale.error?.code, '42501');
+  assert.equal(stale.error?.message, 'This booking has changed. Check the new time.');
+  assert.equal(tables().bookings.find((b) => b.id === mine.id)!.reminded_at, null);
+  assert.equal((await remind(ali, mine.id, null)).error?.message, 'This booking has changed. Check the new time.');
+  assert.equal((await remind(ali, mine.id, 'soon')).error?.code, '22P02');
+  const fresh = await remind(ali, mine.id, moved.data.starts_at);
+  assert.equal(fresh.error, null);
+  assert.ok(fresh.data.reminded_at);
 });
 
 test('a new barber signs up, sets up a shop and goes live', async () => {

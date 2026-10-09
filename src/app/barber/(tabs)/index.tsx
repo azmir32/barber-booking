@@ -35,9 +35,15 @@ type ShopBooking = Booking & {
 };
 
 /** Just enough of tomorrow's bookings to count who still needs a reminder. */
-type ToRemind = Pick<Booking, 'id' | 'barber_id' | 'status' | 'is_block' | 'starts_at' | 'reminded_at' | 'guest_phone'> & {
+type ToRemind = Pick<
+  Booking,
+  'id' | 'barber_id' | 'status' | 'is_block' | 'starts_at' | 'reminded_at' | 'guest_phone' | 'created_at'
+> & {
   customer: { phone: string | null } | null;
 };
+
+/** A reminder WhatsApp opened for but the shop's record missed, with the time the message named. */
+type Unsaved = { startsAt: string; reason: string };
 
 type BarberWithHours = Barber & { working_hours: WorkingHours[] };
 
@@ -69,6 +75,8 @@ export default function BarberBookings() {
   const [hoursOpen, setHoursOpen] = useState(false);
   const [showFinished, setShowFinished] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // By booking. Reloads keep them, so the row still says so when the barber is back from WhatsApp.
+  const [unsaved, setUnsaved] = useState<Record<string, Unsaved>>({});
   // The shop closed for the day (Hari Raya, say), with the reason the owner gave.
   const [closure, setClosure] = useState<{ reason: string | null } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -109,7 +117,9 @@ export default function BarberBookings() {
       next
         ? supabase
             .from('bookings')
-            .select('id, barber_id, status, is_block, starts_at, reminded_at, guest_phone, customer:profiles!bookings_customer_id_fkey(phone)')
+            .select(
+              'id, barber_id, status, is_block, starts_at, reminded_at, guest_phone, created_at, customer:profiles!bookings_customer_id_fkey(phone)',
+            )
             .eq('shop_id', shop.id)
             .eq('status', 'confirmed')
             .eq('is_block', false)
@@ -119,9 +129,13 @@ export default function BarberBookings() {
         : null,
     ]);
     if (request !== latest.current) return;
-    if (list.error) return setError(errorMessage(list.error));
+    if (list.error) {
+      setError(errorMessage(list.error));
+      return;
+    }
     setError(null);
-    setBookings((list.data ?? []) as ShopBooking[]);
+    const fresh = (list.data ?? []) as ShopBooking[];
+    setBookings(fresh);
     setServices(active.count ?? 0);
     if (!team.error) setBarbers((team.data ?? []) as BarberWithHours[]);
     if (!closed.error) {
@@ -131,6 +145,7 @@ export default function BarberBookings() {
     if (!unreminded) setTomorrow([]);
     // The client can't tell that the customer is one profile rather than a list.
     else if (!unreminded.error) setTomorrow((unreminded.data ?? []) as unknown as ToRemind[]);
+    return fresh;
   }, [shop, day, tz]);
 
   // Reloads after a status change use the day on screen by then, not the day the button was tapped on.
@@ -150,10 +165,11 @@ export default function BarberBookings() {
 
   if (!shop) return null;
 
-  const showNotice = (next: Notice | null) => {
+  /** With stay, it waits to be dismissed, for news the barber only sees on coming back from WhatsApp. */
+  const showNotice = (next: Notice | null, stay = false) => {
     clearTimeout(noticeTimer.current);
     setNotice(next);
-    if (next) noticeTimer.current = setTimeout(() => setNotice(null), NOTICE_MS);
+    if (next && !stay) noticeTimer.current = setTimeout(() => setNotice(null), NOTICE_MS);
   };
 
   /** Sets one status on several bookings and returns the ones that changed. */
@@ -206,23 +222,59 @@ export default function BarberBookings() {
   };
 
   /**
-   * Opens WhatsApp first, while the tap still counts (browsers block a new tab
-   * after a round trip), then records it so the other phones in the shop see it.
+   * Records a reminder for the time the message named, so the other phones in
+   * the shop see it. If that fails, the row says so and can save it again
+   * without a second message. A booking that has left the list meanwhile
+   * (cancelled, or moved to another day) has no row to say it, so the bar does.
    */
+  const saveReminder = async (b: ShopBooking, startsAt: string) => {
+    const { data, error: failed } = await supabase.rpc('mark_booking_reminded', {
+      p_booking_id: b.id,
+      p_starts_at: startsAt,
+    });
+    if (failed) {
+      const reason = errorMessage(failed);
+      setUnsaved((all) => ({ ...all, [b.id]: { startsAt, reason } }));
+      loadRef.current().then((fresh) => {
+        const row = fresh?.find((x) => x.id === b.id);
+        if (fresh && !(row && awaitsReminder(row, Date.now()))) {
+          showNotice(
+            {
+              message: t('Reminder for {name} not saved. {reason}', { name: whoFor(b), reason }),
+              actionLabel: t('OK'),
+              onAction: () => {},
+            },
+            true,
+          );
+        }
+      });
+      return;
+    }
+    setUnsaved((all) => Object.fromEntries(Object.entries(all).filter(([id]) => id !== b.id)));
+    const at = (data as Booking).reminded_at;
+    setBookings((all) => all.map((x) => (x.id === b.id ? { ...x, reminded_at: at } : x)));
+  };
+
+  /** Opens WhatsApp first, while the tap still counts (browsers block a new tab after a round trip). */
   const remind = async (b: ShopBooking) => {
     const phone = phoneOf(b);
     if (!phone) return;
     openWhatsApp(phone, reminderMessage(messageVars(b), b.starts_at, now, tz));
-    const { data, error: failed } = await supabase.rpc('mark_booking_reminded', { p_booking_id: b.id });
+    await saveReminder(b, b.starts_at);
+  };
+
+  /** For a message that never went out, so the booking counts as still to remind. */
+  const unremind = async (b: ShopBooking) => {
+    const { error: failed } = await supabase.rpc('mark_booking_reminded', {
+      p_booking_id: b.id,
+      p_starts_at: b.starts_at,
+      p_reminded: false,
+    });
     if (failed) {
-      // Another phone may have cancelled or moved it; the reload shows that, then the error.
-      loadRef.current().then(() =>
-        setError(t('Reminder for {name} not saved. {reason}', { name: whoFor(b), reason: errorMessage(failed) })),
-      );
+      loadRef.current().then(() => setError(errorMessage(failed)));
       return;
     }
-    const at = (data as Booking).reminded_at;
-    setBookings((all) => all.map((x) => (x.id === b.id ? { ...x, reminded_at: at } : x)));
+    setBookings((all) => all.map((x) => (x.id === b.id ? { ...x, reminded_at: null } : x)));
   };
 
   const cancel = async (b: ShopBooking) => {
@@ -329,7 +381,10 @@ export default function BarberBookings() {
         onMark={(status) => mark([b], status)}
         onCancel={() => cancel(b)}
         onWhatsApp={() => whatsapp(b)}
+        unsaved={unsaved[b.id] && awaitsReminder(b, now) ? unsaved[b.id] : undefined}
         onRemind={() => remind(b)}
+        onSaveReminder={() => saveReminder(b, unsaved[b.id].startsAt)}
+        onUnremind={() => unremind(b)}
       />
     );
 
@@ -515,6 +570,10 @@ function whoFor(b: ShopBooking): string {
 const phoneOf = (b: Pick<Booking, 'is_block' | 'guest_phone'> & { customer: { phone: string | null } | null }) =>
   b.is_block ? null : (b.customer?.phone ?? b.guest_phone);
 
+/** Still to come with nobody's reminder recorded, so a row can say one wasn't saved. */
+const awaitsReminder = (b: Booking, now: number) =>
+  b.status === 'confirmed' && !b.reminded_at && new Date(b.starts_at).getTime() > now;
+
 const openWhatsApp = (phone: string, message: string) => Linking.openURL(whatsappUrl(phone, message)).catch(() => {});
 
 const call = (phone: string) => Linking.openURL(`tel:${phone.replace(/[^\d+]/g, '')}`).catch(() => {});
@@ -522,27 +581,34 @@ const call = (phone: string) => Linking.openURL(`tel:${phone.replace(/[^\d+]/g, 
 /**
  * A booking still to come or still to mark. The time sits on the left so a
  * column of cards reads like the day; Cancel and Call wait behind "more", away
- * from Done and No-show. Before it starts, Remind takes Done's place until
- * someone in the shop has sent one; Remind again then waits behind "more".
+ * from Done and No-show. The day before, Remind takes Done's place until
+ * someone in the shop has sent one; other reminders, and taking one back,
+ * wait behind "more".
  */
 function LiveCard({
   booking: b,
   tz,
   now,
   showBarber,
+  unsaved,
   onMark,
   onCancel,
   onWhatsApp,
   onRemind,
+  onSaveReminder,
+  onUnremind,
 }: {
   booking: ShopBooking;
   tz: string;
   now: number;
   showBarber: boolean;
+  unsaved?: Unsaved;
   onMark: (status: 'completed' | 'no_show') => void;
   onCancel: () => void;
   onWhatsApp: () => void;
   onRemind: () => Promise<void>;
+  onSaveReminder: () => Promise<void>;
+  onUnremind: () => Promise<void>;
 }) {
   const theme = useTheme();
   const [more, setMore] = useState(false);
@@ -550,10 +616,13 @@ function LiveCard({
   const who = whoFor(b);
   const phone = phoneOf(b);
   const remindable = canRemind(b, phone, now, tz);
-  const remind = async () => {
+  const due = needsReminder(b, phone, now, tz);
+  // Saving again sends nothing; a message naming a time the booking has moved from can't be saved.
+  const resave = unsaved && new Date(unsaved.startsAt).getTime() === new Date(b.starts_at).getTime();
+  const busy = (action: () => Promise<void>) => async () => {
     setReminding(true);
     try {
-      await onRemind();
+      await action();
     } finally {
       setReminding(false);
     }
@@ -607,24 +676,52 @@ function LiveCard({
           />
         </View>
       </View>
+      {unsaved ? (
+        <ErrorText
+          message={t('Reminder not saved. {reason}', {
+            reason: resave ? unsaved.reason : t('This booking has changed. Check the new time.'),
+          })}
+        />
+      ) : null}
       {started ? (
         <Row style={styles.noWrap}>
           <Button title={t('Done')} variant="secondary" style={{ flex: 1 }} onPress={() => onMark('completed')} />
           <Button title={t('No-show')} variant="ghost" onPress={() => onMark('no_show')} />
         </Row>
-      ) : remindable && !b.reminded_at ? (
+      ) : resave ? (
+        <Button
+          title={t('Mark as reminded')}
+          accessibilityLabel={t('Mark {name} as reminded', { name: who })}
+          variant="secondary"
+          loading={reminding}
+          onPress={busy(onSaveReminder)}
+        />
+      ) : due ? (
         <Button
           title={t('Remind on WhatsApp')}
           accessibilityLabel={t('Remind {name} on WhatsApp', { name: who })}
           variant="secondary"
           loading={reminding}
-          onPress={remind}
+          onPress={busy(onRemind)}
         />
       ) : null}
       {more ? (
         <Row>
-          {remindable && b.reminded_at ? (
-            <Button title={t('Remind again')} variant="secondary" loading={reminding} onPress={remind} />
+          {remindable && (resave || !due) ? (
+            <Button
+              title={b.reminded_at ? t('Remind again') : t('Remind on WhatsApp')}
+              variant="secondary"
+              loading={reminding}
+              onPress={busy(onRemind)}
+            />
+          ) : null}
+          {b.reminded_at && !started ? (
+            <Button
+              title={t('Undo “{status}”', { status: t('Reminded') })}
+              variant="secondary"
+              loading={reminding}
+              onPress={busy(onUnremind)}
+            />
           ) : null}
           {phone ? <Button title={t('Call')} variant="secondary" onPress={() => call(phone)} /> : null}
           <Button title={t('Cancel booking')} variant="danger" onPress={onCancel} />

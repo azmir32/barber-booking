@@ -262,19 +262,34 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Pak Abu (added by you)')).toBeVisible();
     await snap(page, '15-barber-day-with-guest');
 
-    // The day before: WhatsApp opens with a reminder (answered here, so it stays offline),
-    // and the row says it was sent.
+    // Pak Abu has only just agreed the time, so no reminder is due, but one can still
+    // go from More. WhatsApp is answered here, so it stays offline.
+    await expect(button(page, 'Remind Pak Abu on WhatsApp')).toHaveCount(0);
     await page.context().route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+    // With no signal WhatsApp still opens, and the row says the reminder wasn't saved.
+    const saveReminder = '**/rest/v1/rpc/mark_booking_reminded';
+    await page.route(saveReminder, (route) => route.abort());
+    await button(page, 'More actions for Pak Abu').click();
     const opened = page.context().waitForEvent('page');
-    await button(page, 'Remind Pak Abu on WhatsApp').click();
+    await button(page, 'Remind on WhatsApp').click();
     const whatsapp = await opened;
     await whatsapp.waitForLoadState();
     expect(new URL(whatsapp.url()).searchParams.get('text')).toMatch(
       new RegExp(`^Hi Pak Abu, a reminder from ${shopName}: your Haircut is tomorrow at 3:00 pm\\.`),
     );
     await whatsapp.close();
+    await expect(page.getByRole('alert')).toHaveText(
+      'Reminder not saved. No internet connection. Check your data and try again.',
+    );
+    // Back online, it saves without sending a second message.
+    await page.unroute(saveReminder);
+    await button(page, 'Mark Pak Abu as reminded').click();
     await expect(page.getByText('✓ Reminded')).toBeVisible();
-    await expect(button(page, 'Remind Pak Abu on WhatsApp')).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    // A reminder that never went out can be taken back.
+    await button(page, 'Undo “Reminded”').click();
+    await expect(page.getByText('✓ Reminded')).toHaveCount(0);
+    await expect(button(page, 'Remind on WhatsApp')).toBeVisible();
 
     await choice(page, dayChip(2)).click();
     await button(page, '+ Add booking or block time').click();

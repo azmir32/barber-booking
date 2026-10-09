@@ -721,9 +721,16 @@ end;
 $$;
 
 -- The shop owner WhatsApps a customer a reminder and records it here, so the
--- other phones in the shop don't send a second one. Only for a booking that
+-- other phones in the shop don't send a second one. p_starts_at is the time
+-- the message named: a booking moved since then (even while this waits on it)
+-- is left unreminded, so the new time still gets one. p_reminded false takes
+-- a reminder back, when the message never went out. Only for a booking that
 -- is still to come.
-create function public.mark_booking_reminded(p_booking_id uuid)
+create function public.mark_booking_reminded(
+  p_booking_id uuid,
+  p_starts_at timestamptz,
+  p_reminded boolean default true
+)
 returns public.bookings
 language plpgsql
 security definer
@@ -736,11 +743,18 @@ begin
   if not found or v_booking.is_block or not public.owns_shop(v_booking.shop_id) then
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
-  if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
+
+  -- Checked in the update itself, so a cancel or move that commits first wins.
+  update bookings set reminded_at = case when p_reminded then now() end
+  where id = p_booking_id and status = 'confirmed' and starts_at > now() and starts_at = p_starts_at
+  returning * into v_booking;
+  if not found then
+    select * into v_booking from bookings where id = p_booking_id;
+    if v_booking.status = 'confirmed' and v_booking.starts_at > now() then
+      raise exception 'This booking has changed. Check the new time.' using errcode = '42501';
+    end if;
     raise exception 'You can only remind a customer about an upcoming booking.' using errcode = '42501';
   end if;
-
-  update bookings set reminded_at = now() where id = p_booking_id returning * into v_booking;
   return v_booking;
 end;
 $$;
@@ -1083,12 +1097,12 @@ revoke execute on function public.add_shop_booking(uuid, date, time, int, uuid, 
 grant execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) to authenticated;
 revoke execute on function public.book_appointment(uuid, timestamptz, uuid, text) from public, anon;
 revoke execute on function public.set_booking_status(uuid, public.booking_status) from public, anon;
-revoke execute on function public.mark_booking_reminded(uuid) from public, anon;
+revoke execute on function public.mark_booking_reminded(uuid, timestamptz, boolean) from public, anon;
 revoke execute on function public.reschedule_booking(uuid, timestamptz, uuid) from public, anon;
 revoke execute on function public.set_barber_hours(uuid, jsonb) from public, anon;
 grant execute on function public.book_appointment(uuid, timestamptz, uuid, text) to authenticated;
 grant execute on function public.set_booking_status(uuid, public.booking_status) to authenticated;
-grant execute on function public.mark_booking_reminded(uuid) to authenticated;
+grant execute on function public.mark_booking_reminded(uuid, timestamptz, boolean) to authenticated;
 grant execute on function public.reschedule_booking(uuid, timestamptz, uuid) to authenticated;
 grant execute on function public.set_barber_hours(uuid, jsonb) to authenticated;
 revoke execute on function public.close_shop_days(date, int, text) from public, anon;

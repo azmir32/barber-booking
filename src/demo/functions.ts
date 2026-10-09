@@ -334,7 +334,8 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
   );
 }
 
-export function markBookingReminded(c: Caller, bookingId: unknown) {
+export function markBookingReminded(c: Caller, bookingId: unknown, startsAt: unknown, reminded: unknown = true) {
+  const named = toColumnValue('bookings', 'starts_at', startsAt);
   const booking = findById('bookings', bookingId);
   if (!booking || booking.is_block || !ownsShop(booking.shop_id, c.uid)) {
     throw new PgError('P0002', 'Booking not found.', 500);
@@ -342,7 +343,12 @@ export function markBookingReminded(c: Caller, bookingId: unknown) {
   if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
     throw new PgError('42501', 'You can only remind a customer about an upcoming booking.', 403);
   }
-  return updateRows('bookings', [booking], { reminded_at: new Date(now()).toISOString() })[0];
+  // The message named this time; a booking moved since still needs one for its new time.
+  if (named == null || ms(named) !== ms(booking.starts_at)) {
+    throw new PgError('42501', 'This booking has changed. Check the new time.', 403);
+  }
+  const set = reminded === true || reminded === 'true';
+  return updateRows('bookings', [booking], { reminded_at: set ? new Date(now()).toISOString() : null })[0];
 }
 
 export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown) {
@@ -621,7 +627,7 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
     case 'set_booking_status':
       return { status: 200, body: setBookingStatus(c, args.p_booking_id, args.p_status) };
     case 'mark_booking_reminded':
-      return { status: 200, body: markBookingReminded(c, args.p_booking_id) };
+      return { status: 200, body: markBookingReminded(c, args.p_booking_id, args.p_starts_at, args.p_reminded) };
     case 'reschedule_booking':
       return {
         status: 200,
