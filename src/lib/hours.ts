@@ -66,14 +66,16 @@ const FREE_NOW_MS = 15 * 60_000;
  * The line under a listed shop's open status, from its earliest free start
  * today or tomorrow: "Free now" when that is within 15 minutes and the shop
  * is open, else "Next free: today, 3:15 pm" or "Next free: tomorrow, 10:00 am".
- * Null when there is none or it has passed, and for a time today when the
- * open line says "Closed today", so the two lines never disagree.
+ * Null when there is none or it has passed, for a time today when the open
+ * line says "Closed today", so the two lines never disagree, and for the
+ * opening time itself, which the open line already gives.
  */
 export function nextFreeLine(
   nextFreeAt: string | null,
   open: OpenStatus['state'],
   now: Date | number = new Date(),
   timeZone = DEFAULT_TIME_ZONE,
+  opensToday: string | null = null,
 ): { soon: boolean; label: string } | null {
   const at = nextFreeAt ? Date.parse(nextFreeAt) : NaN;
   const current = new Date(now).getTime();
@@ -83,6 +85,7 @@ export function nextFreeLine(
   const time = formatTime(new Date(at), timeZone);
   if (day === addDays(today, 1)) return { soon: false, label: t('Next free: tomorrow, {time}', { time }) };
   if (day !== today || open === 'closed') return null;
+  if (open === 'later' && localClock(new Date(at), timeZone) === opensToday?.slice(0, 5)) return null;
   if (open === 'open' && at - current <= FREE_NOW_MS) return { soon: true, label: t('Free now') };
   return { soon: false, label: t('Next free: today, {time}', { time }) };
 }

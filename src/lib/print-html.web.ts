@@ -12,6 +12,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Opens the print window. Resolves true once it opens; throws if the browser won't print. */
 export async function printHtml(html: string): Promise<boolean> {
+  // Printing moves focus into the frame; put it back on the Print button once the frame goes.
+  const before = document.activeElement as HTMLElement | null;
+  const done = () => {
+    frame.remove();
+    before?.focus?.();
+  };
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.tabIndex = -1;
@@ -44,11 +50,11 @@ export async function printHtml(html: string): Promise<boolean> {
     const timer = setInterval(() => {
       if (!finished && Date.now() < removeAt) return;
       clearInterval(timer);
-      frame.remove();
+      done();
     }, 500);
     return true;
   } catch (e) {
-    frame.remove();
+    done();
     throw e;
   }
 }

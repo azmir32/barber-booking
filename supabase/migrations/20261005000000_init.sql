@@ -270,41 +270,57 @@ revoke insert, update, delete on public.shop_closures from anon, authenticated;
 
 -- A shop's hours today by its own clock: the first barber in to the last one
 -- out, leaving out barbers with the whole day off. Nulls when nobody is in,
--- or the shop is closed for the day. Breaks are ignored.
+-- or the shop is closed for the day. Breaks are ignored. plpgsql, so today's
+-- bounds are known before the bookings lookup: as one SQL query the planner
+-- read every booking the barbers ever had, and the shop list took 23 ms
+-- instead of 2.5 ms (e2e/load).
 create function public.shop_hours_today(p_shop_id uuid)
 returns table (opens_today time, closes_today time)
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
-  select min(wh.opens_at), max(wh.closes_at)
+declare
+  v_tz text;
+  v_day date;
+begin
+  select s.time_zone into v_tz
   from shops s
-  cross join lateral (select (now() at time zone s.time_zone)::date as d) today
-  join barbers b on b.shop_id = s.id and b.is_active
-  join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from today.d)::int
-  where s.id = p_shop_id
-    and (public.shop_is_live(s) or s.owner_id = (select auth.uid()))
-    and not exists (select 1 from shop_closures c where c.shop_id = s.id and c.day = today.d)
-    and not exists (
-      -- Bounded to today so this stays one short index lookup however long
-      -- the shop's history grows.
-      select 1 from bookings bk
-      where bk.shop_id = s.id
-        and bk.starts_at >= today.d::timestamp at time zone s.time_zone
-        and bk.starts_at < (today.d + 1)::timestamp at time zone s.time_zone
-        and bk.barber_id = b.id
+  where s.id = p_shop_id and (public.shop_is_live(s) or s.owner_id = (select auth.uid()));
+  if not found then
+    return query select null::time, null::time;
+    return;
+  end if;
+  v_day := (now() at time zone v_tz)::date;
+  return query
+  select min(wh.opens_at), max(wh.closes_at)
+  from barbers b
+  join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from v_day)::int
+  where b.shop_id = p_shop_id
+    and b.is_active
+    and not exists (select 1 from shop_closures c where c.shop_id = p_shop_id and c.day = v_day)
+    and b.id not in (
+      select bk.barber_id from bookings bk
+      where bk.shop_id = p_shop_id
+        and bk.starts_at >= v_day::timestamp at time zone v_tz
+        and bk.starts_at < (v_day + 1)::timestamp at time zone v_tz
         and bk.is_block
         and bk.status = 'confirmed'
         and bk.ends_at - bk.starts_at >= interval '24 hours'
     );
+end;
 $$;
 
 -- When someone wanting a cut soon could get one: the earliest free start for
 -- the shop's shortest service with any barber, today by the shop's clock or
--- else tomorrow. Null when neither day has a free time. available_slots
--- decides what is free, so hours, bookings, blocks, closures, barbers away
--- and the booking horizon all count, and a hidden shop has none.
+-- else tomorrow. Null when neither day has a free time. It gives the same
+-- answer as the earliest of available_slots (booking_test.sql checks), but
+-- find_shops runs it for every shop on a page, so rather than trying every
+-- start time it only tries the few that can be first: free times sit on a
+-- 15-minute grid from opening, so the first one is the first grid time after
+-- now, or the first after one of the barber's bookings ends. That halves the
+-- shop list's time (e2e/load).
 create function public.shop_next_free(p_shop_id uuid)
 returns timestamptz
 language plpgsql
@@ -313,26 +329,76 @@ security definer
 set search_path = public
 as $$
 declare
-  v_service uuid;
-  v_today date;
+  v_tz text;
+  v_minutes int;
+  v_day date;
   v_at timestamptz;
 begin
-  select v.id, (now() at time zone s.time_zone)::date into v_service, v_today
+  select s.time_zone into v_tz
   from shops s
-  join services v on v.shop_id = s.id and v.is_active
-  where s.id = p_shop_id
+  where s.id = p_shop_id and (public.shop_is_live(s) or s.owner_id = (select auth.uid()));
+  select v.duration_min into v_minutes
+  from services v
+  where v.shop_id = p_shop_id and v.is_active
   order by v.duration_min, v.sort_order, v.id
   limit 1;
-  if v_service is null then
+  if v_tz is null or v_minutes is null then
     return null;
   end if;
-  select min(a.starts_at) into v_at from public.available_slots(v_service, v_today) a;
-  -- find_shops runs this for every shop on the page, so tomorrow is only
-  -- worked out when today has nothing left.
-  if v_at is null then
-    select min(a.starts_at) into v_at from public.available_slots(v_service, v_today + 1) a;
-  end if;
-  return v_at;
+
+  v_day := (now() at time zone v_tz)::date;
+  -- Tomorrow is only worked out when today has nothing left. Both are well
+  -- inside the booking horizon.
+  for i in 0..1 loop
+    if not exists (select 1 from shop_closures c where c.shop_id = p_shop_id and c.day = v_day) then
+      with hours as (
+        select b.id as barber_id,
+               (v_day + wh.opens_at) at time zone v_tz as opens,
+               (v_day + wh.closes_at) at time zone v_tz as closes
+        from barbers b
+        join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from v_day)::int
+        where b.shop_id = p_shop_id and b.is_active
+      ),
+      taken as materialized (
+        -- Bookings and blocks are at most a day long, so anything in the way
+        -- started after the day before began.
+        select bk.barber_id, bk.starts_at, bk.ends_at
+        from bookings bk
+        where bk.shop_id = p_shop_id
+          and bk.status <> 'cancelled'
+          and bk.starts_at > (v_day - 1)::timestamp at time zone v_tz
+          and bk.starts_at < (v_day + 1)::timestamp at time zone v_tz
+      ),
+      tries as materialized (
+        -- Each point rounded up to the grid; the microsecond keeps a grid time
+        -- that is exactly now out, as available_slots does.
+        select h.barber_id, h.closes,
+               date_bin('15 minutes', p.at + interval '15 minutes' - interval '1 microsecond', h.opens) as at
+        from hours h
+        cross join lateral (
+          select greatest(h.opens, now() + interval '1 microsecond') as at
+          union all
+          select greatest(t.ends_at, h.opens, now() + interval '1 microsecond')
+          from taken t
+          where t.barber_id = h.barber_id and t.ends_at > h.opens and t.ends_at < h.closes
+        ) p
+      )
+      select min(tr.at) into v_at
+      from tries tr
+      where tr.at + make_interval(mins => v_minutes) <= tr.closes
+        and not exists (
+          select 1 from taken t
+          where t.barber_id = tr.barber_id
+            and t.starts_at < tr.at + make_interval(mins => v_minutes)
+            and t.ends_at > tr.at
+        );
+      if v_at is not null then
+        return v_at;
+      end if;
+    end if;
+    v_day := v_day + 1;
+  end loop;
+  return null;
 end;
 $$;
 -- Only find_shops uses it.

@@ -69,6 +69,10 @@ test('nextFreeLine says when a listed shop can next take someone', () => {
   assert.deepEqual(line(at('15:30'), 'open', '15:14'), { soon: false, label: 'Next free: today, 3:30 pm' });
   // Not open yet, so the first time of the day is a time, not "now".
   assert.equal(line(at('10:00'), 'later', '09:50')?.label, 'Next free: today, 10:00 am');
+  // Unless it is the opening time, which "Opens 10:00 am" already says.
+  const opening = (next: string) => nextFreeLine(next, 'later', new Date(at('08:00')), 'Asia/Kuala_Lumpur', '10:00:00');
+  assert.equal(opening(at('10:00')), null);
+  assert.equal(opening(at('10:30'))?.label, 'Next free: today, 10:30 am');
   // Full or closed today: tomorrow, which never disagrees with "Closed today".
   assert.equal(line(at('10:00', '07'), 'open', '15:00')?.label, 'Next free: tomorrow, 10:00 am');
   assert.equal(line(at('10:00', '07'), 'closed', '20:30')?.label, 'Next free: tomorrow, 10:00 am');

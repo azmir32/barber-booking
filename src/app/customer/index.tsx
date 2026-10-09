@@ -203,7 +203,7 @@ export default function Explore() {
         {shops.map((shop) => {
           // The list doesn't send each shop's zone: every shop is in Malaysia, on Kuala Lumpur time.
           const openNow = listedOn === today ? openStatus(shop.opens_today, shop.closes_today, now) : null;
-          const nextFree = openNow ? nextFreeLine(shop.next_free_at, openNow.state, now) : null;
+          const nextFree = openNow ? nextFreeLine(shop.next_free_at, openNow.state, now, undefined, shop.opens_today) : null;
           return (
             <Card
               key={shop.id}

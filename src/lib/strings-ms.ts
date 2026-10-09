@@ -540,4 +540,8 @@ export const ms: Record<string, string> = {
   'Printing didn’t open here. Take a screenshot of the poster above and print or send that instead.':
     'Tidak dapat mencetak di sini. Ambil tangkapan skrin poster di atas, kemudian cetak atau hantar gambar itu.',
   'Link copied.': 'Pautan disalin.',
+  'Once your subscription is active, customers can book from this poster again.':
+    'Setelah langganan anda aktif, pelanggan boleh menempah melalui poster ini semula.',
+  'A poster needs your shop’s web link, and this version of the app doesn’t have one yet.':
+    'Poster memerlukan pautan web kedai anda, dan versi aplikasi ini belum ada pautan itu.',
 };

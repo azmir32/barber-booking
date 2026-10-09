@@ -135,9 +135,11 @@ export default function MyShop() {
             title={t('Share')}
             style={linkAction}
             onPress={() =>
-              // Browsers without a share sheet get the link copied instead.
-              Share.share({ message: t('Book your next cut at {shop}: {link}', { shop: shop.name, link }) }).catch(() =>
-                copyLink(link),
+              // Browsers without a share sheet get the link copied instead; closing the sheet is not one of those.
+              Share.share({ message: t('Book your next cut at {shop}: {link}', { shop: shop.name, link }) }).catch(
+                (e: { name?: string } | null) => {
+                  if (e?.name !== 'AbortError') copyLink(link);
+                },
               )
             }
           />

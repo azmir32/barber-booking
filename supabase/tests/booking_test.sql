@@ -249,6 +249,57 @@ begin
 end $$;
 rollback;
 
+-- shop_next_free takes a shortcut, so check it against available_slots on a
+-- messy diary at different times of day: bookings of odd lengths, a break,
+-- blocks running past closing and over midnight.
+begin;
+reset role;
+do $$
+declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  svc uuid := '00000000-0000-0000-0000-0000000000e1';
+  tz text;
+  today date;
+  want timestamptz;
+  k int := 0;
+begin
+  delete from bookings;
+  delete from working_hours;
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  select '00000000-0000-0000-0000-0000000000a1'::uuid, d, '08:00'::time, '13:00'::time from generate_series(0, 6) d
+  union all
+  select '00000000-0000-0000-0000-0000000000a1', d, '14:10', '22:00' from generate_series(0, 6) d
+  union all
+  select '00000000-0000-0000-0000-0000000000a2', d, '09:30', '23:50' from generate_series(0, 6) d;
+  for hour in 0..23 loop
+    select z into tz
+    from generate_series(-12, 14) o,
+         lateral (select 'Etc/GMT' || case when o > 0 then '-' || o when o < 0 then '+' || -o else '' end as z) n
+    where extract(hour from now() at time zone z) = hour
+    order by o
+    limit 1;
+    update shops set time_zone = tz;
+    today := (now() at time zone tz)::date;
+    delete from bookings;
+    -- Back-to-back bookings of 20 to 95 minutes, with gaps that change with the hour.
+    insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+    select shop, b, true, 'Busy', 0, at, at + make_interval(mins => 20 + (i * 37 + hour * 11) % 76)
+    from unnest(array['00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2']::uuid[])
+           with ordinality as bb(b, n),
+         generate_series(0, 30) i,
+         lateral (select (today + time '07:00') at time zone tz
+                         + make_interval(mins => i * (100 + n::int * 13) + (hour * 7) % 40) as at) x
+    where (i + hour + n::int) % 4 <> 0;
+    want := coalesce((select min(starts_at) from available_slots(svc, today)),
+                     (select min(starts_at) from available_slots(svc, today + 1)));
+    assert shop_next_free(shop) is not distinct from want,
+      format('at %s:00 next free should be %s, got %s', hour, want, shop_next_free(shop));
+    k := k + (want is not null)::int;
+  end loop;
+  assert k > 12, 'most hours should have a free time to compare';
+end $$;
+rollback;
+
 -- Customers can't write bookings directly or see other people's -----------
 do $$ begin
   insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at)
