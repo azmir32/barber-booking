@@ -816,7 +816,12 @@ end $$;
 begin;
 reset role;
 insert into auth.users (id, email, raw_user_meta_data) values
-  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}'),
+  ('00000000-0000-0000-0000-0000000000c3', 'hakim@test', '{"full_name":"Hakim","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000000c4', 'farid@test', '{"full_name":"Farid","phone":"012-778 9012"}'),
+  -- A father and daughter on one phone.
+  ('00000000-0000-0000-0000-0000000000c5', 'ahseng@test', '{"full_name":"Ah Seng","phone":"019-888 7777"}'),
+  ('00000000-0000-0000-0000-0000000000c6', 'meiling@test', '{"full_name":"Mei Ling","phone":"019-888 7777"}');
 insert into shops (owner_id, name, slug) values ('00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 set role authenticated;
@@ -973,6 +978,222 @@ do $$ begin
   raise exception 'guests must not call reschedule_booking';
 exception when insufficient_privilege then null;
 end $$;
+
+-- The shop's customers -------------------------------------------------------
+-- A fresh diary for this part only: regulars, guests typed different ways,
+-- and things that are not customers. Days count back from today in Kajang,
+-- at set clock times, so it reads the same at any hour.
+begin;
+reset role;
+delete from bookings;
+update profiles set phone = '013-222 3333' where id = '00000000-0000-0000-0000-0000000000c2';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}'),
+  ('00000000-0000-0000-0000-0000000000c3', 'hakim@test', '{"full_name":"Hakim","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000000c4', 'farid@test', '{"full_name":"Farid","phone":"012-778 9012"}'),
+  -- A father and daughter on one phone.
+  ('00000000-0000-0000-0000-0000000000c5', 'ahseng@test', '{"full_name":"Ah Seng","phone":"019-888 7777"}'),
+  ('00000000-0000-0000-0000-0000000000c6', 'meiling@test', '{"full_name":"Mei Ling","phone":"019-888 7777"}');
+insert into shops (owner_id, name, slug) values ('00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
+insert into bookings (shop_id, barber_id, customer_id, guest_name, guest_phone, is_block, service_name, price,
+                      starts_at, ends_at, status)
+select '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', f.customer_id::uuid,
+       f.guest_name, f.guest_phone, f.is_block, 'Haircut', 25, x.at, x.at + interval '30 minutes',
+       f.status::booking_status
+from (values
+  -- Ben comes every three weeks; two cuts on one day are one visit, and a no-show isn't one.
+  ('00000000-0000-0000-0000-0000000000c1', null, null, false, -70, '09:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c1', null, null, false, -49, '09:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c1', null, null, false, -49, '09:30', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c1', null, null, false, -28, '09:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c1', null, null, false, -14, '09:00', 'no_show'),
+  -- Chong came once and is booked again; a cancelled booking doesn't count.
+  ('00000000-0000-0000-0000-0000000000c2', null, null, false, -40, '10:00', 'cancelled'),
+  ('00000000-0000-0000-0000-0000000000c2', null, null, false, -20, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c2', null, null, false, 3, '10:00', 'confirmed'),
+  -- One WhatsApp guest, his number typed two ways; his 30 days are up today.
+  (null, 'Pak Abu', '019-111 2222', false, -60, '10:30', 'completed'),
+  (null, 'Abu', '+60 19-111 2222', false, -30, '10:30', 'completed'),
+  -- Overdue, but already booked.
+  (null, 'Kamal', '012-555 0000', false, -50, '11:00', 'completed'),
+  (null, 'Kamal', '012-555 0000', false, -25, '11:00', 'completed'),
+  (null, 'Kamal', '012-555 0000', false, 5, '11:00', 'confirmed'),
+  -- A walk-in with no number, his name typed two ways.
+  (null, 'Uncle Lim', null, false, -10, '11:30', 'completed'),
+  (null, 'uncle  LIM', null, false, -3, '11:30', 'completed'),
+  -- One visit: due after four weeks, until 90 days have gone by.
+  (null, 'Zaki', '011-1234 5678', false, -40, '12:00', 'completed'),
+  (null, 'Old Timer', '017-000 1111', false, -200, '12:30', 'completed'),
+  -- Gaps of 10, 20, 30 and 25 days: the median is 22.5, so 23.
+  (null, 'Median', '016-000 2222', false, -130, '13:00', 'completed'),
+  (null, 'Median', '016-000 2222', false, -120, '13:00', 'completed'),
+  (null, 'Median', '016-000 2222', false, -100, '13:00', 'completed'),
+  (null, 'Median', '016-000 2222', false, -70, '13:00', 'completed'),
+  (null, 'Median', '016-000 2222', false, -45, '13:00', 'completed'),
+  -- Not marked done, but the time has passed: a visit.
+  (null, 'Kumar', '016-210 3398', false, -2, '13:30', 'confirmed'),
+  -- Two days running: the usual gap is still at least a week.
+  (null, 'Twice', '018-000 3333', false, -6, '14:00', 'completed'),
+  (null, 'Twice', '018-000 3333', false, -5, '14:00', 'completed'),
+  -- Never came: listed, with the no-show.
+  (null, 'Flake', '012-444 5555', false, -8, '16:30', 'no_show'),
+  -- Walk-ins added with no name are saved as 'Walk-in'. With no number
+  -- either, they are nobody in particular, not one regular.
+  (null, 'Walk-in', null, false, -40, '17:00', 'completed'),
+  (null, 'Walk-in', null, false, -33, '17:00', 'completed'),
+  (null, 'Walk-in', null, false, -26, '17:00', 'completed'),
+  (null, 'Walk-in', '', false, -19, '17:00', 'completed'),
+  (null, ' walk-in', null, false, -12, '17:00', 'completed'),
+  -- With a number, they are that number, with no name to show.
+  (null, 'Walk-in', '017-555 1234', false, -9, '17:30', 'completed'),
+  -- Daniel, once added in a hurry with only his number, keeps his name.
+  (null, 'Daniel Tan', '016-778 2301', false, -60, '12:00', 'completed'),
+  (null, 'Daniel Tan', '016-778 2301', false, -32, '12:00', 'completed'),
+  (null, 'Walk-in', '0167782301', false, -4, '12:00', 'completed'),
+  -- Guests under an online customer's number are that customer: Hakim
+  -- WhatsApped twice, then booked online; Farid booked online, then WhatsApped.
+  (null, 'Hakim', '011-2233 4455', false, -70, '11:00', 'completed'),
+  (null, 'Hakim', '011-2233 4455', false, -42, '11:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c3', null, null, false, 1, '11:00', 'confirmed'),
+  ('00000000-0000-0000-0000-0000000000c4', null, null, false, -70, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c4', null, null, false, -42, '10:00', 'completed'),
+  (null, 'Farid', '+60 12-778 9012', false, -7, '10:00', 'completed'),
+  -- But not a number two of the shop's customers share.
+  ('00000000-0000-0000-0000-0000000000c5', null, null, false, -15, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c6', null, null, false, -16, '10:00', 'completed'),
+  (null, 'Wei Ming', '019-888 7777', false, -10, '15:00', 'completed'),
+  -- Not customers: only cancelled, a deleted account, blocked time, and over two years ago.
+  (null, 'Ghost', '019-999 0000', false, -10, '14:30', 'cancelled'),
+  (null, 'Deleted account', null, false, -15, '15:00', 'completed'),
+  (null, null, null, true, -1, '15:30', 'confirmed'),
+  (null, 'Ancient', '012-777 8888', false, -800, '16:00', 'completed')
+) f(customer_id, guest_name, guest_phone, is_block, days, clock, status),
+lateral (select ((now() at time zone 'Asia/Kuala_Lumpur')::date + f.days + f.clock::time)
+                at time zone 'Asia/Kuala_Lumpur' as at) x;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  at_ text := 'Asia/Kuala_Lumpur';
+  r record;
+begin
+  -- Due first, longest overdue first (Median 22 days, Zaki 12, Ben 7, Abu 0),
+  -- then everyone else by their last visit, with nothing yet last.
+  assert (select array_agg(name) from shop_customers()) =
+         array['Median', 'Zaki', 'Ben', 'Abu', 'Kumar', 'uncle  LIM', 'Daniel Tan', 'Twice', 'Farid', null,
+               'Wei Ming', 'Ah Seng', 'Mei Ling', 'Chong', 'Kamal', 'Hakim', 'Old Timer', 'Flake'],
+    'unexpected list: ' || (select array_agg(name)::text from shop_customers());
+  assert (select bool_and(total_count = 18 and due_count = 4) from shop_customers()), 'counts are for everyone';
+  assert (select array_agg(name) from shop_customers() where is_due) = array['Median', 'Zaki', 'Ben', 'Abu'],
+    'four are due';
+
+  select * into r from shop_customers() where name = 'Ben';
+  assert r.customer_key = 'c:00000000-0000-0000-0000-0000000000c1' and r.customer_id = '00000000-0000-0000-0000-0000000000c1',
+    'an online customer is their account';
+  assert r.visits = 3 and r.no_shows = 1 and r.usual_gap_days = 21 and r.phone is null and r.next_booking_at is null,
+    'Ben: three visits, a no-show, every three weeks: ' || row(r.*)::text;
+  assert r.last_visit_at = (today - 28 + time '09:00') at time zone at_, 'Ben''s last cut';
+
+  select * into r from shop_customers() where name = 'Chong';
+  assert r.visits = 1 and r.phone = '013-222 3333' and not r.is_due
+     and r.next_booking_at = (today + 3 + time '10:00') at time zone at_, 'Chong is booked: ' || row(r.*)::text;
+
+  select * into r from shop_customers() where customer_key = 'p:60191112222';
+  assert r.name = 'Abu' and r.phone = '+60 19-111 2222' and r.customer_id is null and r.visits = 2
+     and r.usual_gap_days = 30 and r.is_due, 'one guest per number, as last given: ' || row(r.*)::text;
+  assert (select is_due is false and next_booking_at is not null from shop_customers() where name = 'Kamal'),
+    'someone already booked is not due';
+  select * into r from shop_customers() where customer_key = 'n:uncle lim';
+  assert r.name = 'uncle  LIM' and r.phone is null and r.visits = 2 and r.usual_gap_days = 7 and not r.is_due,
+    'a guest with no number is one person per name: ' || row(r.*)::text;
+  assert (select usual_gap_days = 28 and is_due from shop_customers() where name = 'Zaki'), 'one visit: four weeks';
+  assert (select usual_gap_days = 28 and not is_due from shop_customers() where name = 'Old Timer'),
+    'after 90 days they are no longer due';
+  assert (select usual_gap_days = 23 from shop_customers() where name = 'Median'), 'the median gap, halves up';
+  assert (select visits = 1 and last_visit_at = (today - 2 + time '13:30') at time zone at_
+          from shop_customers() where name = 'Kumar'), 'a past booking not marked done is a visit';
+  assert (select usual_gap_days = 7 and not is_due from shop_customers() where name = 'Twice'), 'at least a week';
+  assert (select visits = 0 and no_shows = 1 and last_visit_at is null and not is_due
+          from shop_customers() where name = 'Flake'), 'someone who never came';
+
+  -- Walk-ins added with no name.
+  assert not exists (select 1 from shop_customers() where name ilike '%walk-in%' or customer_key like 'n:%walk%'),
+    'walk-ins with no name or number are not a customer';
+  select * into r from shop_customers() where customer_key = 'p:60175551234';
+  assert r.name is null and r.phone = '017-555 1234' and r.visits = 1 and not r.is_due,
+    'a walk-in with only a number: ' || row(r.*)::text;
+  select * into r from shop_customers() where customer_key = 'p:60167782301';
+  assert r.name = 'Daniel Tan' and r.phone = '0167782301' and r.visits = 3 and r.usual_gap_days = 28
+     and r.last_visit_at = (today - 4 + time '12:00') at time zone at_, 'the name he last gave: ' || row(r.*)::text;
+
+  -- Guests under an online customer's number.
+  select * into r from shop_customers() where name = 'Hakim';
+  assert r.customer_key = 'c:00000000-0000-0000-0000-0000000000c3' and r.phone = '011-2233 4455' and r.visits = 2
+     and not r.is_due and r.next_booking_at = (today + 1 + time '11:00') at time zone at_,
+    'Hakim''s WhatsApp visits and online booking are one customer: ' || row(r.*)::text;
+  select * into r from shop_customers() where name = 'Farid';
+  assert r.customer_key = 'c:00000000-0000-0000-0000-0000000000c4' and r.visits = 3 and r.usual_gap_days = 32
+     and not r.is_due and r.last_visit_at = (today - 7 + time '10:00') at time zone at_,
+    'Farid''s cut by WhatsApp counts on his account: ' || row(r.*)::text;
+  assert (select count(*) from shop_customers() where customer_key in ('p:601122334455', 'p:60127789012')) = 0,
+    'and they are not listed twice';
+  select * into r from shop_customers() where name = 'Wei Ming';
+  assert r.customer_key = 'p:60198887777' and r.customer_id is null,
+    'a number two accounts share stays a guest: ' || row(r.*)::text;
+  assert (select array_agg(customer_key) from shop_customers('0112233')) = array['c:00000000-0000-0000-0000-0000000000c3'],
+    'search finds Hakim once';
+
+  -- Search: a name, or a number however it is typed. Not a pattern.
+  assert (select array_agg(name) from shop_customers('  ABU ')) = array['Abu'], 'search by name';
+  assert (select array_agg(name) from shop_customers('0191112')) = array['Abu'], 'search by number';
+  assert (select array_agg(name) from shop_customers('+60 19-111')) = array['Abu'], 'search by number as written';
+  assert (select array_agg(name) from shop_customers('013-222')) = array['Chong'], 'search an account''s number';
+  assert (select array_agg(name order by name) from shop_customers('2222')) = array['Abu', 'Median'], 'digits anywhere';
+  assert (select array_agg(name) from shop_customers('lim')) = array['uncle  LIM'], 'search ignores case';
+  assert (select count(*) from shop_customers('%')) = 0, 'search text is not a pattern';
+  assert (select bool_and(total_count = 2 and due_count = 2) from shop_customers('2222')), 'counts follow the search';
+
+  -- Pages.
+  assert (select array_agg(name) from shop_customers(null, 2, 0)) = array['Median', 'Zaki'], 'first page';
+  assert (select array_agg(name) from shop_customers(null, 2, 2)) = array['Ben', 'Abu'], 'second page';
+  assert (select array_agg(name) from shop_customers(null, 2, 16)) = array['Old Timer', 'Flake'], 'last page';
+  assert (select count(*) from shop_customers(null, 2, 18)) = 0, 'past the end';
+  assert (select count(*) from shop_customers(null, 0, 0)) = 1 and (select count(*) from shop_customers(null, null, -5)) = 18,
+    'odd page sizes are made sensible';
+end $$;
+
+-- A page is at most 50.
+reset role;
+insert into bookings (shop_id, barber_id, guest_name, guest_phone, service_name, price, starts_at, ends_at, status)
+select '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2', 'Guest ' || k,
+       '012-900 ' || lpad(k::text, 4, '0'), 'Haircut', 25, x.at, x.at + interval '30 minutes', 'completed'
+from generate_series(1, 60) k,
+     lateral (select ((now() at time zone 'Asia/Kuala_Lumpur')::date - k + time '16:00') at time zone 'Asia/Kuala_Lumpur' as at) x;
+set role authenticated;
+do $$ begin
+  assert (select count(*) from shop_customers(null, 1000, 0)) = 50, 'a page is capped at 50';
+  assert (select total_count from shop_customers(null, 1, 0)) = 78, 'the count still has everyone';
+end $$;
+
+-- Nobody else sees them: not a customer, another shop's owner, or a guest.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert (select count(*) from shop_customers()) = 0, 'customers have no customer list';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert (select count(*) from shop_customers()) = 0, 'another shop''s owner sees none of them';
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform shop_customers();
+  raise exception 'guests must not call shop_customers';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
 
 -- Limits on what one customer can do ---------------------------------------
 reset role;

@@ -1235,6 +1235,189 @@ begin
 end;
 $$;
 
+-- The shop's customers -------------------------------------------------------
+
+-- The owner's list of everyone who came in or booked in the last two years,
+-- from what the shop already has: its own bookings and the names and numbers
+-- given with them. Online customers are their account. Walk-in and WhatsApp
+-- guests are one person per phone number, however it was typed (012-345 6789
+-- and +60 12-345 6789 are the same), or per name when there is no number.
+-- A guest added under the number on one of the shop's online customers'
+-- profiles is that customer: regulars often WhatsApp first and book online
+-- later. Blocked time, cancellations, deleted accounts and walk-ins added
+-- with neither a name nor a number are left out: there is nobody to contact
+-- or tell apart.
+--
+-- A visit is a day they had a cut: marked done, or still confirmed once it
+-- started, since not every barber marks each cut done. Their usual gap is
+-- the median of the days between visits, at least a week, or four weeks
+-- after one visit. They are due for a cut once that gap has passed with
+-- nothing booked, until three gaps (and at least 90 days) have gone by, when
+-- they have most likely found another barber. Due customers come first,
+-- longest overdue first, then everyone else by their last visit.
+--
+-- It is all worked out here in one pass over the shop's bookings, found
+-- through bookings_shop_starts_idx: two years of a busy three-chair shop
+-- (31,000 bookings, 3,800 customers, with 100,000 profiles on the platform)
+-- took 100 to 120 ms on a test machine, and a shop with 3,000 bookings 25 to
+-- 40 ms. total_count and due_count are for every customer the search
+-- matches, not just the page, so My shop asks for a single row to show them.
+create function public.shop_customers(
+  p_search text default null,
+  p_limit int default 30,
+  p_offset int default 0
+)
+returns table (
+  customer_key text,
+  customer_id uuid,
+  name text,
+  phone text,
+  visits int,
+  no_shows int,
+  last_visit_at timestamptz,
+  next_booking_at timestamptz,
+  usual_gap_days int,
+  is_due boolean,
+  total_count int,
+  due_count int
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_today date;
+  v_search text := nullif(lower(trim(p_search)), '');
+  v_digits text;
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    return;
+  end if;
+  v_today := (now() at time zone v_shop.time_zone)::date;
+  -- Only something typed like a number looks at phone numbers, so "Ali 2"
+  -- doesn't find everyone with a 2 in theirs.
+  if v_search ~ '^[0-9 +()-]+$' then
+    v_digits := nullif(regexp_replace(v_search, '\D', '', 'g'), '');
+  end if;
+
+  return query
+  with scanned as (
+    -- The bookings that are someone's, with a guest's number in one form.
+    select b.customer_id, b.guest_name, b.guest_phone, b.starts_at, b.status, k.phone_key,
+           -- What barber/new-booking.tsx saves for a walk-in added without a name.
+           b.customer_id is null and lower(trim(b.guest_name)) = 'walk-in' as unnamed
+    from bookings b
+    cross join lateral (
+      -- Digits only, with a leading 0 written as 60, as WhatsApp wants it
+      -- (lib/phone.ts). Byte order sorts these fastest.
+      select case when b.customer_id is null then
+               nullif(regexp_replace(regexp_replace(coalesce(b.guest_phone, ''), '\D', '', 'g'), '^0', '60'), '')
+             end collate "C" as phone_key
+    ) k
+    where b.shop_id = v_shop.id
+      and b.starts_at >= now() - interval '2 years'
+      and b.starts_at < now() + interval '1 year'
+      and not b.is_block
+      and b.status <> 'cancelled'
+      -- What delete_my_account leaves behind: history, but nobody to contact.
+      and (b.customer_id is not null or b.guest_name <> 'Deleted account')
+  ),
+  accounts as (
+    -- The shop's online customers, each looked up by id. A plain join can
+    -- hash every profile on the platform; offset 0 stops the planner
+    -- turning this back into one.
+    select c.customer_id, pr.full_name, pr.phone,
+           nullif(regexp_replace(regexp_replace(coalesce(pr.phone, ''), '\D', '', 'g'), '^0', '60'), '')
+             collate "C" as phone_key
+    from (select distinct s.customer_id from scanned s where s.customer_id is not null) c
+    cross join lateral (select x.full_name, x.phone from profiles x where x.id = c.customer_id offset 0) pr
+  ),
+  numbers as (
+    -- Numbers that are one online customer's, not shared by two accounts.
+    select a.phone_key, min(a.customer_id::text)::uuid as customer_id
+    from accounts a
+    where a.phone_key is not null
+    group by a.phone_key
+    having count(*) = 1
+  ),
+  walked as (
+    -- Each booking in date order per person, with the days since their
+    -- previous visit (null for the first, 0 for a second cut the same day).
+    select o.customer_id, o.guest_key, s.guest_name, s.guest_phone, s.starts_at, s.status,
+           s.customer_id is null and not s.unnamed as named_guest, v.visited, d.day,
+           d.day - max(d.day) over (partition by o.customer_id, o.guest_key order by s.starts_at
+                                    rows between unbounded preceding and 1 preceding) as gap
+    from scanned s
+    left join numbers n on s.customer_id is null and n.phone_key = s.phone_key
+    cross join lateral (
+      select coalesce(s.customer_id, n.customer_id) as customer_id,
+             case when s.customer_id is null and n.customer_id is null then
+               coalesce('p:' || s.phone_key, 'n:' || lower(regexp_replace(trim(s.guest_name), '\s+', ' ', 'g')))
+             end collate "C" as guest_key
+    ) o
+    cross join lateral (
+      select s.status = 'completed' or (s.status = 'confirmed' and s.starts_at <= now()) as visited
+    ) v
+    cross join lateral (
+      select case when v.visited then (s.starts_at at time zone v_shop.time_zone)::date end as day
+    ) d
+    -- With no name and no number, every such walk-in would add up to one
+    -- made-up regular.
+    where not (s.unnamed and s.phone_key is null)
+  ),
+  people as (
+    select w.customer_id, w.guest_key,
+           -- The name a guest last gave (not 'Walk-in') and their number as
+           -- last typed. Rows arrive in date order, so these need no sorting.
+           (array_agg(w.guest_name order by w.starts_at) filter (where w.named_guest))
+             [(count(*) filter (where w.named_guest))::int] as guest_name,
+           (array_agg(w.guest_phone order by w.starts_at) filter (where w.guest_key like 'p:%'))
+             [(count(*) filter (where w.guest_key like 'p:%'))::int] as guest_phone,
+           (count(*) filter (where w.visited and (w.gap is null or w.gap > 0)))::int as visits,
+           (count(*) filter (where w.status = 'no_show'))::int as no_shows,
+           max(w.starts_at) filter (where w.visited) as last_visit_at,
+           max(w.day) as last_day,
+           min(w.starts_at) filter (where w.status = 'confirmed' and w.starts_at > now()) as next_booking_at,
+           -- Exact halves round up, as in the demo (numeric rounds away from zero).
+           round((percentile_cont(0.5) within group (order by w.gap) filter (where w.gap > 0))::numeric)::int as median_gap
+    from walked w
+    group by w.customer_id, w.guest_key
+  ),
+  judged as (
+    select coalesce('c:' || p.customer_id, p.guest_key) as key, p.customer_id,
+           coalesce(nullif(trim(a.full_name), ''), p.guest_name) as name,
+           case when p.customer_id is null then p.guest_phone else a.phone end as phone,
+           p.visits, p.no_shows, p.last_visit_at, p.next_booking_at,
+           case when p.visits >= 2 then greatest(p.median_gap, 7) else 28 end as gap,
+           p.last_day
+    from people p
+    left join accounts a on a.customer_id = p.customer_id
+  ),
+  found as (
+    select j.*,
+           j.last_day is not null and j.next_booking_at is null
+             and v_today - j.last_day >= j.gap
+             and v_today - j.last_day < greatest(3 * j.gap, 90) as due
+    from judged j
+    where v_search is null
+       or strpos(lower(j.name), v_search) > 0
+       or strpos(regexp_replace(regexp_replace(coalesce(j.phone, ''), '\D', '', 'g'), '^0', '60'), v_digits) > 0
+  )
+  select f.key, f.customer_id, f.name, f.phone, f.visits, f.no_shows, f.last_visit_at, f.next_booking_at,
+         f.gap, f.due, (count(*) over ())::int, (count(*) filter (where f.due) over ())::int
+  from found f
+  order by f.due desc,
+           case when f.due then v_today - f.last_day - f.gap end desc nulls last,
+           f.last_visit_at desc nulls last,
+           lower(f.name), f.key
+  limit least(greatest(coalesce(p_limit, 30), 1), 50)
+  offset greatest(coalesce(p_offset, 0), 0);
+end;
+$$;
+
 -- People can delete their own account (the app stores require it).
 -- A customer's upcoming bookings are cancelled, and their past ones stay in
 -- the shop's history without their name or phone. An owner's shop goes
@@ -1283,5 +1466,7 @@ grant execute on function public.close_shop_days(date, int, text) to authenticat
 grant execute on function public.reopen_shop_days(date, int) to authenticated;
 revoke execute on function public.shop_summary(date, date) from public, anon;
 grant execute on function public.shop_summary(date, date) to authenticated;
+revoke execute on function public.shop_customers(text, int, int) from public, anon;
+grant execute on function public.shop_customers(text, int, int) to authenticated;
 -- Booking links are opened by guests too.
 grant execute on function public.shop_public_status(text) to anon, authenticated;

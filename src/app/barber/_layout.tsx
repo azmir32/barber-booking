@@ -40,6 +40,7 @@ function BarberStack() {
       <Stack.Screen name="close-days" options={{ title: t('Close for a few days') }} />
       <Stack.Screen name="poster" options={{ title: t('Shop poster') }} />
       <Stack.Screen name="summary" options={{ title: t('Takings') }} />
+      <Stack.Screen name="customers" options={{ title: t('Customers') }} />
     </Stack>
   );
 }

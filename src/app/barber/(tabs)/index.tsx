@@ -11,6 +11,7 @@ import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmAction } from '@/lib/confirm';
+import { WALK_IN } from '@/lib/customers';
 import { summarizeWeek } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
@@ -564,7 +565,7 @@ const isWholeDay = (b: Booking) =>
 const minutesOf = (b: Booking) => Math.round((new Date(b.ends_at).getTime() - new Date(b.starts_at).getTime()) / 60000);
 
 function whoFor(b: ShopBooking): string {
-  return b.customer?.full_name || b.guest_name || t('Customer');
+  return b.customer?.full_name || (b.guest_name === WALK_IN ? t('Walk-in') : b.guest_name) || t('Customer');
 }
 
 const phoneOf = (b: Pick<Booking, 'is_block' | 'guest_phone'> & { customer: { phone: string | null } | null }) =>

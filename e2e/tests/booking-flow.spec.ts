@@ -333,6 +333,18 @@ test.describe.serial('booking flow', () => {
     await button(page, 'Block the day').click();
     await expect(page.getByText('Whole day', { exact: true })).toBeVisible();
     await expect(page.getByText(`Day off · ${barber.name}`)).toBeVisible();
+
+    // Pak Abu is on the customer list now: booked, so not due, and Ben's
+    // cancelled booking doesn't make him a customer.
+    await page.getByRole('tab', { name: /My shop/ }).click();
+    await page.getByRole('link', { name: 'Customers: 1 customer' }).click();
+    await expect(page.getByText('Pak Abu', { exact: true })).toBeVisible();
+    await expect(page.getByText('No visits yet')).toBeVisible();
+    // The time's spaces don't break, so "pm" stays with it.
+    await expect(page.getByText(/^Booked .* at 3:00\u00a0pm$/)).toBeVisible();
+    await expect(button(page, 'Call Pak Abu')).toBeVisible();
+    await expect(page.getByText('Due for a cut')).toHaveCount(0);
+    await snap(page, '15b-customers');
     await signOut(page);
   });
 

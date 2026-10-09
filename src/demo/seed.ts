@@ -3,6 +3,7 @@
 // Ali's. Everything is placed relative to "now", so the demo always looks
 // lived in.
 
+import { WALK_IN } from '../lib/customers.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import { HISTORY_ID, insertRow, now, setSeed, tables, type Row } from './db.ts';
 
@@ -295,13 +296,46 @@ function seed() {
   book(m.shop, { barber: m.barbers[0], day: 0, at: '09:00', service: m.services[0], guest: ['Pak Long'] });
   book(m.shop, { barber: m.barbers[1], day: 0, at: '15:00', service: m.services[1], guest: ['Adik Amin'] });
 
+  // A few months of regulars at Ali's, for the customer list. Added before
+  // the weeks of takings below, which fit around them.
+  const amirul = user('amirul@demo.potongku.my', 'customer', 'Amirul', '011-1987 2210');
+  const danielTan = user('daniel@demo.potongku.my', 'customer', 'Daniel Tan', '016-778 2301');
+  const cuts = (who: Pick<Booked, 'customer' | 'guest'>, days: number[], at: string, status = 'completed') => {
+    for (const day of days) {
+      const cut = { day, at, service: haircut, status, ...who };
+      book(sa, { barber: aliChair, ...cut }) || book(sa, { barber: danial, ...cut });
+    }
+  };
+  // Due for a cut whatever day the demo opens: their usual gap has passed and
+  // nothing is booked.
+  cuts({ customer: danielTan }, [-100, -72, -44], '18:00');
+  cuts({ guest: ['Ahmad Zaki', '013-245 9087'] }, [-40], '17:00');
+  cuts({ customer: amirul }, [-68, -47, -26], '15:00');
+  cuts({ guest: ['Encik Kamal', '012-688 4521'] }, [-92, -62, -33], '16:00');
+  // Not due yet, even on days their bookings above don't land.
+  cuts({ customer: farid }, [-58, -37, -16], '19:00');
+  cuts({ customer: weiJie }, [-49, -35, -21, -7], '16:00');
+  cuts({ customer: ravi }, [-70, -45, -20], '15:00');
+  cuts({ guest: ['Uncle Lim'] }, [-41, -27, -13], '17:00');
+  cuts({ guest: ['Pak Abu', '013-456 7788'] }, [-20], '19:00');
+  cuts({ guest: ['Kumar', '016-210 3398'] }, [-21], '19:00');
+  cuts({ customer: jason }, [-25], '18:00');
+  cuts({ customer: jason }, [-12], '18:00', 'no_show');
+  // Not in for months: most likely goes to another barber now.
+  cuts({ guest: ['Mr Wong', '012-330 1188'] }, [-150], '15:00');
+  // Walk-ins added with no name are in the day's bookings, not the list.
+  cuts({ guest: [WALK_IN] }, [-38, -24, -10], '11:00');
+  // Syafiq WhatsApped once before booking online, and is listed once.
+  cuts({ guest: ['Syafiq', '+60 11-1098 7766'] }, [-30], '11:00');
+
   // Eight weeks of history at Ali's, and a few afternoons in the coming
   // days, so Takings has weeks and months to compare. Weekends and evenings
   // are busiest, after lunch is quiet, and about one in twenty is a no-show.
   // Each chair takes at most one cut an hour, starting on the hour or at a
   // quarter past, so the 45-minute ones never run into the next.
-  const regulars = [farid, weiJie, ravi, aiman, syafiq, jason];
-  const walkIns = ['Uncle Lim', 'Pak Abu', 'Kumar', 'Mr Tan', 'Faiz', 'Haziq', 'Adik Irfan', 'Encik Zul'];
+  // The past ones are walk-ins nobody named, so the customer list above stays
+  // as it is; the coming ones rang, so they gave a name.
+  const walkIns = ['Uncle Lim', 'Mr Tan', 'Faiz', 'Haziq', 'Adik Irfan', 'Encik Zul'];
   const menu = [haircut, haircut, haircut, fade, fade, haircutBeard, beard, kids];
   // Only the bookings above can be in the way.
   const before = [...tables().bookings];
@@ -335,9 +369,7 @@ function seed() {
           day,
           at,
           service,
-          ...(day < 0 && n % 3 === 1
-            ? { customer: regulars[n % regulars.length] }
-            : { guest: [walkIns[n % walkIns.length]] as [string] }),
+          guest: [day < 0 ? WALK_IN : walkIns[n % walkIns.length]],
           status: day > 0 ? 'confirmed' : roll % 20 === 5 ? 'no_show' : roll % 11 === 7 ? 'cancelled' : 'completed',
         });
       }

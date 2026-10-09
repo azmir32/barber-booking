@@ -1118,3 +1118,281 @@ test('a week still running counts what is to come, and the week before only up t
     setClock(() => Date.now());
   }
 });
+
+type Customer = {
+  customer_key: string;
+  customer_id: string | null;
+  name: string | null;
+  phone: string | null;
+  visits: number;
+  no_shows: number;
+  last_visit_at: string | null;
+  next_booking_at: string | null;
+  usual_gap_days: number;
+  is_due: boolean;
+  total_count: number;
+  due_count: number;
+};
+
+async function customers(c: ReturnType<typeof client>, search: string | null = null, limit: number | null = 30, offset: number | null = 0) {
+  const { data, error } = await c.rpc('shop_customers', { p_search: search, p_limit: limit, p_offset: offset });
+  assert.equal(error, null);
+  return data as Customer[];
+}
+
+/** An instant at a Kajang clock time, days from today. */
+const kajang = (days: number, clock: string) => {
+  const [h, m] = clock.split(':').map(Number);
+  return new Date(dayBounds(addDays(today(), days), TZ).start.getTime() + (h * 60 + m) * 60_000).toISOString();
+};
+
+test('the customer list works out visits, usual gaps and who is due, as the database does', async () => {
+  // The same diary as supabase/tests/booking_test.sql, in Ali's shop.
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const chair = tables().barbers.find((b) => b.shop_id === shop.id)!;
+  const profile = (email: string) => {
+    const user = tables().users.find((u) => u.email === email)!;
+    return tables().profiles.find((p) => p.id === user.id)!;
+  };
+  const ben = Object.assign(profile(DEMO_CUSTOMER_EMAIL), { full_name: 'Ben', phone: null });
+  const chong = Object.assign(profile('ravi@demo.potongku.my'), { full_name: 'Chong', phone: '013-222 3333' });
+  const hakim = Object.assign(profile('farid@demo.potongku.my'), { full_name: 'Hakim', phone: '011-2233 4455' });
+  const farid = Object.assign(profile('weijie@demo.potongku.my'), { full_name: 'Farid', phone: '012-778 9012' });
+  // A father and daughter on one phone.
+  const ahSeng = Object.assign(profile('aiman@demo.potongku.my'), { full_name: 'Ah Seng', phone: '019-888 7777' });
+  const meiLing = Object.assign(profile('syafiq@demo.potongku.my'), { full_name: 'Mei Ling', phone: '019-888 7777' });
+  tables().bookings.splice(0);
+  const diary: [Row | null, string | null, string | null, boolean, number, string, string][] = [
+    [ben, null, null, false, -70, '09:00', 'completed'],
+    [ben, null, null, false, -49, '09:00', 'completed'],
+    [ben, null, null, false, -49, '09:30', 'completed'],
+    [ben, null, null, false, -28, '09:00', 'completed'],
+    [ben, null, null, false, -14, '09:00', 'no_show'],
+    [chong, null, null, false, -40, '10:00', 'cancelled'],
+    [chong, null, null, false, -20, '10:00', 'completed'],
+    [chong, null, null, false, 3, '10:00', 'confirmed'],
+    [null, 'Pak Abu', '019-111 2222', false, -60, '10:30', 'completed'],
+    [null, 'Abu', '+60 19-111 2222', false, -30, '10:30', 'completed'],
+    [null, 'Kamal', '012-555 0000', false, -50, '11:00', 'completed'],
+    [null, 'Kamal', '012-555 0000', false, -25, '11:00', 'completed'],
+    [null, 'Kamal', '012-555 0000', false, 5, '11:00', 'confirmed'],
+    [null, 'Uncle Lim', null, false, -10, '11:30', 'completed'],
+    [null, 'uncle  LIM', null, false, -3, '11:30', 'completed'],
+    [null, 'Zaki', '011-1234 5678', false, -40, '12:00', 'completed'],
+    [null, 'Old Timer', '017-000 1111', false, -200, '12:30', 'completed'],
+    [null, 'Median', '016-000 2222', false, -130, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -120, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -100, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -70, '13:00', 'completed'],
+    [null, 'Median', '016-000 2222', false, -45, '13:00', 'completed'],
+    [null, 'Kumar', '016-210 3398', false, -2, '13:30', 'confirmed'],
+    [null, 'Twice', '018-000 3333', false, -6, '14:00', 'completed'],
+    [null, 'Twice', '018-000 3333', false, -5, '14:00', 'completed'],
+    [null, 'Flake', '012-444 5555', false, -8, '16:30', 'no_show'],
+    [null, 'Walk-in', null, false, -40, '17:00', 'completed'],
+    [null, 'Walk-in', null, false, -33, '17:00', 'completed'],
+    [null, 'Walk-in', null, false, -26, '17:00', 'completed'],
+    [null, 'Walk-in', '', false, -19, '17:00', 'completed'],
+    [null, ' walk-in', null, false, -12, '17:00', 'completed'],
+    [null, 'Walk-in', '017-555 1234', false, -9, '17:30', 'completed'],
+    [null, 'Daniel Tan', '016-778 2301', false, -60, '12:00', 'completed'],
+    [null, 'Daniel Tan', '016-778 2301', false, -32, '12:00', 'completed'],
+    [null, 'Walk-in', '0167782301', false, -4, '12:00', 'completed'],
+    [null, 'Hakim', '011-2233 4455', false, -70, '11:00', 'completed'],
+    [null, 'Hakim', '011-2233 4455', false, -42, '11:00', 'completed'],
+    [hakim, null, null, false, 1, '11:00', 'confirmed'],
+    [farid, null, null, false, -70, '10:00', 'completed'],
+    [farid, null, null, false, -42, '10:00', 'completed'],
+    [null, 'Farid', '+60 12-778 9012', false, -7, '10:00', 'completed'],
+    [ahSeng, null, null, false, -15, '10:00', 'completed'],
+    [meiLing, null, null, false, -16, '10:00', 'completed'],
+    [null, 'Wei Ming', '019-888 7777', false, -10, '15:00', 'completed'],
+    [null, 'Ghost', '019-999 0000', false, -10, '14:30', 'cancelled'],
+    [null, 'Deleted account', null, false, -15, '15:00', 'completed'],
+    [null, null, null, true, -1, '15:30', 'confirmed'],
+    [null, 'Ancient', '012-777 8888', false, -800, '16:00', 'completed'],
+  ];
+  for (const [customer, guestName, guestPhone, isBlock, days, clock, status] of diary) {
+    const at = kajang(days, clock);
+    insertRow('bookings', {
+      shop_id: shop.id,
+      barber_id: chair.id,
+      customer_id: customer?.id ?? null,
+      guest_name: guestName,
+      guest_phone: guestPhone,
+      is_block: isBlock,
+      service_name: 'Haircut',
+      price: 25,
+      starts_at: at,
+      ends_at: new Date(Date.parse(at) + 30 * 60_000).toISOString(),
+      status,
+    });
+  }
+
+  // Due first, longest overdue first (Median 22 days, Zaki 12, Ben 7, Abu 0),
+  // then everyone else by their last visit, with nothing yet last.
+  const all = await customers(ali);
+  const names = (rows: Customer[]) => rows.map((r) => r.name);
+  assert.deepEqual(names(all), [
+    'Median',
+    'Zaki',
+    'Ben',
+    'Abu',
+    'Kumar',
+    'uncle  LIM',
+    'Daniel Tan',
+    'Twice',
+    'Farid',
+    null,
+    'Wei Ming',
+    'Ah Seng',
+    'Mei Ling',
+    'Chong',
+    'Kamal',
+    'Hakim',
+    'Old Timer',
+    'Flake',
+  ]);
+  assert.ok(all.every((r) => r.total_count === 18 && r.due_count === 4));
+  assert.deepEqual(names(all.filter((r) => r.is_due)), ['Median', 'Zaki', 'Ben', 'Abu']);
+  const row = (name: string) => all.find((r) => r.name === name)!;
+  assert.deepEqual(
+    { ...row('Ben'), last_visit_at: Date.parse(row('Ben').last_visit_at!) },
+    {
+      customer_key: `c:${ben.id}`,
+      customer_id: ben.id,
+      name: 'Ben',
+      phone: null,
+      visits: 3,
+      no_shows: 1,
+      last_visit_at: Date.parse(kajang(-28, '09:00')),
+      next_booking_at: null,
+      usual_gap_days: 21,
+      is_due: true,
+      total_count: 18,
+      due_count: 4,
+    },
+  );
+  assert.equal(row('Chong').phone, '013-222 3333');
+  assert.equal(row('Chong').visits, 1);
+  assert.equal(Date.parse(row('Chong').next_booking_at!), Date.parse(kajang(3, '10:00')));
+  assert.equal(row('Chong').is_due, false);
+  assert.deepEqual(
+    [row('Abu').customer_key, row('Abu').phone, row('Abu').visits, row('Abu').usual_gap_days],
+    ['p:60191112222', '+60 19-111 2222', 2, 30],
+  );
+  assert.equal(row('Kamal').is_due, false);
+  assert.deepEqual(
+    [row('uncle  LIM').customer_key, row('uncle  LIM').phone, row('uncle  LIM').visits, row('uncle  LIM').usual_gap_days],
+    ['n:uncle lim', null, 2, 7],
+  );
+  assert.deepEqual([row('Zaki').usual_gap_days, row('Zaki').is_due], [28, true]);
+  assert.deepEqual([row('Old Timer').usual_gap_days, row('Old Timer').is_due], [28, false]);
+  assert.equal(row('Median').usual_gap_days, 23);
+  assert.equal(row('Kumar').visits, 1);
+  assert.equal(Date.parse(row('Kumar').last_visit_at!), Date.parse(kajang(-2, '13:30')));
+  assert.deepEqual([row('Twice').usual_gap_days, row('Twice').is_due], [7, false]);
+  assert.deepEqual([row('Flake').visits, row('Flake').no_shows, row('Flake').last_visit_at], [0, 1, null]);
+
+  // Walk-ins added with no name: nobody, or their number with no name to show.
+  assert.ok(!all.some((r) => /walk-in/i.test(r.name ?? '') || r.customer_key.startsWith('n:walk')));
+  const unnamed = all.find((r) => r.customer_key === 'p:60175551234')!;
+  assert.deepEqual([unnamed.name, unnamed.phone, unnamed.visits, unnamed.is_due], [null, '017-555 1234', 1, false]);
+  const daniel = all.find((r) => r.customer_key === 'p:60167782301')!;
+  assert.deepEqual([daniel.name, daniel.phone, daniel.visits, daniel.usual_gap_days], ['Daniel Tan', '0167782301', 3, 28]);
+  assert.equal(Date.parse(daniel.last_visit_at!), Date.parse(kajang(-4, '12:00')));
+
+  // Guests under an online customer's number are that customer, unless two share it.
+  assert.deepEqual(
+    [row('Hakim').customer_key, row('Hakim').phone, row('Hakim').visits, row('Hakim').is_due],
+    [`c:${hakim.id}`, '011-2233 4455', 2, false],
+  );
+  assert.equal(Date.parse(row('Hakim').next_booking_at!), Date.parse(kajang(1, '11:00')));
+  assert.deepEqual(
+    [row('Farid').customer_key, row('Farid').visits, row('Farid').usual_gap_days, row('Farid').is_due],
+    [`c:${farid.id}`, 3, 32, false],
+  );
+  assert.equal(Date.parse(row('Farid').last_visit_at!), Date.parse(kajang(-7, '10:00')));
+  assert.ok(!all.some((r) => r.customer_key === 'p:601122334455' || r.customer_key === 'p:60127789012'));
+  assert.deepEqual([row('Wei Ming').customer_key, row('Wei Ming').customer_id], ['p:60198887777', null]);
+  assert.deepEqual((await customers(ali, '0112233')).map((r) => r.customer_key), [`c:${hakim.id}`]);
+
+  // Search: a name, or a number however it is typed. Not a pattern.
+  assert.deepEqual(names(await customers(ali, '  ABU ')), ['Abu']);
+  assert.deepEqual(names(await customers(ali, '0191112')), ['Abu']);
+  assert.deepEqual(names(await customers(ali, '+60 19-111')), ['Abu']);
+  assert.deepEqual(names(await customers(ali, '013-222')), ['Chong']);
+  const twos = await customers(ali, '2222');
+  assert.deepEqual(names(twos).sort(), ['Abu', 'Median']);
+  assert.ok(twos.every((r) => r.total_count === 2 && r.due_count === 2));
+  assert.deepEqual(names(await customers(ali, 'lim')), ['uncle  LIM']);
+  assert.deepEqual(await customers(ali, '%'), []);
+
+  // Pages, with odd sizes made sensible.
+  assert.deepEqual(names(await customers(ali, null, 2, 0)), ['Median', 'Zaki']);
+  assert.deepEqual(names(await customers(ali, null, 2, 2)), ['Ben', 'Abu']);
+  assert.deepEqual(names(await customers(ali, null, 2, 16)), ['Old Timer', 'Flake']);
+  assert.deepEqual(await customers(ali, null, 2, 18), []);
+  assert.equal((await customers(ali, null, 0, 0)).length, 1);
+  assert.equal((await customers(ali, null, null, -5)).length, 18);
+  for (let k = 1; k <= 60; k++) {
+    const at = kajang(-k, '16:00');
+    insertRow('bookings', {
+      shop_id: shop.id,
+      barber_id: tables().barbers.filter((b) => b.shop_id === shop.id)[1].id,
+      guest_name: `Guest ${k}`,
+      guest_phone: `012-900 ${String(k).padStart(4, '0')}`,
+      service_name: 'Haircut',
+      price: 25,
+      starts_at: at,
+      ends_at: new Date(Date.parse(at) + 30 * 60_000).toISOString(),
+      status: 'completed',
+    });
+  }
+  assert.equal((await customers(ali, null, 1000)).length, 50);
+  assert.equal((await customers(ali, null, 1))[0].total_count, 78);
+
+  // Nobody else sees them: not a customer, another shop's owner, or a guest.
+  assert.deepEqual(await customers(await signedIn(DEMO_CUSTOMER_EMAIL)), []);
+  assert.deepEqual(await customers(await signedIn('rahman@demo.potongku.my')), []);
+  const guest = await client().rpc('shop_customers', { p_search: null, p_limit: 30, p_offset: 0 });
+  assert.equal(guest.error?.code, '42501');
+});
+
+test('the sample shop has regulars, and a few are due for a cut whatever the day', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const all = await customers(ali, null, 50);
+  const due = all.filter((r) => r.is_due);
+  assert.deepEqual(
+    due.map((r) => r.name),
+    ['Daniel Tan', 'Ahmad Zaki', 'Amirul', 'Encik Kamal'],
+  );
+  assert.deepEqual(all.slice(0, 4), due);
+  assert.ok(all.length >= 12 && all.every((r) => r.total_count === all.length && r.due_count === 4));
+  const [daniel] = due;
+  assert.deepEqual(
+    [daniel.phone, daniel.visits, daniel.usual_gap_days, daniel.next_booking_at],
+    ['016-778 2301', 3, 28, null],
+  );
+  assert.equal(Date.parse(daniel.last_visit_at!), Date.parse(kajang(-44, '18:00')));
+  // Two gaps of 30 and 29 days: 29.5, so 30.
+  assert.equal(due[3].usual_gap_days, 30);
+  // Everyone else by their last visit, and Mr Wong has been away too long to nudge.
+  const rest = all.slice(4).map((r) => (r.last_visit_at == null ? 0 : Date.parse(r.last_visit_at)));
+  assert.deepEqual(rest, [...rest].sort((a, b) => b - a));
+  assert.equal(all.find((r) => r.name === 'Mr Wong')?.is_due, false);
+  assert.equal(all.find((r) => r.name === 'Hakim')?.is_due, false);
+  // Walk-ins with no name aren't anyone, and Syafiq's WhatsApp booking is on his account.
+  assert.ok(!all.some((r) => r.name === 'Walk-in'));
+  const syafiq = all.filter((r) => r.name === 'Syafiq' || r.customer_key === 'p:601110987766');
+  assert.deepEqual(
+    syafiq.map((r) => [r.customer_key.slice(0, 2), r.phone]),
+    [['c:', '011-1098 7766']],
+  );
+
+  // My shop's card asks for one row, for the counts.
+  const one = await customers(ali, null, 1);
+  assert.deepEqual(one, [all[0]]);
+  assert.deepEqual((await customers(ali, 'daniel')).map((r) => r.name), ['Daniel Tan']);
+});

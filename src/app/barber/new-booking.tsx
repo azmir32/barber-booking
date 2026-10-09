@@ -6,6 +6,7 @@ import { TimeField } from '@/components/time-field';
 import { Button, Chip, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { confirmAction } from '@/lib/confirm';
+import { WALK_IN } from '@/lib/customers';
 import { formatClock } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
@@ -171,7 +172,7 @@ export default function NewBooking() {
           p_duration_min: minutes,
           p_service_id: kind === 'booking' ? serviceId : null,
           // A walk-in's name is optional, but the day view needs something to show.
-          p_guest_name: kind === 'booking' ? name.trim() || t('Walk-in') : null,
+          p_guest_name: kind === 'booking' ? name.trim() || WALK_IN : null,
           p_guest_phone: kind === 'booking' ? phone : null,
           p_note: note,
           p_is_block: kind === 'block',
