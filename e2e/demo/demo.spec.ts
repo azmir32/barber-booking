@@ -250,11 +250,18 @@ test('the barber sees who is due for a cut and invites them back on WhatsApp', a
   await expect(app.getByRole('heading', { name: 'Due for a cut' })).toBeVisible();
   await expect(app.getByRole('heading', { name: 'Everyone' })).toBeVisible();
   await expect(app.getByText('Daniel Tan', { exact: true })).toBeVisible();
-  await expect(app.getByText('Last cut 6 weeks ago')).toBeVisible();
+  await expect(app.getByText('016-778 2301', { exact: true })).toBeVisible();
+  await expect(app.getByText('Last cut 6 weeks ago').first()).toBeVisible();
   await expect(app.getByText('3 visits · Comes about every 4 weeks').first()).toBeVisible();
-  // Only those due get an invite; everyone with a number can still be messaged or called.
-  await expect(button(app, /^Invite .* to book on WhatsApp$/)).toHaveCount(4);
+  // Those due get an invite, and so does Mr Wong, away too long to be listed as due.
+  // Everyone with a number can still be messaged or called.
+  await expect(button(app, /^Invite .* to book on WhatsApp$/)).toHaveCount(5);
+  await expect(button(app, 'Invite Mr Wong to book on WhatsApp')).toBeVisible();
   await expect(button(app, 'Call Mr Wong')).toBeVisible();
+  // Walk-ins added with no name are not a customer.
+  await expect(app.getByText('Walk-in', { exact: true })).toHaveCount(0);
+  // Hakim is booked tomorrow, with the time kept on one line.
+  await expect(app.getByText(/^Booked .* at 4:30\u00a0pm$/)).toBeVisible();
   await snap(page, 'demo-13-customers');
 
   const opened = context.waitForEvent('page');
@@ -274,6 +281,7 @@ test('the barber sees who is due for a cut and invites them back on WhatsApp', a
   // Search finds a number however it is typed.
   await app.getByLabel('Search', { exact: true }).fill('012-688');
   await expect(app.getByText('Encik Kamal', { exact: true })).toBeVisible();
+  await expect(app.getByText('012-688 4521', { exact: true })).toBeVisible();
   await expect(app.getByText('Daniel Tan', { exact: true })).toHaveCount(0);
   await expect(app.getByText('1 customer · 1 due for a cut')).toBeVisible();
 });

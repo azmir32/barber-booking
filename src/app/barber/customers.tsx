@@ -101,7 +101,7 @@ export default function Customers() {
   function invite(c: ShopCustomer) {
     if (!c.phone || !c.last_visit_at) return;
     const message = inviteMessage(
-      { name: c.name ?? t('Customer'), shop: shop!.name, link: bookingLink(shop!.slug) },
+      { name: c.name, shop: shop!.name, link: bookingLink(shop!.slug) },
       c.last_visit_at,
       now,
       tz,
@@ -167,7 +167,9 @@ export default function Customers() {
 
       {due.length > 0 ? (
         <Section title={t('Due for a cut')}>
-          <T variant="small">{t('Their usual time between cuts has passed, and nothing is booked yet.')}</T>
+          <T variant="small">
+            {t('Their usual time between cuts has passed, and nothing is booked yet. Anyone away much longer is under Everyone.')}
+          </T>
           <View style={styles.list}>{due.map(card)}</View>
         </Section>
       ) : null}
@@ -184,8 +186,10 @@ export default function Customers() {
 }
 
 /**
- * One customer: when they last came and how often, with WhatsApp and Call for
- * anyone with a number. Someone due for a cut also gets a ready-written invite.
+ * One customer: their number, when they last came and how often, with
+ * WhatsApp and Call for anyone with a number. Anyone whose usual gap has
+ * passed with nothing booked also gets a ready-written invite: those due for
+ * a cut, and those away so long they have dropped off that list.
  */
 function CustomerCard({
   customer: c,
@@ -205,21 +209,40 @@ function CustomerCard({
   const habit = [c.visits > 0 ? visitsLabel(c.visits) : null, c.visits >= 2 ? usualGapLabel(c.usual_gap_days) : null]
     .filter(Boolean)
     .join(' · ');
-  const invitedDays = invitedAt ? daysSince(invitedAt, now, tz) : null;
+  const sinceLastCut = c.last_visit_at ? daysSince(c.last_visit_at, now, tz) : null;
+  const canInvite =
+    Boolean(c.phone) &&
+    sinceLastCut != null &&
+    !c.next_booking_at &&
+    (c.is_due || sinceLastCut >= c.usual_gap_days);
+  // An invite from before their last cut was for that visit, not this one.
+  const invitedThisTime =
+    invitedAt && c.last_visit_at && Date.parse(invitedAt) > Date.parse(c.last_visit_at) ? invitedAt : null;
+  const invitedDays = invitedThisTime ? daysSince(invitedThisTime, now, tz) : null;
   return (
     <Card>
       <View style={styles.cardRow}>
         <View style={styles.info}>
           <T variant="label">{name}</T>
+          {c.phone ? (
+            <T variant="small" selectable>
+              {c.phone}
+            </T>
+          ) : (
+            <T variant="small">{t('No phone number')}</T>
+          )}
           <T variant="muted">{lastCutLabel(c.last_visit_at, now, tz)}</T>
           {habit ? <T variant="small">{habit}</T> : null}
           {c.next_booking_at ? (
             <T variant="small" style={{ color: theme.success }}>
-              {t('Booked {day} at {time}', { day: formatDay(c.next_booking_at, tz), time: formatTime(c.next_booking_at, tz) })}
+              {t('Booked {day} at {time}', {
+                day: formatDay(c.next_booking_at, tz),
+                // Non-breaking spaces, so "pm" never wraps onto a line of its own.
+                time: formatTime(c.next_booking_at, tz).replace(/ /g, '\u00a0'),
+              })}
             </T>
           ) : null}
           {c.no_shows > 0 ? <Badge label={noShowsLabel(c.no_shows)} tone="warning" /> : null}
-          {c.phone ? null : <T variant="small">{t('No phone number')}</T>}
           {invitedDays != null ? (
             <T variant="small">
               ✓{' '}
@@ -244,11 +267,11 @@ function CustomerCard({
           </View>
         ) : null}
       </View>
-      {c.is_due && c.phone && c.last_visit_at ? (
+      {canInvite ? (
         <Button
-          title={invitedAt ? t('Invite again') : t('Invite to book')}
+          title={invitedThisTime ? t('Invite again') : t('Invite to book')}
           accessibilityLabel={t('Invite {name} to book on WhatsApp', { name })}
-          variant={invitedAt ? 'ghost' : 'secondary'}
+          variant={invitedThisTime ? 'ghost' : 'secondary'}
           onPress={onInvite}
         />
       ) : null}

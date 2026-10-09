@@ -593,8 +593,8 @@ export const ms: Record<string, string> = {
   '{count} customers': '{count} pelanggan',
   '{count} due for a cut': '{count} sudah tiba masa potong',
   'Due for a cut': 'Sudah tiba masa potong',
-  'Their usual time between cuts has passed, and nothing is booked yet.':
-    'Tempoh biasa antara potongan mereka sudah berlalu, dan belum ada tempahan.',
+  'Their usual time between cuts has passed, and nothing is booked yet. Anyone away much longer is under Everyone.':
+    'Tempoh biasa antara potongan mereka sudah berlalu, dan belum ada tempahan. Yang sudah lama tidak datang ada di bawah Semua.',
   'Name or phone number': 'Nama atau nombor telefon',
   'Loading customers…': 'Memuatkan pelanggan…',
   'Couldn’t load your customers': 'Tidak dapat memuatkan pelanggan anda',
@@ -611,8 +611,8 @@ export const ms: Record<string, string> = {
   'over a year': 'lebih setahun',
   '1 visit': 'Datang sekali',
   '{count} visits': 'Datang {count} kali',
-  'Comes about once a week': 'Datang lebih kurang seminggu sekali',
-  'Comes about every {time}': 'Datang lebih kurang setiap {time}',
+  'Comes about once a week': 'Lebih kurang seminggu sekali',
+  'Comes about every {time}': 'Lebih kurang setiap {time}',
   '1 no-show': '1 kali tidak hadir',
   '{count} no-shows': '{count} kali tidak hadir',
   'Booked {day} at {time}': 'Ada tempahan {day} jam {time}',
@@ -624,8 +624,8 @@ export const ms: Record<string, string> = {
   'Invited today': 'Sudah diajak hari ini',
   'Invited yesterday': 'Sudah diajak semalam',
   'Invited {time} ago': 'Sudah diajak {time} lalu',
-  'Hi {name}, it’s been a week since your last cut at {shop}. Want to book a time?':
-    'Hai {name}, sudah seminggu sejak kali terakhir anda potong rambut di {shop}. Nak tempah masa?',
-  'Hi {name}, it’s been {weeks} weeks since your last cut at {shop}. Want to book a time?':
-    'Hai {name}, sudah {weeks} minggu sejak kali terakhir anda potong rambut di {shop}. Nak tempah masa?',
+  'Hi {name}, it’s been {time} since your last cut at {shop}. Want to book a time?':
+    'Hai {name}, sudah {time} sejak kali terakhir anda potong rambut di {shop}. Nak tempah masa?',
+  'Hi, it’s been {time} since your last cut at {shop}. Want to book a time?':
+    'Hai, sudah {time} sejak kali terakhir anda potong rambut di {shop}. Nak tempah masa?',
 };

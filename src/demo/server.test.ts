@@ -848,7 +848,7 @@ test('a day every barber is off reads as closed, and closing today works once cu
 type Customer = {
   customer_key: string;
   customer_id: string | null;
-  name: string;
+  name: string | null;
   phone: string | null;
   visits: number;
   no_shows: number;
@@ -883,6 +883,11 @@ test('the customer list works out visits, usual gaps and who is due, as the data
   };
   const ben = Object.assign(profile(DEMO_CUSTOMER_EMAIL), { full_name: 'Ben', phone: null });
   const chong = Object.assign(profile('ravi@demo.potongku.my'), { full_name: 'Chong', phone: '013-222 3333' });
+  const hakim = Object.assign(profile('farid@demo.potongku.my'), { full_name: 'Hakim', phone: '011-2233 4455' });
+  const farid = Object.assign(profile('weijie@demo.potongku.my'), { full_name: 'Farid', phone: '012-778 9012' });
+  // A father and daughter on one phone.
+  const ahSeng = Object.assign(profile('aiman@demo.potongku.my'), { full_name: 'Ah Seng', phone: '019-888 7777' });
+  const meiLing = Object.assign(profile('syafiq@demo.potongku.my'), { full_name: 'Mei Ling', phone: '019-888 7777' });
   tables().bookings.splice(0);
   const diary: [Row | null, string | null, string | null, boolean, number, string, string][] = [
     [ben, null, null, false, -70, '09:00', 'completed'],
@@ -911,6 +916,24 @@ test('the customer list works out visits, usual gaps and who is due, as the data
     [null, 'Twice', '018-000 3333', false, -6, '14:00', 'completed'],
     [null, 'Twice', '018-000 3333', false, -5, '14:00', 'completed'],
     [null, 'Flake', '012-444 5555', false, -8, '16:30', 'no_show'],
+    [null, 'Walk-in', null, false, -40, '17:00', 'completed'],
+    [null, 'Walk-in', null, false, -33, '17:00', 'completed'],
+    [null, 'Walk-in', null, false, -26, '17:00', 'completed'],
+    [null, 'Walk-in', '', false, -19, '17:00', 'completed'],
+    [null, ' walk-in', null, false, -12, '17:00', 'completed'],
+    [null, 'Walk-in', '017-555 1234', false, -9, '17:30', 'completed'],
+    [null, 'Daniel Tan', '016-778 2301', false, -60, '12:00', 'completed'],
+    [null, 'Daniel Tan', '016-778 2301', false, -32, '12:00', 'completed'],
+    [null, 'Walk-in', '0167782301', false, -4, '12:00', 'completed'],
+    [null, 'Hakim', '011-2233 4455', false, -70, '11:00', 'completed'],
+    [null, 'Hakim', '011-2233 4455', false, -42, '11:00', 'completed'],
+    [hakim, null, null, false, 1, '11:00', 'confirmed'],
+    [farid, null, null, false, -70, '10:00', 'completed'],
+    [farid, null, null, false, -42, '10:00', 'completed'],
+    [null, 'Farid', '+60 12-778 9012', false, -7, '10:00', 'completed'],
+    [ahSeng, null, null, false, -15, '10:00', 'completed'],
+    [meiLing, null, null, false, -16, '10:00', 'completed'],
+    [null, 'Wei Ming', '019-888 7777', false, -10, '15:00', 'completed'],
     [null, 'Ghost', '019-999 0000', false, -10, '14:30', 'cancelled'],
     [null, 'Deleted account', null, false, -15, '15:00', 'completed'],
     [null, null, null, true, -1, '15:30', 'confirmed'],
@@ -937,8 +960,27 @@ test('the customer list works out visits, usual gaps and who is due, as the data
   // then everyone else by their last visit, with nothing yet last.
   const all = await customers(ali);
   const names = (rows: Customer[]) => rows.map((r) => r.name);
-  assert.deepEqual(names(all), ['Median', 'Zaki', 'Ben', 'Abu', 'Kumar', 'uncle  LIM', 'Twice', 'Chong', 'Kamal', 'Old Timer', 'Flake']);
-  assert.ok(all.every((r) => r.total_count === 11 && r.due_count === 4));
+  assert.deepEqual(names(all), [
+    'Median',
+    'Zaki',
+    'Ben',
+    'Abu',
+    'Kumar',
+    'uncle  LIM',
+    'Daniel Tan',
+    'Twice',
+    'Farid',
+    null,
+    'Wei Ming',
+    'Ah Seng',
+    'Mei Ling',
+    'Chong',
+    'Kamal',
+    'Hakim',
+    'Old Timer',
+    'Flake',
+  ]);
+  assert.ok(all.every((r) => r.total_count === 18 && r.due_count === 4));
   assert.deepEqual(names(all.filter((r) => r.is_due)), ['Median', 'Zaki', 'Ben', 'Abu']);
   const row = (name: string) => all.find((r) => r.name === name)!;
   assert.deepEqual(
@@ -954,7 +996,7 @@ test('the customer list works out visits, usual gaps and who is due, as the data
       next_booking_at: null,
       usual_gap_days: 21,
       is_due: true,
-      total_count: 11,
+      total_count: 18,
       due_count: 4,
     },
   );
@@ -979,6 +1021,29 @@ test('the customer list works out visits, usual gaps and who is due, as the data
   assert.deepEqual([row('Twice').usual_gap_days, row('Twice').is_due], [7, false]);
   assert.deepEqual([row('Flake').visits, row('Flake').no_shows, row('Flake').last_visit_at], [0, 1, null]);
 
+  // Walk-ins added with no name: nobody, or their number with no name to show.
+  assert.ok(!all.some((r) => /walk-in/i.test(r.name ?? '') || r.customer_key.startsWith('n:walk')));
+  const unnamed = all.find((r) => r.customer_key === 'p:60175551234')!;
+  assert.deepEqual([unnamed.name, unnamed.phone, unnamed.visits, unnamed.is_due], [null, '017-555 1234', 1, false]);
+  const daniel = all.find((r) => r.customer_key === 'p:60167782301')!;
+  assert.deepEqual([daniel.name, daniel.phone, daniel.visits, daniel.usual_gap_days], ['Daniel Tan', '0167782301', 3, 28]);
+  assert.equal(Date.parse(daniel.last_visit_at!), Date.parse(kajang(-4, '12:00')));
+
+  // Guests under an online customer's number are that customer, unless two share it.
+  assert.deepEqual(
+    [row('Hakim').customer_key, row('Hakim').phone, row('Hakim').visits, row('Hakim').is_due],
+    [`c:${hakim.id}`, '011-2233 4455', 2, false],
+  );
+  assert.equal(Date.parse(row('Hakim').next_booking_at!), Date.parse(kajang(1, '11:00')));
+  assert.deepEqual(
+    [row('Farid').customer_key, row('Farid').visits, row('Farid').usual_gap_days, row('Farid').is_due],
+    [`c:${farid.id}`, 3, 32, false],
+  );
+  assert.equal(Date.parse(row('Farid').last_visit_at!), Date.parse(kajang(-7, '10:00')));
+  assert.ok(!all.some((r) => r.customer_key === 'p:601122334455' || r.customer_key === 'p:60127789012'));
+  assert.deepEqual([row('Wei Ming').customer_key, row('Wei Ming').customer_id], ['p:60198887777', null]);
+  assert.deepEqual((await customers(ali, '0112233')).map((r) => r.customer_key), [`c:${hakim.id}`]);
+
   // Search: a name, or a number however it is typed. Not a pattern.
   assert.deepEqual(names(await customers(ali, '  ABU ')), ['Abu']);
   assert.deepEqual(names(await customers(ali, '0191112')), ['Abu']);
@@ -993,10 +1058,10 @@ test('the customer list works out visits, usual gaps and who is due, as the data
   // Pages, with odd sizes made sensible.
   assert.deepEqual(names(await customers(ali, null, 2, 0)), ['Median', 'Zaki']);
   assert.deepEqual(names(await customers(ali, null, 2, 2)), ['Ben', 'Abu']);
-  assert.deepEqual(names(await customers(ali, null, 2, 10)), ['Flake']);
-  assert.deepEqual(await customers(ali, null, 2, 11), []);
+  assert.deepEqual(names(await customers(ali, null, 2, 16)), ['Old Timer', 'Flake']);
+  assert.deepEqual(await customers(ali, null, 2, 18), []);
   assert.equal((await customers(ali, null, 0, 0)).length, 1);
-  assert.equal((await customers(ali, null, null, -5)).length, 11);
+  assert.equal((await customers(ali, null, null, -5)).length, 18);
   for (let k = 1; k <= 60; k++) {
     const at = kajang(-k, '16:00');
     insertRow('bookings', {
@@ -1012,7 +1077,7 @@ test('the customer list works out visits, usual gaps and who is due, as the data
     });
   }
   assert.equal((await customers(ali, null, 1000)).length, 50);
-  assert.equal((await customers(ali, null, 1))[0].total_count, 71);
+  assert.equal((await customers(ali, null, 1))[0].total_count, 78);
 
   // Nobody else sees them: not a customer, another shop's owner, or a guest.
   assert.deepEqual(await customers(await signedIn(DEMO_CUSTOMER_EMAIL)), []);
@@ -1044,6 +1109,13 @@ test('the sample shop has regulars, and a few are due for a cut whatever the day
   assert.deepEqual(rest, [...rest].sort((a, b) => b - a));
   assert.equal(all.find((r) => r.name === 'Mr Wong')?.is_due, false);
   assert.equal(all.find((r) => r.name === 'Hakim')?.is_due, false);
+  // Walk-ins with no name aren't anyone, and Syafiq's WhatsApp booking is on his account.
+  assert.ok(!all.some((r) => r.name === 'Walk-in'));
+  const syafiq = all.filter((r) => r.name === 'Syafiq' || r.customer_key === 'p:601110987766');
+  assert.deepEqual(
+    syafiq.map((r) => [r.customer_key.slice(0, 2), r.phone]),
+    [['c:', '011-1098 7766']],
+  );
 
   // My shop's card asks for one row, for the counts.
   const one = await customers(ali, null, 1);

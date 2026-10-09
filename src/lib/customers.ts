@@ -4,6 +4,12 @@
 import { t } from './lang.ts';
 import { localDateString } from './time.ts';
 
+/**
+ * What a walk-in added without a name is saved as. Not translated, so
+ * shop_customers (supabase/migrations) can leave them out of the list.
+ */
+export const WALK_IN = 'Walk-in';
+
 /** One row of shop_customers (supabase/migrations). */
 export type ShopCustomer = {
   /** "c:" and the account for online customers; "p:" and the number, or "n:" and the name, for guests. */
@@ -28,13 +34,22 @@ export function daysSince(at: string, now: number, timeZone: string): number {
   return Math.round((day(new Date(now)) - day(new Date(at))) / 86_400_000);
 }
 
-/** "5 days", "a week", "6 weeks", "3 months" or "over a year". */
+/** "12 days", "a week", "6 weeks" or "3 months", to the nearest. */
+function roughly(days: number): string {
+  if (days === 1) return t('1 day');
+  if (days === 7) return t('a week');
+  if (days < 14) return t('{count} days', { count: days });
+  if (days < 60) return t('{count} weeks', { count: Math.round(days / 7) });
+  return t('{count} months', { count: Math.round(days / 30.4) });
+}
+
+/**
+ * "5 days", "a week", "6 weeks", "3 months" or "over a year". Rounded the
+ * same way as usualGapLabel, so someone due never reads as "Last cut 3 weeks
+ * ago · Comes about every 4 weeks".
+ */
 export function timeSpan(days: number): string {
-  if (days < 7) return days === 1 ? t('1 day') : t('{count} days', { count: days });
-  if (days < 14) return t('a week');
-  if (days < 60) return t('{count} weeks', { count: Math.floor(days / 7) });
-  if (days < 365) return t('{count} months', { count: Math.round(days / 30.4) });
-  return t('over a year');
+  return days < 365 ? roughly(days) : t('over a year');
 }
 
 /** "14 customers · 4 due for a cut". */
@@ -61,29 +76,28 @@ export function noShowsLabel(noShows: number): string {
 
 /** How often they come, in round numbers: the gap is a median, not a promise. */
 export function usualGapLabel(days: number): string {
-  if (days < 14) {
-    return days === 7 ? t('Comes about once a week') : t('Comes about every {time}', { time: t('{count} days', { count: days }) });
-  }
-  const span =
-    days < 60 ? t('{count} weeks', { count: Math.round(days / 7) }) : t('{count} months', { count: Math.round(days / 30.4) });
-  return t('Comes about every {time}', { time: span });
+  return days === 7 ? t('Comes about once a week') : t('Comes about every {time}', { time: roughly(days) });
 }
 
 /**
- * The WhatsApp message asking someone due for a cut to book, with the shop's
- * booking link when it has a web one (an app link only opens for people who
- * have the app).
+ * The WhatsApp message asking someone back for a cut, saying how long it has
+ * been the way their card does, with the shop's booking link when it has a
+ * web one (an app link only opens for people who have the app). Someone with
+ * no name on record gets a plain "Hi".
  */
 export function inviteMessage(
-  vars: { name: string; shop: string; link: string },
+  vars: { name: string | null; shop: string; link: string },
   lastVisitAt: string,
   now: number,
   timeZone: string,
 ): string {
-  const weeks = Math.floor(daysSince(lastVisitAt, now, timeZone) / 7);
-  const text =
-    weeks <= 1
-      ? t('Hi {name}, it’s been a week since your last cut at {shop}. Want to book a time?', vars)
-      : t('Hi {name}, it’s been {weeks} weeks since your last cut at {shop}. Want to book a time?', { ...vars, weeks });
+  const time = timeSpan(daysSince(lastVisitAt, now, timeZone));
+  const text = vars.name
+    ? t('Hi {name}, it’s been {time} since your last cut at {shop}. Want to book a time?', {
+        name: vars.name,
+        shop: vars.shop,
+        time,
+      })
+    : t('Hi, it’s been {time} since your last cut at {shop}. Want to book a time?', { shop: vars.shop, time });
   return /^https?:\/\//.test(vars.link) ? `${text} ${vars.link}` : text;
 }

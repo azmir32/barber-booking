@@ -585,6 +585,8 @@ const yearsFromNow = (years: number) => {
   at.setUTCFullYear(at.getUTCFullYear() + years);
   return at.getTime();
 };
+/** What barber/new-booking.tsx saves for a walk-in added without a name. */
+const isUnnamed = (b: Row) => b.customer_id == null && pgTrim(String(b.guest_name ?? '')).toLowerCase() === 'walk-in';
 const descNullsLast = (a: number | null, b: number | null) => (a === b ? 0 : a == null ? 1 : b == null ? -1 : b - a);
 const ascNullsLast = (a: string | null, b: string | null) =>
   a === b ? 0 : a == null ? 1 : b == null ? -1 : a < b ? -1 : 1;
@@ -613,13 +615,24 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
         !b.is_block &&
         b.status !== 'cancelled' &&
         // What delete_my_account leaves behind: history, but nobody to contact.
-        (b.customer_id != null || b.guest_name !== 'Deleted account'),
+        (b.customer_id != null || b.guest_name !== 'Deleted account') &&
+        // With no name and no number, every such walk-in would add up to one
+        // made-up regular.
+        !(isUnnamed(b) && !phoneKey(b.guest_phone)),
     )
     .sort((a, b) => ms(a.starts_at) - ms(b.starts_at));
+  // A guest added under the number on one of the shop's online customers'
+  // profiles is that customer, unless two of them share the number.
+  const owners = new Map<string, string | null>();
+  for (const id of new Set(booked.flatMap((b) => (b.customer_id == null ? [] : [String(b.customer_id)])))) {
+    const number = phoneKey(findById('profiles', id)?.phone);
+    if (number) owners.set(number, owners.has(number) ? null : id);
+  }
   for (const b of booked) {
+    const account = b.customer_id ?? (phoneKey(b.guest_phone) ? owners.get(phoneKey(b.guest_phone)) : null);
     const key =
-      b.customer_id != null
-        ? `c:${b.customer_id}`
+      account != null
+        ? `c:${account}`
         : phoneKey(b.guest_phone)
           ? `p:${phoneKey(b.guest_phone)}`
           : `n:${pgTrim(String(b.guest_name)).replace(/\s+/g, ' ').toLowerCase()}`;
@@ -639,15 +652,15 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
     const gap = days.length >= 2 ? Math.max(Math.round(median), 7) : 28;
     const upcoming = bookings.filter((b) => b.status === 'confirmed' && ms(b.starts_at) > now());
 
-    // A guest's name and number as last given.
-    const latest = bookings.at(-1)!;
-    const customerId = (latest.customer_id as string | null) ?? null;
+    // The name a guest last gave (not 'Walk-in') and their number as last typed.
+    const customerId = key.startsWith('c:') ? key.slice(2) : null;
     const profile = customerId == null ? undefined : findById('profiles', customerId);
-    const name = customerId == null ? String(latest.guest_name) : trimmed(profile?.full_name);
+    const named = bookings.filter((b) => b.customer_id == null && !isUnnamed(b)).at(-1);
+    const name = trimmed(profile?.full_name) ?? (named ? String(named.guest_name) : null);
     const phone =
       customerId == null
         ? key.startsWith('p:')
-          ? String(latest.guest_phone)
+          ? String(bookings.at(-1)!.guest_phone)
           : null
         : ((profile?.phone as string | null | undefined) ?? null);
     const matches =

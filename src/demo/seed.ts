@@ -2,6 +2,7 @@
 // few days of bookings either side of today. Everything is placed relative
 // to "now", so the demo always looks lived in.
 
+import { WALK_IN } from '../lib/customers.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import { insertRow, now, setSeed, type Row } from './db.ts';
 
@@ -311,6 +312,10 @@ function seed() {
   cuts({ customer: jason }, [-12], '18:00', 'no_show');
   // Not in for months: most likely goes to another barber now.
   cuts({ guest: ['Mr Wong', '012-330 1188'] }, [-150], '15:00');
+  // Walk-ins added with no name are in the day's bookings, not the list.
+  cuts({ guest: [WALK_IN] }, [-38, -24, -10], '11:00');
+  // Syafiq WhatsApped once before booking online, and is listed once.
+  cuts({ guest: ['Syafiq', '+60 11-1098 7766'] }, [-30], '11:00');
 }
 
 setSeed(seed);

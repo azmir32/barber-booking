@@ -34,8 +34,9 @@ test('how long ago reads the way people say it', () => {
   assert.equal(ago(1), 'Last cut yesterday');
   assert.equal(ago(5), 'Last cut 5 days ago');
   assert.equal(ago(7), 'Last cut a week ago');
-  assert.equal(ago(13), 'Last cut a week ago');
+  assert.equal(ago(12), 'Last cut 12 days ago');
   assert.equal(ago(14), 'Last cut 2 weeks ago');
+  assert.equal(ago(26), 'Last cut 4 weeks ago');
   assert.equal(ago(44), 'Last cut 6 weeks ago');
   assert.equal(ago(59), 'Last cut 8 weeks ago');
   assert.equal(ago(60), 'Last cut 2 months ago');
@@ -43,6 +44,16 @@ test('how long ago reads the way people say it', () => {
   assert.equal(ago(364), 'Last cut 12 months ago');
   assert.equal(ago(365), 'Last cut over a year ago');
   assert.equal(timeSpan(1), '1 day');
+});
+
+test('how long ago and how often agree for someone due', () => {
+  const ago = (days: number) => lastCutLabel(new Date(now - days * 86_400_000).toISOString(), now, TZ);
+  assert.equal(`${ago(26)} · ${usualGapLabel(26)}`, 'Last cut 4 weeks ago · Comes about every 4 weeks');
+  assert.equal(`${ago(12)} · ${usualGapLabel(10)}`, 'Last cut 12 days ago · Comes about every 10 days');
+  // On the day anyone becomes due, both say the same time.
+  for (let gap = 8; gap < 365; gap++) {
+    assert.equal(ago(gap).replace(/^Last cut (.*) ago$/, '$1'), usualGapLabel(gap).replace(/^Comes about every /, ''));
+  }
 });
 
 test('the counts leave out "due" when nobody is', () => {
@@ -63,7 +74,7 @@ test('visits, no-shows and how often someone comes', () => {
   assert.equal(usualGapLabel(75), 'Comes about every 2 months');
 });
 
-test('the invite says how many weeks, and has the booking link when it is a web link', () => {
+test('the invite says how long it has been as the card does, and has the booking link when it is a web link', () => {
   const vars = { name: 'Daniel Tan', shop: 'Ali Barber Sungai Chua', link: 'https://potongku.my/shop/ali-barber' };
   const sixWeeks = '2026-08-23T18:00:00+08:00';
   assert.equal(
@@ -73,7 +84,17 @@ test('the invite says how many weeks, and has the booking link when it is a web 
   );
   assert.equal(
     inviteMessage({ ...vars, link: 'potongku://shop/ali-barber' }, '2026-09-26T10:00:00+08:00', now, TZ),
-    'Hi Daniel Tan, it’s been a week since your last cut at Ali Barber Sungai Chua. Want to book a time?',
+    'Hi Daniel Tan, it’s been 10 days since your last cut at Ali Barber Sungai Chua. Want to book a time?',
+  );
+  // Months, not "25 weeks", for someone away a long time.
+  assert.equal(
+    inviteMessage({ ...vars, link: '' }, '2026-04-14T15:00:00+08:00', now, TZ),
+    'Hi Daniel Tan, it’s been 6 months since your last cut at Ali Barber Sungai Chua. Want to book a time?',
+  );
+  // A walk-in who left only a number is not "Hi Walk-in".
+  assert.equal(
+    inviteMessage({ ...vars, name: null, link: '' }, sixWeeks, now, TZ),
+    'Hi, it’s been 6 weeks since your last cut at Ali Barber Sungai Chua. Want to book a time?',
   );
 });
 
@@ -87,7 +108,9 @@ test('in Malay too', () => {
     assert.equal(ago(400), 'Potong terakhir lebih setahun lalu');
     assert.equal(lastCutLabel(null, now, TZ), 'Belum pernah datang');
     assert.equal(visitsLabel(8), 'Datang 8 kali');
-    assert.equal(usualGapLabel(21), 'Datang lebih kurang setiap 3 minggu');
+    // One "Datang" per line: "Datang 8 kali · Lebih kurang setiap 3 minggu".
+    assert.equal(usualGapLabel(21), 'Lebih kurang setiap 3 minggu');
+    assert.equal(usualGapLabel(7), 'Lebih kurang seminggu sekali');
     assert.equal(
       inviteMessage(
         { name: 'Encik Kamal', shop: 'Ali Barber Sungai Chua', link: 'https://potongku.my/shop/ali-barber' },
@@ -95,8 +118,12 @@ test('in Malay too', () => {
         now,
         TZ,
       ),
-      'Hai Encik Kamal, sudah 4 minggu sejak kali terakhir anda potong rambut di Ali Barber Sungai Chua. ' +
+      'Hai Encik Kamal, sudah 5 minggu sejak kali terakhir anda potong rambut di Ali Barber Sungai Chua. ' +
         'Nak tempah masa? https://potongku.my/shop/ali-barber',
+    );
+    assert.equal(
+      inviteMessage({ name: null, shop: 'Ali Barber Sungai Chua', link: '' }, '2026-04-14T15:00:00+08:00', now, TZ),
+      'Hai, sudah 6 bulan sejak kali terakhir anda potong rambut di Ali Barber Sungai Chua. Nak tempah masa?',
     );
   } finally {
     setCurrentLang('en');

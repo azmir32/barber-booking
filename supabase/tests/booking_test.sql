@@ -816,7 +816,12 @@ end $$;
 begin;
 reset role;
 insert into auth.users (id, email, raw_user_meta_data) values
-  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}'),
+  ('00000000-0000-0000-0000-0000000000c3', 'hakim@test', '{"full_name":"Hakim","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000000c4', 'farid@test', '{"full_name":"Farid","phone":"012-778 9012"}'),
+  -- A father and daughter on one phone.
+  ('00000000-0000-0000-0000-0000000000c5', 'ahseng@test', '{"full_name":"Ah Seng","phone":"019-888 7777"}'),
+  ('00000000-0000-0000-0000-0000000000c6', 'meiling@test', '{"full_name":"Mei Ling","phone":"019-888 7777"}');
 insert into shops (owner_id, name, slug) values ('00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 set role authenticated;
@@ -983,7 +988,12 @@ reset role;
 delete from bookings;
 update profiles set phone = '013-222 3333' where id = '00000000-0000-0000-0000-0000000000c2';
 insert into auth.users (id, email, raw_user_meta_data) values
-  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}'),
+  ('00000000-0000-0000-0000-0000000000c3', 'hakim@test', '{"full_name":"Hakim","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000000c4', 'farid@test', '{"full_name":"Farid","phone":"012-778 9012"}'),
+  -- A father and daughter on one phone.
+  ('00000000-0000-0000-0000-0000000000c5', 'ahseng@test', '{"full_name":"Ah Seng","phone":"019-888 7777"}'),
+  ('00000000-0000-0000-0000-0000000000c6', 'meiling@test', '{"full_name":"Mei Ling","phone":"019-888 7777"}');
 insert into shops (owner_id, name, slug) values ('00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
 insert into bookings (shop_id, barber_id, customer_id, guest_name, guest_phone, is_block, service_name, price,
                       starts_at, ends_at, status)
@@ -1027,6 +1037,31 @@ from (values
   (null, 'Twice', '018-000 3333', false, -5, '14:00', 'completed'),
   -- Never came: listed, with the no-show.
   (null, 'Flake', '012-444 5555', false, -8, '16:30', 'no_show'),
+  -- Walk-ins added with no name are saved as 'Walk-in'. With no number
+  -- either, they are nobody in particular, not one regular.
+  (null, 'Walk-in', null, false, -40, '17:00', 'completed'),
+  (null, 'Walk-in', null, false, -33, '17:00', 'completed'),
+  (null, 'Walk-in', null, false, -26, '17:00', 'completed'),
+  (null, 'Walk-in', '', false, -19, '17:00', 'completed'),
+  (null, ' walk-in', null, false, -12, '17:00', 'completed'),
+  -- With a number, they are that number, with no name to show.
+  (null, 'Walk-in', '017-555 1234', false, -9, '17:30', 'completed'),
+  -- Daniel, once added in a hurry with only his number, keeps his name.
+  (null, 'Daniel Tan', '016-778 2301', false, -60, '12:00', 'completed'),
+  (null, 'Daniel Tan', '016-778 2301', false, -32, '12:00', 'completed'),
+  (null, 'Walk-in', '0167782301', false, -4, '12:00', 'completed'),
+  -- Guests under an online customer's number are that customer: Hakim
+  -- WhatsApped twice, then booked online; Farid booked online, then WhatsApped.
+  (null, 'Hakim', '011-2233 4455', false, -70, '11:00', 'completed'),
+  (null, 'Hakim', '011-2233 4455', false, -42, '11:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c3', null, null, false, 1, '11:00', 'confirmed'),
+  ('00000000-0000-0000-0000-0000000000c4', null, null, false, -70, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c4', null, null, false, -42, '10:00', 'completed'),
+  (null, 'Farid', '+60 12-778 9012', false, -7, '10:00', 'completed'),
+  -- But not a number two of the shop's customers share.
+  ('00000000-0000-0000-0000-0000000000c5', null, null, false, -15, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000000c6', null, null, false, -16, '10:00', 'completed'),
+  (null, 'Wei Ming', '019-888 7777', false, -10, '15:00', 'completed'),
   -- Not customers: only cancelled, a deleted account, blocked time, and over two years ago.
   (null, 'Ghost', '019-999 0000', false, -10, '14:30', 'cancelled'),
   (null, 'Deleted account', null, false, -15, '15:00', 'completed'),
@@ -1047,9 +1082,10 @@ begin
   -- Due first, longest overdue first (Median 22 days, Zaki 12, Ben 7, Abu 0),
   -- then everyone else by their last visit, with nothing yet last.
   assert (select array_agg(name) from shop_customers()) =
-         array['Median', 'Zaki', 'Ben', 'Abu', 'Kumar', 'uncle  LIM', 'Twice', 'Chong', 'Kamal', 'Old Timer', 'Flake'],
+         array['Median', 'Zaki', 'Ben', 'Abu', 'Kumar', 'uncle  LIM', 'Daniel Tan', 'Twice', 'Farid', null,
+               'Wei Ming', 'Ah Seng', 'Mei Ling', 'Chong', 'Kamal', 'Hakim', 'Old Timer', 'Flake'],
     'unexpected list: ' || (select array_agg(name)::text from shop_customers());
-  assert (select bool_and(total_count = 11 and due_count = 4) from shop_customers()), 'counts are for everyone';
+  assert (select bool_and(total_count = 18 and due_count = 4) from shop_customers()), 'counts are for everyone';
   assert (select array_agg(name) from shop_customers() where is_due) = array['Median', 'Zaki', 'Ben', 'Abu'],
     'four are due';
 
@@ -1082,6 +1118,33 @@ begin
   assert (select visits = 0 and no_shows = 1 and last_visit_at is null and not is_due
           from shop_customers() where name = 'Flake'), 'someone who never came';
 
+  -- Walk-ins added with no name.
+  assert not exists (select 1 from shop_customers() where name ilike '%walk-in%' or customer_key like 'n:%walk%'),
+    'walk-ins with no name or number are not a customer';
+  select * into r from shop_customers() where customer_key = 'p:60175551234';
+  assert r.name is null and r.phone = '017-555 1234' and r.visits = 1 and not r.is_due,
+    'a walk-in with only a number: ' || row(r.*)::text;
+  select * into r from shop_customers() where customer_key = 'p:60167782301';
+  assert r.name = 'Daniel Tan' and r.phone = '0167782301' and r.visits = 3 and r.usual_gap_days = 28
+     and r.last_visit_at = (today - 4 + time '12:00') at time zone at_, 'the name he last gave: ' || row(r.*)::text;
+
+  -- Guests under an online customer's number.
+  select * into r from shop_customers() where name = 'Hakim';
+  assert r.customer_key = 'c:00000000-0000-0000-0000-0000000000c3' and r.phone = '011-2233 4455' and r.visits = 2
+     and not r.is_due and r.next_booking_at = (today + 1 + time '11:00') at time zone at_,
+    'Hakim''s WhatsApp visits and online booking are one customer: ' || row(r.*)::text;
+  select * into r from shop_customers() where name = 'Farid';
+  assert r.customer_key = 'c:00000000-0000-0000-0000-0000000000c4' and r.visits = 3 and r.usual_gap_days = 32
+     and not r.is_due and r.last_visit_at = (today - 7 + time '10:00') at time zone at_,
+    'Farid''s cut by WhatsApp counts on his account: ' || row(r.*)::text;
+  assert (select count(*) from shop_customers() where customer_key in ('p:601122334455', 'p:60127789012')) = 0,
+    'and they are not listed twice';
+  select * into r from shop_customers() where name = 'Wei Ming';
+  assert r.customer_key = 'p:60198887777' and r.customer_id is null,
+    'a number two accounts share stays a guest: ' || row(r.*)::text;
+  assert (select array_agg(customer_key) from shop_customers('0112233')) = array['c:00000000-0000-0000-0000-0000000000c3'],
+    'search finds Hakim once';
+
   -- Search: a name, or a number however it is typed. Not a pattern.
   assert (select array_agg(name) from shop_customers('  ABU ')) = array['Abu'], 'search by name';
   assert (select array_agg(name) from shop_customers('0191112')) = array['Abu'], 'search by number';
@@ -1095,9 +1158,9 @@ begin
   -- Pages.
   assert (select array_agg(name) from shop_customers(null, 2, 0)) = array['Median', 'Zaki'], 'first page';
   assert (select array_agg(name) from shop_customers(null, 2, 2)) = array['Ben', 'Abu'], 'second page';
-  assert (select array_agg(name) from shop_customers(null, 2, 10)) = array['Flake'], 'last page';
-  assert (select count(*) from shop_customers(null, 2, 11)) = 0, 'past the end';
-  assert (select count(*) from shop_customers(null, 0, 0)) = 1 and (select count(*) from shop_customers(null, null, -5)) = 11,
+  assert (select array_agg(name) from shop_customers(null, 2, 16)) = array['Old Timer', 'Flake'], 'last page';
+  assert (select count(*) from shop_customers(null, 2, 18)) = 0, 'past the end';
+  assert (select count(*) from shop_customers(null, 0, 0)) = 1 and (select count(*) from shop_customers(null, null, -5)) = 18,
     'odd page sizes are made sensible';
 end $$;
 
@@ -1111,7 +1174,7 @@ from generate_series(1, 60) k,
 set role authenticated;
 do $$ begin
   assert (select count(*) from shop_customers(null, 1000, 0)) = 50, 'a page is capped at 50';
-  assert (select total_count from shop_customers(null, 1, 0)) = 71, 'the count still has everyone';
+  assert (select total_count from shop_customers(null, 1, 0)) = 78, 'the count still has everyone';
 end $$;
 
 -- Nobody else sees them: not a customer, another shop's owner, or a guest.
