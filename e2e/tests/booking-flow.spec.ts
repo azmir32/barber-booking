@@ -163,8 +163,11 @@ test.describe.serial('booking flow', () => {
     await button(page, 'Find a barber').click();
     // Open 10 am to 8 pm every day with nothing booked yet, so the card says
     // when it is next free: soon, later today, or tomorrow once today is over.
+    // Before opening time it only says when it opens, which is the same thing.
     const card = page.getByText(shopName).locator('..');
-    await expect(card.getByText(/^(Free now|Next free: (today|tomorrow), \d{1,2}:\d{2}\s?(am|pm))$/)).toBeVisible();
+    await expect(
+      card.getByText(/^(Free now|Next free: (today|tomorrow), \d{1,2}:\d{2}\s?(am|pm)|Opens 10:00 am)$/),
+    ).toBeVisible();
     await snap(page, '09-explore');
     await page.getByText(shopName).click();
     await expect(page.getByText('1. Pick a service')).toBeVisible();
