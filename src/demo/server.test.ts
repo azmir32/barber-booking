@@ -143,6 +143,45 @@ test('today\'s hours leave out barbers who are away and follow the shop\'s clock
   assert.deepEqual(await listed(), [null, null]);
 });
 
+test('the shop list shows when a shop is next free, today or else tomorrow', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const everyDay = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens_at: '10:00', closes_at: '20:00' }));
+  for (const b of barbers!) await ali.rpc('set_barber_hours', { p_barber_id: b.id, p_hours: everyDay });
+  for (const b of tables().bookings) if (b.shop_id === shop.id) b.status = 'cancelled';
+  const day = today();
+  const tomorrow = addDays(day, 1);
+  const at = (date: string, clock: string) => {
+    const [h, m] = clock.split(':').map(Number);
+    return dayBounds(date, TZ).start.getTime() + (h * 60 + m) * 60_000;
+  };
+  const nextFree = async () => {
+    const { data, error } = await client().rpc('find_shops', { p_search: 'Ali Barber' });
+    assert.equal(error, null);
+    return data[0].next_free_at == null ? null : Date.parse(data[0].next_free_at);
+  };
+  try {
+    // The shortest service is a 15-minute beard trim, so 3:07 pm is free from 3:15.
+    setClock(() => at(day, '15:07'));
+    assert.equal(await nextFree(), at(day, '15:15'));
+    // At 7:40 pm a beard trim still fits before closing; a haircut doesn't.
+    setClock(() => at(day, '19:40'));
+    assert.equal(await nextFree(), at(day, '19:45'));
+    await ali.from('services').update({ is_active: false }).eq('shop_id', shop.id).eq('name', 'Beard trim');
+    assert.equal(await nextFree(), at(tomorrow, '10:00'));
+
+    // A shop closed today is next free tomorrow; closed tomorrow too, it has no free time.
+    setClock(() => at(day, '15:07'));
+    assert.equal((await ali.rpc('close_shop_days', { p_from: day, p_days: 1 })).error, null);
+    assert.equal(await nextFree(), at(tomorrow, '10:00'));
+    assert.equal((await ali.rpc('close_shop_days', { p_from: tomorrow, p_days: 1 })).error, null);
+    assert.equal(await nextFree(), null);
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
 test('a paused shop\'s link still says whose shop it is', async () => {
   const ali = await signedIn(DEMO_BARBER_EMAIL);
   const shop = await shopBySlug(ali, 'ali-barber');

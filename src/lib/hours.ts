@@ -1,7 +1,15 @@
 // Working-hours helpers shared by the barber and customer screens.
 
 import { t } from './lang.ts';
-import { clockLabel, DEFAULT_TIME_ZONE, localClock, normalizeTime } from './time.ts';
+import {
+  addDays,
+  clockLabel,
+  DEFAULT_TIME_ZONE,
+  formatTime,
+  localClock,
+  localDateString,
+  normalizeTime,
+} from './time.ts';
 import { WEEKDAYS, type WorkingHours } from './types.ts';
 
 type Range = Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>;
@@ -49,6 +57,34 @@ export function openStatus(
   if (!opens || !closes || clock >= closes) return { state: 'closed', label: t('Closed today') };
   if (clock < opens) return { state: 'later', label: t('Opens {time}', { time: formatClock(opens) }) };
   return { state: 'open', label: t('Open now · until {time}', { time: formatClock(closes) }) };
+}
+
+/** How close a free time has to be to read as "Free now". */
+const FREE_NOW_MS = 15 * 60_000;
+
+/**
+ * The line under a listed shop's open status, from its earliest free start
+ * today or tomorrow: "Free now" when that is within 15 minutes and the shop
+ * is open, else "Next free: today, 3:15 pm" or "Next free: tomorrow, 10:00 am".
+ * Null when there is none or it has passed, and for a time today when the
+ * open line says "Closed today", so the two lines never disagree.
+ */
+export function nextFreeLine(
+  nextFreeAt: string | null,
+  open: OpenStatus['state'],
+  now: Date | number = new Date(),
+  timeZone = DEFAULT_TIME_ZONE,
+): { soon: boolean; label: string } | null {
+  const at = nextFreeAt ? Date.parse(nextFreeAt) : NaN;
+  const current = new Date(now).getTime();
+  if (!(at > current)) return null;
+  const today = localDateString(new Date(current), timeZone);
+  const day = localDateString(new Date(at), timeZone);
+  const time = formatTime(new Date(at), timeZone);
+  if (day === addDays(today, 1)) return { soon: false, label: t('Next free: tomorrow, {time}', { time }) };
+  if (day !== today || open === 'closed') return null;
+  if (open === 'open' && at - current <= FREE_NOW_MS) return { soon: true, label: t('Free now') };
+  return { soon: false, label: t('Next free: today, {time}', { time }) };
 }
 
 /** "10:00 am–8:00 pm". */

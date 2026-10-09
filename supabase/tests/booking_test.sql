@@ -181,6 +181,74 @@ begin
 end $$;
 rollback;
 
+-- The shop list's next free time: the earliest start for the shortest
+-- service with any barber, today by the shop's clock, or else tomorrow.
+begin;
+reset role;
+do $$
+declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  tz text;
+  today date;
+  tomorrow_nine timestamptz;
+  next_free timestamptz;
+begin
+  -- A zone where it is now just past noon, so the times below hold whenever
+  -- the test runs.
+  select z into tz
+  from generate_series(-12, 14) o,
+       lateral (select 'Etc/GMT' || case when o > 0 then '-' || o when o < 0 then '+' || -o else '' end as z) n
+  where extract(hour from now() at time zone z) = 12
+  order by o
+  limit 1;
+  update shops set time_zone = tz;
+  today := (now() at time zone tz)::date;
+  tomorrow_nine := (today + 1 + time '09:00') at time zone tz;
+  delete from bookings;
+  -- Both barbers work 09:00-18:00 every day; the only service is a 30-minute haircut.
+  update working_hours set closes_at = '18:00';
+
+  next_free := (date_bin('15 minutes', now() at time zone tz, timestamp '2000-01-01') + interval '15 minutes')
+               at time zone tz;
+  assert (select next_free_at = next_free from find_shops()), 'free today: the next quarter hour';
+
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  select shop, b, true, 'Busy', 0, (today + time '09:00') at time zone tz, (today + time '17:45') at time zone tz
+  from unnest(array['00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2']::uuid[]) b;
+  assert (select next_free_at = tomorrow_nine from find_shops()), 'a full day moves it to tomorrow';
+
+  -- 17:45 to closing fits a 15-minute line-up but not a haircut.
+  insert into services (shop_id, name, duration_min, price, sort_order) values (shop, 'Line-up', 15, 10, 1);
+  assert (select next_free_at = (today + time '17:45') at time zone tz from find_shops()),
+    'the shortest service counts';
+  update shops set is_published = false;
+  assert shop_next_free(shop) is null, 'a hidden shop has no free time';
+  update shops set is_published = true;
+
+  insert into shop_closures (shop_id, day) values (shop, today);
+  assert (select next_free_at = tomorrow_nine from find_shops()), 'a shop closed today is free tomorrow';
+  -- Time blocked from the evening before still counts the next morning.
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  select shop, b, true, 'Kenduri', 0, (today + time '20:00') at time zone tz, tomorrow_nine + interval '1 hour'
+  from unnest(array['00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2']::uuid[]) b;
+  assert (select next_free_at = tomorrow_nine + interval '1 hour' from find_shops()),
+    'a block from the evening before holds the morning';
+  insert into shop_closures (shop_id, day) values (shop, today + 1);
+  assert (select next_free_at is null from find_shops()), 'closed today and tomorrow: no next free time';
+  delete from shop_closures where day = today + 1;
+  delete from working_hours where weekday = extract(dow from today + 1)::int;
+  assert (select next_free_at is null from find_shops()), 'closed today and nobody in tomorrow: none';
+
+  set role anon;
+  assert (select count(*) from find_shops()) = 1, 'guests still get the list';
+  begin
+    perform shop_next_free(shop);
+    raise exception 'only find_shops should call shop_next_free';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+rollback;
+
 -- Customers can't write bookings directly or see other people's -----------
 do $$ begin
   insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at)

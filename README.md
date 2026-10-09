@@ -12,7 +12,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - English or Bahasa Melayu: follows the phone's language, with a switch on the welcome screen and under Account
 
 **Customers**
-- Browse live barbershops, see which are open now, and search by name or area
+- Browse live barbershops, see which are open now and when each can next take you, and search by name or area
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
 - See upcoming and past bookings, move one to another time, cancel, WhatsApp the shop, book again

@@ -521,4 +521,9 @@ export const ms: Record<string, string> = {
   'Check back later, or find another barber.': 'Cuba lagi nanti, atau cari barber lain.',
   'This booking link may be wrong. Check it with the shop.':
     'Pautan tempahan ini mungkin salah. Sila semak dengan pihak kedai.',
+
+  // Next free time on the shop list (customer/index.tsx)
+  'Free now': 'Ada masa kosong sekarang',
+  'Next free: today, {time}': 'Masa kosong seterusnya: hari ini, {time}',
+  'Next free: tomorrow, {time}': 'Masa kosong seterusnya: esok, {time}',
 };
