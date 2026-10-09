@@ -2,7 +2,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { dayPlanFrom, formatClock, openStatus, rangesFromPlan, shopWeek, summarizeWeek } from './hours.ts';
+import {
+  dayPlanFrom,
+  formatClock,
+  nextFreeLine,
+  openStatus,
+  rangesFromPlan,
+  shopWeek,
+  summarizeWeek,
+} from './hours.ts';
+import { setCurrentLang } from './lang.ts';
 
 const range = (weekday: number, opens_at: string, closes_at: string) => ({ weekday, opens_at, closes_at });
 
@@ -48,6 +57,50 @@ test('openStatus reads the shop\'s own clock', () => {
   // 1 am in Kajang is still the evening before in London.
   assert.equal(openStatus('10:00', '20:00', at('01:00'), 'Europe/London').label, 'Open now · until 8:00 pm');
   assert.equal(openStatus('10:00', '20:00', at('01:00').getTime()).label, 'Opens 10:00 am');
+});
+
+test('nextFreeLine says when a listed shop can next take someone', () => {
+  // Tue 6 Oct in Kajang; tomorrow is the 7th.
+  const at = (clock: string, day = '06') => `2026-10-${day}T${clock}:00+08:00`;
+  const line = (next: string | null, open: 'open' | 'later' | 'closed', clock: string) =>
+    nextFreeLine(next, open, new Date(at(clock)), 'Asia/Kuala_Lumpur');
+  assert.deepEqual(line(at('15:15'), 'open', '15:07'), { soon: true, label: 'Free now' });
+  assert.deepEqual(line(at('15:15'), 'open', '15:00'), { soon: true, label: 'Free now' });
+  assert.deepEqual(line(at('15:30'), 'open', '15:14'), { soon: false, label: 'Next free: today, 3:30 pm' });
+  // Not open yet, so the first time of the day is a time, not "now".
+  assert.equal(line(at('10:00'), 'later', '09:50')?.label, 'Next free: today, 10:00 am');
+  // Full or closed today: tomorrow, which never disagrees with "Closed today".
+  assert.equal(line(at('10:00', '07'), 'open', '15:00')?.label, 'Next free: tomorrow, 10:00 am');
+  assert.equal(line(at('10:00', '07'), 'closed', '20:30')?.label, 'Next free: tomorrow, 10:00 am');
+  // Nothing to say: none, already gone, today on a closed day, or further off.
+  assert.equal(line(null, 'open', '15:00'), null);
+  assert.equal(line(at('15:00'), 'open', '15:01'), null);
+  assert.equal(line(at('15:00'), 'open', '15:00'), null);
+  assert.equal(line(at('15:30'), 'closed', '15:00'), null);
+  assert.equal(line(at('10:00', '08'), 'closed', '15:00'), null);
+  // Today and tomorrow are the shop's: 12:30 am in Kajang is still Monday in London.
+  assert.equal(
+    nextFreeLine(at('10:00'), 'later', new Date(at('00:30')), 'Europe/London')?.label,
+    'Next free: tomorrow, 3:00 am',
+  );
+});
+
+test('nextFreeLine in Malay', () => {
+  const at = (clock: string, day = '06') => `2026-10-${day}T${clock}:00+08:00`;
+  setCurrentLang('ms');
+  try {
+    assert.equal(nextFreeLine(at('15:15'), 'open', new Date(at('15:07')))?.label, 'Ada masa kosong sekarang');
+    assert.equal(
+      nextFreeLine(at('15:30'), 'open', new Date(at('15:07')))?.label,
+      'Masa kosong seterusnya: hari ini, 3.30 petang',
+    );
+    assert.equal(
+      nextFreeLine(at('10:00', '07'), 'closed', new Date(at('20:30')))?.label,
+      'Masa kosong seterusnya: esok, 10.00 pagi',
+    );
+  } finally {
+    setCurrentLang('en');
+  }
 });
 
 test('summarizeWeek shows breaks', () => {

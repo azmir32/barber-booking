@@ -97,8 +97,34 @@ export function findShops(args: Record<string, unknown>) {
         from_price: prices.length ? Math.min(...prices) : null,
         barber_count: barbers.length,
         ...hoursToday(s),
+        next_free_at: shopNextFree(s),
       };
     });
+}
+
+/**
+ * The earliest free start for the shop's shortest service with any barber,
+ * today by its own clock or else tomorrow; null when neither has one.
+ */
+function shopNextFree(shop: Row): string | null {
+  const [service] = tables()
+    .services.filter((v) => v.shop_id === shop.id && v.is_active)
+    .sort(
+      (a, b) =>
+        Number(a.duration_min) - Number(b.duration_min) ||
+        Number(a.sort_order) - Number(b.sort_order) ||
+        (String(a.id) < String(b.id) ? -1 : 1),
+    );
+  if (!service) return null;
+  const today = localDateString(new Date(now()), String(shop.time_zone));
+  // Only live shops are listed, so it is the same whoever asks.
+  const anyone: Caller = { uid: null };
+  // Tomorrow is only worked out when today has nothing left.
+  for (const day of [today, addDays(today, 1)]) {
+    const [first] = availableSlots(anyone, service.id, day);
+    if (first) return first.starts_at;
+  }
+  return null;
 }
 
 /**

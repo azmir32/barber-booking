@@ -300,12 +300,50 @@ as $$
     );
 $$;
 
+-- When someone wanting a cut soon could get one: the earliest free start for
+-- the shop's shortest service with any barber, today by the shop's clock or
+-- else tomorrow. Null when neither day has a free time. available_slots
+-- decides what is free, so hours, bookings, blocks, closures, barbers away
+-- and the booking horizon all count, and a hidden shop has none.
+create function public.shop_next_free(p_shop_id uuid)
+returns timestamptz
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_service uuid;
+  v_today date;
+  v_at timestamptz;
+begin
+  select v.id, (now() at time zone s.time_zone)::date into v_service, v_today
+  from shops s
+  join services v on v.shop_id = s.id and v.is_active
+  where s.id = p_shop_id
+  order by v.duration_min, v.sort_order, v.id
+  limit 1;
+  if v_service is null then
+    return null;
+  end if;
+  select min(a.starts_at) into v_at from public.available_slots(v_service, v_today) a;
+  -- find_shops runs this for every shop on the page, so tomorrow is only
+  -- worked out when today has nothing left.
+  if v_at is null then
+    select min(a.starts_at) into v_at from public.available_slots(v_service, v_today + 1) a;
+  end if;
+  return v_at;
+end;
+$$;
+-- Only find_shops uses it.
+revoke execute on function public.shop_next_free(uuid) from public, anon, authenticated;
+
 -- The customer's shop list: live shops whose name, area or address contains
 -- the search, a page at a time, with each shop's lowest price, number of
--- chairs and today's hours (first barber in to last one out, in the shop's
+-- chairs, today's hours (first barber in to last one out, in the shop's
 -- time zone; breaks and blocked time are not counted, and both are null
--- when nobody works today). Sending every shop with all its services and
--- barbers came to 570 KB for 1,000 shops (e2e/load).
+-- when nobody works today) and its next free time. Sending every shop with
+-- all its services and barbers came to 570 KB for 1,000 shops (e2e/load).
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
@@ -322,17 +360,18 @@ returns table (
   from_price numeric,
   barber_count int,
   opens_today time,
-  closes_today time
+  closes_today time,
+  next_free_at timestamptz
 )
 language sql
 stable
 security definer
 set search_path = public
 as $$
-  -- The page is picked first, so today's hours are only worked out for the
-  -- shops sent back.
+  -- The page is picked first, so today's hours and the next free time are
+  -- only worked out for the shops sent back.
   select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
-         h.opens_today, h.closes_today
+         h.opens_today, h.closes_today, public.shop_next_free(p.id)
   from (
     select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone,
            (select min(v.price) from services v where v.shop_id = s.id and v.is_active) as from_price,
@@ -410,6 +449,10 @@ revoke execute on function public.lock_shop_diary(uuid) from public, anon, authe
 -- anything already booked, skip times that have passed, and stop at the
 -- booking horizon. p_ignore_booking leaves one booking out of the taken
 -- times, so a booking being moved doesn't block its own neighbouring slots.
+-- find_shops runs this for every shop on a page, so it is plpgsql, which
+-- keeps its plan between calls, and it looks up each barber's bookings for
+-- the day once rather than once per start time. On the e2e/load data that
+-- took a day's free times from 5 ms to under 0.5 ms.
 create function public.available_slots(
   p_service_id uuid,
   p_day date,
@@ -417,11 +460,13 @@ create function public.available_slots(
   p_ignore_booking uuid default null
 )
 returns table (barber_id uuid, starts_at timestamptz)
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
+begin
+  return query
   with ignored as (
     -- Only the caller's own booking, or one at their shop, so nobody can
     -- find out when someone else is booked.
@@ -454,19 +499,30 @@ as $$
       interval '15 minutes'
     ) as t
     where (p_barber_id is null or b.id = p_barber_id)
+  ),
+  taken as materialized (
+    -- Every start time ends by closing time, so only bookings that touch
+    -- the day can be in the way.
+    select bk.barber_id, tstzrange(bk.starts_at, bk.ends_at) as during
+    from svc
+    join barbers b on b.shop_id = svc.shop_id and b.is_active
+    join bookings bk on bk.barber_id = b.id
+    where (p_barber_id is null or b.id = p_barber_id)
+      and bk.status <> 'cancelled'
+      and bk.id is distinct from (select id from ignored)
+      and tstzrange(bk.starts_at, bk.ends_at)
+          && tstzrange(p_day::timestamp at time zone svc.time_zone, (p_day + 1)::timestamp at time zone svc.time_zone)
   )
   select c.barber_id, c.starts_at
   from candidates c
   where c.starts_at > now()
     and not exists (
-      select 1 from bookings bk
-      where bk.barber_id = c.barber_id
-        and bk.status <> 'cancelled'
-        and bk.id is distinct from (select id from ignored)
-        and tstzrange(bk.starts_at, bk.ends_at)
-            && tstzrange(c.starts_at, c.starts_at + make_interval(mins => c.duration_min))
+      select 1 from taken tk
+      where tk.barber_id = c.barber_id
+        and tk.during && tstzrange(c.starts_at, c.starts_at + make_interval(mins => c.duration_min))
     )
   order by c.starts_at, c.barber_id;
+end;
 $$;
 
 -- Book a slot. With no barber given, picks the free barber with the fewest

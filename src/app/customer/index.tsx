@@ -8,7 +8,7 @@ import { Button, Card, Chip, Empty, Field, Row, T } from '@/components/ui';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
-import { openStatus } from '@/lib/hours';
+import { nextFreeLine, openStatus } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice, localDateString } from '@/lib/time';
@@ -20,6 +20,8 @@ type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'abo
   /** Today's first opening and last closing time, e.g. "10:00:00"; null when nobody works today. */
   opens_today: string | null;
   closes_today: string | null;
+  /** The earliest free start for the shortest service, today or else tomorrow; null when neither has one. */
+  next_free_at: string | null;
 };
 type Area = { area: string; shops: number };
 
@@ -30,7 +32,7 @@ const AREA_KEY = 'potongku.area';
 
 export default function Explore() {
   const theme = useTheme();
-  // Keeps "Open now" right while the list stays on screen.
+  // Keeps "Open now" and "Free now" right while the list stays on screen.
   const now = useNow();
   const [shops, setShops] = useState<ShopListing[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -201,6 +203,7 @@ export default function Explore() {
         {shops.map((shop) => {
           // The list doesn't send each shop's zone: every shop is in Malaysia, on Kuala Lumpur time.
           const openNow = listedOn === today ? openStatus(shop.opens_today, shop.closes_today, now) : null;
+          const nextFree = openNow ? nextFreeLine(shop.next_free_at, openNow.state, now) : null;
           return (
             <Card
               key={shop.id}
@@ -226,6 +229,11 @@ export default function Explore() {
               {openNow ? (
                 <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
                   {openNow.label}
+                </T>
+              ) : null}
+              {nextFree ? (
+                <T variant="small" style={nextFree.soon ? { color: theme.success } : undefined}>
+                  {nextFree.label}
                 </T>
               ) : null}
             </Card>
