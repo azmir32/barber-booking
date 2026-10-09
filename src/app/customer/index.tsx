@@ -11,7 +11,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { openStatus } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { errorMessage, supabase } from '@/lib/supabase';
-import { formatPrice } from '@/lib/time';
+import { formatPrice, localDateString } from '@/lib/time';
 import type { Shop } from '@/lib/types';
 
 type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'about'> & {
@@ -44,6 +44,9 @@ export default function Explore() {
   const [error, setError] = useState<string | null>(null);
   // Only the newest search fills the list; slower answers to older ones are dropped.
   const latest = useRef(0);
+  // Today's hours come with the list, so after midnight it is fetched again.
+  const today = localDateString(new Date(now));
+  const [listedOn, setListedOn] = useState(today);
 
   useEffect(() => {
     AsyncStorage.getItem(AREA_KEY)
@@ -69,6 +72,7 @@ export default function Explore() {
     const rows = (data ?? []) as ShopListing[];
     setShops(rows.slice(0, PAGE));
     setHasMore(rows.length > PAGE);
+    setListedOn(localDateString(new Date()));
   }, [fetchPage]);
 
   async function loadMore() {
@@ -102,6 +106,12 @@ export default function Explore() {
       loadAreas();
     }, [loadAreas]),
   );
+
+  useEffect(() => {
+    if (!areaRestored || listedOn === today) return;
+    const timer = setTimeout(load, 0);
+    return () => clearTimeout(timer);
+  }, [areaRestored, listedOn, today, load]);
 
   function pickArea(next: string | null) {
     setArea(next);
@@ -190,7 +200,7 @@ export default function Explore() {
         ) : null}
         {shops.map((shop) => {
           // The list doesn't send each shop's zone: every shop is in Malaysia, on Kuala Lumpur time.
-          const openNow = openStatus(shop.opens_today, shop.closes_today, now);
+          const openNow = listedOn === today ? openStatus(shop.opens_today, shop.closes_today, now) : null;
           return (
             <Card
               key={shop.id}
@@ -213,9 +223,11 @@ export default function Explore() {
                   </T>
                 ) : null}
               </Row>
-              <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
-                {openNow.label}
-              </T>
+              {openNow ? (
+                <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
+                  {openNow.label}
+                </T>
+              ) : null}
             </Card>
           );
         })}

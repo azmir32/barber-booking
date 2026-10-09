@@ -287,7 +287,15 @@ test.describe.serial('booking flow', () => {
     await snap(page, '17-close-days');
     await button(page, 'Close for 2 days').click();
     await expect(page.getByText('Hari Raya', { exact: true })).toBeVisible();
+    // Ali's own day off (in two days) is his, not a shop closure, so it isn't listed here.
+    await expect(page.getByText('Day off', { exact: true })).toHaveCount(0);
     await snap(page, '18-holidays');
+    // The day itself says the shop is closed.
+    await page.getByRole('tab', { name: /Bookings/ }).click();
+    await choice(page, dayChip(4)).click();
+    const closedCard = page.getByText('Shop closed', { exact: true }).locator('..');
+    await expect(closedCard.getByText('Hari Raya', { exact: true })).toBeVisible();
+    await snap(page, '18b-closed-day');
     await signOut(page);
 
     await page.goto('/');
@@ -301,12 +309,14 @@ test.describe.serial('booking flow', () => {
 
     await signIn(page, barber);
     await page.getByRole('tab', { name: /My shop/ }).click();
-    // Ali's day off (in two days) reads as a closure too, since he is the only barber.
-    await expect(page.getByText('Day off', { exact: true })).toBeVisible();
     await button(page, /^Reopen .* – /).click();
     await confirm(page, 'Reopen');
     await expect(page.getByText('Hari Raya', { exact: true })).toHaveCount(0);
-    await expect(page.getByText('Day off', { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Closing for Hari Raya or a holiday\?/)).toBeVisible();
+    // Reopening leaves Ali's own day off as it was.
+    await page.getByRole('tab', { name: /Bookings/ }).click();
+    await choice(page, dayChip(2)).click();
+    await expect(page.getByText(`Day off · ${barber.name}`)).toBeVisible();
     await signOut(page);
   });
 

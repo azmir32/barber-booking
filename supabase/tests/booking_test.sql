@@ -413,7 +413,7 @@ declare
   d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 40;
   off bookings;
 begin
-  -- One barber's day off doesn't close the shop, and the closure replaces it.
+  -- One barber's day off doesn't close the shop.
   off := add_shop_booking('00000000-0000-0000-0000-0000000000a2', d + 1, '00:00', 1440,
     p_note => 'Day off', p_is_block => true);
   assert (select count(*) from shop_closed_days(shop, d, d + 5)) = 0, 'one barber off is not a closed shop';
@@ -421,15 +421,31 @@ begin
   assert close_shop_days(d, 3, '  Hari Raya  ') = 3, 'closing returns the number of days';
   assert (select array_agg(day order by day) from shop_closed_days(shop, d - 1, d + 5)) = array[d, d + 1, d + 2],
     'the three days should read as closed';
-  assert (select bool_and(reason = 'Hari Raya') from shop_closed_days(shop, d, d + 2)), 'the owner sees the reason';
+  assert (select bool_and(reason = 'Hari Raya' and is_closure) from shop_closed_days(shop, d, d + 2)),
+    'the owner sees the reason, and that the shop was closed';
   assert not exists (select 1 from available_slots(svc, d + 2)), 'no slots on a closed day';
   assert exists (select 1 from available_slots(svc, d + 3)), 'the day after reopens';
-  assert (select status from bookings where id = off.id) = 'cancelled', 'the barber''s own day off gives way';
+  assert (select status from bookings where id = off.id) = 'confirmed', 'the barber''s own day off is left alone';
 
-  -- Closing the same days again is harmless.
-  perform close_shop_days(d, 3, 'Hari Raya');
-  assert (select count(*) from bookings where shop_id = shop and is_block and status = 'confirmed'
-          and service_name = 'Hari Raya') = 6, 'two barbers, three days, no doubles';
+  -- Closing the same days again is harmless, and a new reason replaces the old.
+  perform close_shop_days(d, 3, 'Hari Raya Aidilfitri');
+  assert (select count(*) from shop_closed_days(shop, d, d + 5)) = 3, 'no doubles';
+  assert (select bool_and(reason = 'Hari Raya Aidilfitri') from shop_closed_days(shop, d, d + 2)), 'the new reason';
+
+  -- A barber who joins later is closed on those days too.
+  insert into barbers (id, shop_id, name) values ('00000000-0000-0000-0000-0000000000a3', shop, 'Hakim');
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  values ('00000000-0000-0000-0000-0000000000a3', extract(dow from d + 1)::int, '14:00', '18:00');
+  assert not exists (select 1 from available_slots(svc, d + 1)), 'a new barber is closed on closed days';
+  delete from barbers where id = '00000000-0000-0000-0000-0000000000a3';
+
+  -- Closed days are only changed through the functions.
+  begin
+    insert into shop_closures (shop_id, day) values (shop, d + 10);
+    raise exception 'owners should not write closures directly';
+  exception when insufficient_privilege then null;
+  end;
+  assert (select count(*) from shop_closures) = 0, 'closures are not read directly';
 
   begin
     perform close_shop_days(d, 0);
@@ -446,6 +462,11 @@ begin
     raise exception 'days past the booking horizon should be refused';
   exception when sqlstate '22023' then null;
   end;
+  begin
+    perform close_shop_days(null, 3);
+    raise exception 'a missing start day should be refused';
+  exception when sqlstate '22023' then null;
+  end;
 end $$;
 
 -- Customers see closed days without the reason, and can't close anything.
@@ -459,6 +480,11 @@ begin
   begin
     perform close_shop_days(d + 5, 1);
     raise exception 'customers should not close shops';
+  exception when sqlstate 'P0002' then null;
+  end;
+  begin
+    perform reopen_shop_days(d, 3);
+    raise exception 'customers should not reopen shops';
   exception when sqlstate 'P0002' then null;
   end;
   -- A booking on a day blocks closing it.
@@ -484,6 +510,7 @@ set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 set role authenticated;
 do $$
 declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
   d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 40;
 begin
   begin
@@ -491,14 +518,47 @@ begin
     raise exception 'closing over a customer booking should be refused';
   exception when sqlstate 'P0001' then null;
   end;
-  assert not exists (select 1 from bookings where service_name = 'Kenduri'), 'a refused closure leaves nothing behind';
+  assert (select count(*) from shop_closed_days(shop, d + 3, d + 6)) = 0, 'a refused closure leaves nothing behind';
 
-  assert reopen_shop_days(d, 3) = 6, 'reopening removes every barber''s block';
-  assert (select count(*) from shop_closed_days('00000000-0000-0000-0000-00000000005a', d, d + 5)) = 0,
-    'nothing reads as closed after reopening';
-  assert exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d + 1)),
+  -- When every barber has the day off, the day reads as closed but isn't a closure.
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d + 7, '00:00', 1440, p_note => 'Kursus', p_is_block => true);
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a2', d + 7, '00:00', 1440, p_note => 'Kursus', p_is_block => true);
+  assert (select not is_closure and reason = 'Kursus' from shop_closed_days(shop, d + 7, d + 7)),
+    'a day everyone is off reads as closed';
+
+  assert reopen_shop_days(d, 8) = 3, 'reopening counts the closed days it opened';
+  assert (select array_agg(day) from shop_closed_days(shop, d, d + 7)) = array[d + 7],
+    'only the barbers'' own days off are left';
+  assert (select count(*) from bookings where shop_id = shop and is_block and status = 'confirmed'
+          and starts_at >= (d::timestamp at time zone 'Asia/Kuala_Lumpur')) = 3,
+    'reopening leaves the barbers'' own days off alone';
+  assert exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d + 2)),
     'the slots come back';
+  assert reopen_shop_days(null, 3) = 0 and reopen_shop_days(d, null) = 0, 'nothing to reopen';
 end $$;
+
+-- Closing today works once the day's customers have been seen, and the shop
+-- list shows the shop closed.
+begin;
+reset role;
+insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at, status)
+values ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2',
+        '00000000-0000-0000-0000-0000000000c1', 'Haircut', 25,
+        now() - interval '10 minutes', now() - interval '5 minutes', 'confirmed');
+set role authenticated;
+do $$
+declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+begin
+  assert (select opens_today = '09:00' from shop_hours_today(shop)), 'open today before closing';
+  assert close_shop_days(today, 1) = 1, 'closing today should work once its customers have been';
+  assert (select reason is null from shop_closed_days(shop, today, today)), 'no reason given';
+  assert (select opens_today is null and closes_today is null from shop_hours_today(shop)),
+    'a shop closed today has no hours today';
+  assert (select opens_today is null from find_shops() where id = shop), 'the shop list shows it closed';
+end $$;
+rollback;
 
 -- Tidy up so the limits below start from a clean diary.
 reset role;
@@ -608,19 +668,20 @@ begin
   end;
 end $$;
 
--- The shop owner moves it back to Ali, but can't move blocked time.
+-- Only the customer moves it: not the shop, and never blocked time.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 do $$
 declare
   d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 5;
   v_id uuid;
-  moved bookings;
 begin
   select id into v_id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
     and status = 'confirmed' and starts_at > now();
-  moved := reschedule_booking(v_id, (d + time '10:00') at time zone 'Asia/Kuala_Lumpur', '00000000-0000-0000-0000-0000000000a1');
-  assert moved.barber_id = '00000000-0000-0000-0000-0000000000a1'
-     and moved.starts_at = (d + time '10:00') at time zone 'Asia/Kuala_Lumpur', 'the owner should move a booking';
+  begin
+    perform reschedule_booking(v_id, (d + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+    raise exception 'the shop should not move a customer''s booking';
+  exception when sqlstate 'P0002' then null;
+  end;
   begin
     perform reschedule_booking((select id from bookings where is_block and status = 'confirmed' and starts_at > now() limit 1),
                                (d + time '10:30') at time zone 'Asia/Kuala_Lumpur');

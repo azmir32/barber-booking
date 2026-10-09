@@ -72,6 +72,8 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
   bookings: {
     select: (r, c) => (c.uid != null && r.customer_id === c.uid) || ownsShop(r.shop_id, c.uid),
   },
+  // No policies: only the closing functions read and write it.
+  shop_closures: { select: () => false },
 };
 
 /** Column grants: who may write which columns (everything else is open). */
@@ -82,6 +84,7 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
     update: ['name', 'slug', 'about', 'address', 'area', 'phone', 'instagram', 'is_published'],
   },
   bookings: { insert: [], update: [], delete: [] },
+  shop_closures: { insert: [], update: [], delete: [] },
 };
 
 function denied(c: Caller, message: string) {

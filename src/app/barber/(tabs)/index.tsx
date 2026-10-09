@@ -61,6 +61,8 @@ export default function BarberBookings() {
   const [hoursOpen, setHoursOpen] = useState(false);
   const [showFinished, setShowFinished] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // The shop closed for the day (Hari Raya, say), with the reason the owner gave.
+  const [closure, setClosure] = useState<{ reason: string | null } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const latest = useRef(0);
   const shopId = shop?.id;
@@ -82,7 +84,7 @@ export default function BarberBookings() {
     // Only the newest load fills the screen, so a slow answer for the day before can't replace it.
     const request = ++latest.current;
     const { start, end } = dayBounds(day, tz);
-    const [list, active, team] = await Promise.all([
+    const [list, active, team, closed] = await Promise.all([
       supabase
         .from('bookings')
         .select('*, barbers(name), customer:profiles!bookings_customer_id_fkey(full_name, phone)')
@@ -92,6 +94,7 @@ export default function BarberBookings() {
         .order('starts_at'),
       supabase.from('services').select('id', { count: 'exact', head: true }).eq('shop_id', shop.id).eq('is_active', true),
       supabase.from('barbers').select('*, working_hours(*)').eq('shop_id', shop.id).order('sort_order').order('created_at'),
+      supabase.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: day, p_to: day }),
     ]);
     if (request !== latest.current) return;
     if (list.error) return setError(errorMessage(list.error));
@@ -99,6 +102,10 @@ export default function BarberBookings() {
     setBookings((list.data ?? []) as ShopBooking[]);
     setServices(active.count ?? 0);
     if (!team.error) setBarbers((team.data ?? []) as BarberWithHours[]);
+    if (!closed.error) {
+      const row = ((closed.data ?? []) as { reason: string | null; is_closure: boolean }[]).find((d) => d.is_closure);
+      setClosure(row ? { reason: row.reason } : null);
+    }
   }, [shop, day, tz]);
 
   // Reloads after a status change use the day on screen by then, not the day the button was tapped on.
@@ -352,7 +359,13 @@ export default function BarberBookings() {
       </View>
       <Button title={t('+ Add booking or block time')} variant="secondary" onPress={addBooking} />
 
-      {shown.length === 0 ? (
+      {closure ? (
+        <Card>
+          <T variant="heading">{t('Shop closed')}</T>
+          {closure.reason ? <T>{closure.reason}</T> : null}
+          <T variant="small">{t('Customers can’t book this day. To open it again, go to My shop.')}</T>
+        </Card>
+      ) : shown.length === 0 ? (
         <Empty
           title={t('No bookings')}
           body={shop.is_published ? t('Share your booking link to fill this day.') : undefined}
@@ -539,8 +552,8 @@ function BlockRow({ booking: b, tz, onRemove }: { booking: ShopBooking; tz: stri
       </View>
       <View style={styles.info}>
         <T>
-          {/* Blocks saved without a reason get these English defaults from the database. */}
-          {b.service_name === 'Blocked' || b.service_name === 'Closed' ? t(b.service_name) : b.service_name}
+          {/* Blocks saved without a reason get this English default from the database. */}
+          {b.service_name === 'Blocked' ? t('Blocked') : b.service_name}
           {b.barbers ? ` · ${b.barbers.name}` : ''}
         </T>
         <Badge label={t('Blocked')} />

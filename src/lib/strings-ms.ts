@@ -462,7 +462,10 @@ export const ms: Record<string, string> = {
   'Close for a few days': 'Tutup kedai beberapa hari',
   'Reopen {days}?': 'Buka semula {days}?',
   'Reopen {days}': 'Buka semula {days}',
-  'Customers will be able to book these days again.': 'Pelanggan boleh menempah pada hari-hari ini semula.',
+  'Customers will be able to book again.': 'Pelanggan boleh menempah semula.',
+  'Shop closed': 'Kedai tutup',
+  'Customers can’t book this day. To open it again, go to My shop.':
+    'Pelanggan tidak boleh menempah pada hari ini. Untuk buka semula, pergi ke Kedai saya.',
   Reopen: 'Buka semula',
   'Every barber gets these days off, and customers see them as closed. Cancel any bookings on them first.':
     'Semua barber bercuti pada hari-hari ini, dan pelanggan akan nampak kedai tutup. Batalkan dahulu tempahan pada hari tersebut.',
@@ -498,8 +501,11 @@ export const ms: Record<string, string> = {
   'Move to this time': 'Tukar ke masa ini',
   'Booking moved': 'Masa tempahan sudah ditukar',
   'Was {day} at {time}.': 'Sebelum ini {day} jam {time}.',
+  'Was {service} on {day} at {time}.': 'Sebelum ini {service} pada {day} jam {time}.',
   'Hi {shop}, this is {name}. I moved my {service} from {old} to {new}.':
     'Hai {shop}, saya {name}. Saya dah tukar masa {service} saya dari {old} ke {new}.',
+  'Hi {shop}, this is {name}. I moved my {service} with {oldBarber} on {old} to {newBarber} on {new}.':
+    'Hai {shop}, saya {name}. Saya dah tukar {service} saya dengan {oldBarber} pada {old} kepada {newBarber} pada {new}.',
   'This booking can’t be changed': 'Tempahan ini tidak boleh ditukar',
   'It may have been cancelled or already started, or the shop no longer offers this service.':
     'Mungkin tempahan ini sudah dibatalkan atau sudah bermula, atau kedai tidak lagi menawarkan servis ini.',

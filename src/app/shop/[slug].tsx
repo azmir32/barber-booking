@@ -74,6 +74,23 @@ export default function ShopPage() {
       .rpc('shop_closed_days', { p_shop_id: shopId, p_from: days[0].date, p_to: days[days.length - 1].date })
       .then(({ data }) => setShutDays(new Set(((data ?? []) as { day: string }[]).map((d) => d.day))));
   }, [shopId, days, reload]);
+  // Today's hours, leaving out barbers with the day off and a shop closed for the day.
+  // Fetched again after midnight, so a page left open doesn't show yesterday's.
+  const todayDate = localDateString(new Date(now), shop?.time_zone);
+  const [hoursToday, setHoursToday] = useState<{ date: string; opens: string | null; closes: string | null } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!shopId) return;
+    let active = true;
+    supabase.rpc('shop_hours_today', { p_shop_id: shopId }).then(({ data }) => {
+      const row = ((data ?? []) as { opens_today: string | null; closes_today: string | null }[])[0];
+      if (active && row) setHoursToday({ date: todayDate, opens: row.opens_today, closes: row.closes_today });
+    });
+    return () => {
+      active = false;
+    };
+  }, [shopId, todayDate, reload]);
   // Days nobody works (or the picked barber doesn't), so they can be shown as closed.
   const closedDays = useMemo(() => {
     const working = barbers.filter((b) => !barberId || b.id === barberId);
@@ -119,6 +136,8 @@ export default function ShopPage() {
 
   useEffect(() => {
     if (waitForAuth) return;
+    // A guest who signed up from a move link to book is booking, not moving: leave the page as it is.
+    if (pendingBook.current) return;
     (async () => {
       setLoading(true);
       setLoadError(null);
@@ -268,7 +287,7 @@ export default function ShopPage() {
   const [shownPart, shownTimes] = timeGroups.find(([p]) => p === part) ?? timeGroups[0] ?? [null, []];
   const nextOpen = day ? days.find((d) => d.date > day && !closedDays.has(d.date)) : undefined;
   const week = useMemo(() => shopWeek(barbers.flatMap((b) => b.working_hours ?? [])), [barbers]);
-  const todayWeekday = new Date(`${localDateString(new Date(now), shop?.time_zone)}T00:00:00Z`).getUTCDay();
+  const todayWeekday = new Date(`${todayDate}T00:00:00Z`).getUTCDay();
   const service = services.find((s) => s.id === serviceId);
   // Who can take the picked time. With "any barber" the booking goes to one of them, so say so up front.
   const freeNames = barbers
@@ -404,9 +423,8 @@ export default function ShopPage() {
   }
 
   const tz = shop.time_zone;
-  // Closed for the day (Hari Raya, say) beats the usual hours.
-  const hoursToday = shutDays.has(localDateString(new Date(now), tz)) ? null : week[todayWeekday];
-  const openNow = openStatus(hoursToday?.opens ?? null, hoursToday?.closes ?? null, now, tz);
+  const openNow =
+    hoursToday?.date === todayDate && week.some(Boolean) ? openStatus(hoursToday.opens, hoursToday.closes, now, tz) : null;
   const when = (at: string) => ({ day: formatDay(at, tz), time: formatTime(at, tz) });
   const dayAndTime = (at: string) => `${formatDay(at, tz)}, ${formatTime(at, tz)}`;
   /** "Haircut with Ali", or just "Haircut" if that barber is away now. */
@@ -417,22 +435,39 @@ export default function ShopPage() {
 
   if (moving && moved) {
     const what = withBarber(moved);
+    // A move to another barber can keep the same time, so then the barbers say what changed.
+    const oldBarber = barbers.find((x) => x.id === moving.barber_id)?.name;
+    const newBarber = barbers.find((x) => x.id === moved.barber_id)?.name;
+    const barberChanged = moved.barber_id !== moving.barber_id && oldBarber && newBarber;
+    const change = {
+      service: moved.service_name,
+      old: dayAndTime(moving.starts_at),
+      new: dayAndTime(moved.starts_at),
+    };
     // Tells the barber which booking moved, so they can find it in their day.
-    const message = profile?.full_name
-      ? t('Hi {shop}, this is {name}. I moved my {service} from {old} to {new}.', {
-          shop: shop.name,
-          name: profile.full_name,
-          service: moved.service_name,
-          old: dayAndTime(moving.starts_at),
-          new: dayAndTime(moved.starts_at),
-        })
-      : undefined;
+    const message = !profile?.full_name
+      ? undefined
+      : barberChanged
+        ? t('Hi {shop}, this is {name}. I moved my {service} with {oldBarber} on {old} to {newBarber} on {new}.', {
+            shop: shop.name,
+            name: profile.full_name,
+            oldBarber,
+            newBarber,
+            ...change,
+          })
+        : t('Hi {shop}, this is {name}. I moved my {service} from {old} to {new}.', {
+            shop: shop.name,
+            name: profile.full_name,
+            ...change,
+          });
     return (
       <Screen key="moved" edges={[]}>
         {header}
         <Empty title={t('Booking moved')} body={t('{service} on {day} at {time}.', { service: what, ...when(moved.starts_at) })}>
           <T variant="muted" style={{ textAlign: 'center' }}>
-            {t('Was {day} at {time}.', when(moving.starts_at))}
+            {barberChanged
+              ? t('Was {service} on {day} at {time}.', { service: withBarber(moving), ...when(moving.starts_at) })
+              : t('Was {day} at {time}.', when(moving.starts_at))}
           </T>
         </Empty>
         <Card>
@@ -542,7 +577,7 @@ export default function ShopPage() {
       <View style={{ gap: Spacing.xs }}>
         <T variant="title">{shop.name}</T>
         <T variant="muted">{shop.address || shop.area}</T>
-        {week.some(Boolean) ? (
+        {openNow ? (
           <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
             {openNow.label}
           </T>

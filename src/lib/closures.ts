@@ -2,7 +2,8 @@
 
 import { addDays, formatDay } from './time.ts';
 
-export type ClosedDay = { day: string; reason: string | null };
+/** A day shop_closed_days returns; is_closure is false for a day every barber just happens to have off. */
+export type ClosedDay = { day: string; reason: string | null; is_closure?: boolean };
 export type Closure = { from: string; to: string; days: number; reason: string | null };
 
 /** Joins back-to-back closed days with the same reason into one closure. */

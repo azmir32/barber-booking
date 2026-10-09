@@ -5,7 +5,7 @@ import { beforeEach, test } from 'node:test';
 import { createClient } from '@supabase/supabase-js';
 
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { reloadTables, setClock, tables } from './db.ts';
+import { reloadTables, save, setClock, tables } from './db.ts';
 import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
@@ -212,7 +212,7 @@ test('a customer books, sees and cancels, and the same time cannot be taken twic
   assert.equal(retry.error, null);
 });
 
-test('customers move their own booking to another free time, and so can the shop', async () => {
+test('customers move their own booking to another free time, and nobody else can', async () => {
   const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
   const shop = await shopBySlug(hakim, 'gunting-pak-mat');
   const { data: services } = await hakim.from('services').select('*').eq('shop_id', shop.id).order('sort_order');
@@ -287,12 +287,13 @@ test('customers move their own booking to another free time, and so can the shop
   assert.equal((await move(ravi, { p_starts_at: at('09:00') })).error?.message, 'Booking not found.');
   assert.equal((await move(client(), { p_starts_at: at('09:00') })).error?.code, '42501');
 
-  // The owner can move it, but not blocked time.
-  const back = await move(owner, { p_starts_at: at('10:00'), p_barber_id: mat.id });
-  assert.equal(back.error, null);
-  assert.equal(back.data.barber_id, mat.id);
+  // Only Hakim moves it: not the shop, and never blocked time.
+  assert.equal((await move(owner, { p_starts_at: at('10:00') })).error?.message, 'Booking not found.');
   const blockMove = await owner.rpc('reschedule_booking', { p_booking_id: block.data.id, p_starts_at: at('15:00') });
   assert.equal(blockMove.error?.message, 'Booking not found.');
+  const back = await move(hakim, { p_starts_at: at('10:00'), p_barber_id: mat.id });
+  assert.equal(back.error, null);
+  assert.equal(back.data.barber_id, mat.id);
 
   // Once it has started, or once cancelled, Hakim can't move it.
   setClock(() => Date.parse(at('10:05')));
@@ -512,8 +513,11 @@ test('opened on a later day, the sample week moves forward with it', async () =>
   Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
   try {
     resetDemo();
+    tables().shop_closures.push({ shop_id: tables().shops[0].id, day: addDays(today(), 5), reason: null });
+    save();
     const before = tables().bookings.map((b) => Date.parse(String(b.starts_at)));
     const trialBefore = Date.parse(String(tables().shops[0].trial_ends_at));
+    const closedBefore = String(tables().shop_closures[0].day);
 
     const later = Date.now() + 3 * 86_400_000;
     setClock(() => later);
@@ -521,10 +525,20 @@ test('opened on a later day, the sample week moves forward with it', async () =>
     const after = tables().bookings.map((b) => Date.parse(String(b.starts_at)));
     assert.deepEqual(after, before.map((t) => t + 3 * 86_400_000));
     assert.equal(Date.parse(String(tables().shops[0].trial_ends_at)), trialBefore + 3 * 86_400_000);
+    assert.equal(tables().shop_closures[0].day, addDays(closedBefore, 3));
 
     // Once moved, opening again the same day changes nothing.
     reloadTables();
     assert.deepEqual(tables().bookings.map((b) => Date.parse(String(b.starts_at))), after);
+
+    // A demo saved before shops could close for the day still opens.
+    const [key, json] = [...saved.entries()][0];
+    const old = JSON.parse(json);
+    delete old.tables.shop_closures;
+    saved.set(key, JSON.stringify(old));
+    reloadTables();
+    assert.deepEqual(tables().shop_closures, []);
+    assert.equal(tables().bookings.length, after.length);
   } finally {
     setClock(() => Date.now());
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
@@ -547,25 +561,60 @@ test('ids stay unique and rows that others point at keep theirs', async () => {
 test('a barber closes the shop for Hari Raya, customers see it, and it reopens', async () => {
   const barber = await signedIn(DEMO_BARBER_EMAIL);
   const shop = await shopBySlug(barber, 'ali-barber');
+  const { data: barbers } = await barber.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
   const from = addDays(today(), 40);
-  const closed = async (c: ReturnType<typeof client>) =>
-    (await c.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: from, p_to: addDays(from, 5) })).data as {
+  const closed = async (c: ReturnType<typeof client>, to = addDays(from, 5)) =>
+    (await c.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: from, p_to: to })).data as {
       day: string;
       reason: string | null;
+      is_closure: boolean;
     }[];
+
+  // One barber's own day off doesn't close the shop, and closing leaves it alone.
+  const off = await barber.rpc('add_shop_booking', {
+    p_barber_id: barbers![1].id,
+    p_day: addDays(from, 1),
+    p_time: '00:00',
+    p_duration_min: 1440,
+    p_note: 'Day off',
+    p_is_block: true,
+  });
+  assert.equal(off.error, null);
+  assert.deepEqual(await closed(barber), []);
 
   const close = await barber.rpc('close_shop_days', { p_from: from, p_days: 3, p_reason: '  Hari Raya ' });
   assert.equal(close.error, null);
   assert.equal(close.data, 3);
-  assert.deepEqual(await closed(barber), [0, 1, 2].map((i) => ({ day: addDays(from, i), reason: 'Hari Raya' })));
+  const days = [0, 1, 2].map((i) => addDays(from, i));
+  assert.deepEqual(await closed(barber), days.map((day) => ({ day, reason: 'Hari Raya', is_closure: true })));
+  assert.equal(tables().bookings.find((b) => b.id === off.data.id)!.status, 'confirmed');
+  // Closing again changes the reason, not the days.
+  await barber.rpc('close_shop_days', { p_from: from, p_days: 3, p_reason: 'Hari Raya Aidilfitri' });
+  assert.deepEqual((await closed(barber)).map((d) => d.reason), ['Hari Raya Aidilfitri', 'Hari Raya Aidilfitri', 'Hari Raya Aidilfitri']);
+
   // Guests see the days, not the reason, and no free times on them.
   const guest = client();
-  assert.deepEqual(await closed(guest), [0, 1, 2].map((i) => ({ day: addDays(from, i), reason: null })));
+  assert.deepEqual(await closed(guest), days.map((day) => ({ day, reason: null, is_closure: true })));
   const { data: service } = await guest.from('services').select('id').eq('shop_id', shop.id).limit(1).single();
   const slots = await guest.rpc('available_slots', { p_service_id: service!.id, p_day: addDays(from, 1) });
   assert.deepEqual(slots.data, []);
   const denied = await guest.rpc('close_shop_days', { p_from: from, p_days: 1 });
   assert.equal(denied.error?.code, '42501');
+  // Closures are only read and written through the functions.
+  assert.deepEqual((await barber.from('shop_closures').select('*')).data, []);
+  const direct = await barber.from('shop_closures').insert({ shop_id: shop.id, day: addDays(from, 10) });
+  assert.equal(direct.error?.code, '42501');
+
+  // A barber who joins later is closed on those days too.
+  const hakim = await barber.from('barbers').insert({ shop_id: shop.id, name: 'Hakim' }).select().single();
+  assert.equal(hakim.error, null);
+  const weekday = new Date(`${addDays(from, 1)}T00:00:00Z`).getUTCDay();
+  await barber.rpc('set_barber_hours', {
+    p_barber_id: hakim.data.id,
+    p_hours: [{ weekday, opens_at: '14:00', closes_at: '18:00' }],
+  });
+  const newChair = await guest.rpc('available_slots', { p_service_id: service!.id, p_day: addDays(from, 1), p_barber_id: hakim.data.id });
+  assert.deepEqual(newChair.data, []);
 
   // A customer's booking stops the shop closing over it.
   const customer = await signedIn(DEMO_CUSTOMER_EMAIL);
@@ -575,14 +624,68 @@ test('a barber closes the shop for Hari Raya, customers see it, and it reopens',
   const refused = await barber.rpc('close_shop_days', { p_from: addDays(from, 3), p_days: 2, p_reason: 'Kenduri' });
   assert.equal(refused.error?.code, 'P0001');
   assert.match(refused.error!.message, /^There are bookings on those days/);
-  assert.equal(tables().bookings.filter((b) => b.service_name === 'Kenduri').length, 0);
+  assert.equal(tables().shop_closures.filter((c) => c.reason === 'Kenduri').length, 0);
   const notMine = await customer.rpc('close_shop_days', { p_from: from, p_days: 1 });
   assert.equal(notMine.error?.message, 'Set up your shop first.');
   const tooMany = await barber.rpc('close_shop_days', { p_from: from, p_days: 32 });
   assert.equal(tooMany.error?.code, '22023');
+  const noStart = await barber.rpc('close_shop_days', { p_from: null, p_days: 3 });
+  assert.equal(noStart.error?.message, 'Pick days from today up to 60 days ahead.');
 
   const reopen = await barber.rpc('reopen_shop_days', { p_from: from, p_days: 3 });
   assert.equal(reopen.error, null);
-  assert.ok((reopen.data as number) >= 3);
+  assert.equal(reopen.data, 3);
   assert.deepEqual(await closed(guest), []);
+  assert.equal(tables().bookings.find((b) => b.id === off.data.id)!.status, 'confirmed');
+  assert.notDeepEqual((await guest.rpc('available_slots', { p_service_id: service!.id, p_day: from })).data, []);
+});
+
+test('a day every barber is off reads as closed, and closing today works once customers are done', async () => {
+  const barber = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(barber, 'ali-barber');
+  const { data: barbers } = await barber.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const day = addDays(today(), 41);
+  for (const b of barbers!) {
+    const off = await barber.rpc('add_shop_booking', {
+      p_barber_id: b.id,
+      p_day: day,
+      p_time: '00:00',
+      p_duration_min: 1440,
+      p_note: 'Kursus',
+      p_is_block: true,
+    });
+    assert.equal(off.error, null);
+  }
+  const allOff = await barber.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: day, p_to: day });
+  assert.deepEqual(allOff.data, [{ day, reason: 'Kursus', is_closure: false }]);
+  assert.equal((await barber.rpc('reopen_shop_days', { p_from: day, p_days: 1 })).data, 0);
+
+  // Today: a customer already seen doesn't stop the shop closing for the rest of the day.
+  const hours = async () => (await client().rpc('shop_hours_today', { p_shop_id: shop.id })).data[0];
+  const listed = async () => {
+    const { data } = await client().rpc('find_shops', { p_search: 'Ali Barber' });
+    return [data[0].opens_today, data[0].closes_today];
+  };
+  for (const b of tables().bookings) {
+    if (b.shop_id === shop.id && Date.parse(String(b.ends_at)) > Date.now() && !b.is_block) b.status = 'cancelled';
+  }
+  tables().bookings.push({
+    ...tables().bookings.find((b) => b.shop_id === shop.id && !b.is_block)!,
+    id: '00000000-0000-4000-8000-0000000000aa',
+    status: 'completed',
+    starts_at: new Date(Date.now() - 10 * 60_000).toISOString(),
+    ends_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+  });
+  const weekday = new Date(`${today()}T00:00:00Z`).getUTCDay();
+  const works = tables().working_hours.some((wh) => wh.weekday === weekday && barbers!.some((b) => b.id === wh.barber_id));
+  assert.deepEqual(await listed(), [(await hours()).opens_today, (await hours()).closes_today]);
+  assert.equal((await hours()).opens_today != null, works);
+
+  const close = await barber.rpc('close_shop_days', { p_from: today(), p_days: 1 });
+  assert.equal(close.error, null);
+  assert.deepEqual((await barber.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: today(), p_to: today() })).data, [
+    { day: today(), reason: null, is_closure: true },
+  ]);
+  assert.deepEqual(await hours(), { opens_today: null, closes_today: null });
+  assert.deepEqual(await listed(), [null, null]);
 });

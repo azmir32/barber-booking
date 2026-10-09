@@ -26,7 +26,8 @@ export function ClosedDaysCard({ shop }: { shop: Shop }) {
     });
     if (error) return setError(errorMessage(error));
     setError(null);
-    setClosures(groupClosures((data ?? []) as ClosedDay[]));
+    // Only days the shop was closed: barbers' own days off are changed on the Bookings tab.
+    setClosures(groupClosures(((data ?? []) as ClosedDay[]).filter((d) => d.is_closure)));
   }, [shop.id, shop.time_zone]);
 
   // On focus, so a closure added on the next screen shows when coming back.
@@ -40,7 +41,7 @@ export function ClosedDaysCard({ shop }: { shop: Shop }) {
     const range = dateRange(c.from, c.to);
     const ok = await confirmAction(
       t('Reopen {days}?', { days: range }),
-      t('Customers will be able to book these days again.'),
+      t('Customers will be able to book again.'),
       t('Reopen'),
     );
     if (!ok) return;
@@ -62,7 +63,7 @@ export function ClosedDaysCard({ shop }: { shop: Shop }) {
             <Row key={c.from} style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
               <View style={{ flex: 1 }}>
                 <T variant="label">{dateRange(c.from, c.to)}</T>
-                <T variant="small">{c.reason && c.reason !== 'Closed' ? c.reason : t('Closed')}</T>
+                <T variant="small">{c.reason ?? t('Closed')}</T>
               </View>
               <Button
                 title={t('Reopen')}

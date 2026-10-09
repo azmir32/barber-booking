@@ -3,12 +3,20 @@
 // in a browser with no server. Rows live in memory and are saved to
 // localStorage, so a demo survives a reload on the same phone.
 
-import { localDateString } from '../lib/time.ts';
+import { addDays, localDateString } from '../lib/time.ts';
 
 export type Row = Record<string, unknown>;
-export type TableName = 'users' | 'profiles' | 'shops' | 'barbers' | 'services' | 'working_hours' | 'bookings';
+export type TableName =
+  | 'users'
+  | 'profiles'
+  | 'shops'
+  | 'barbers'
+  | 'services'
+  | 'working_hours'
+  | 'bookings'
+  | 'shop_closures';
 export type Tables = Record<TableName, Row[]>;
-type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'bool' | 'timestamptz' | 'time' | 'jsonb';
+type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = { type: ColumnType; nullable: boolean; default?: () => unknown; values?: readonly string[] };
 
 /** An error shaped like the ones PostgREST sends back. */
@@ -132,6 +140,16 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     customer_note: opt('text'),
     created_at: createdAt,
   },
+  shop_closures: {
+    shop_id: req('uuid'),
+    day: req('date'),
+    reason: opt('text'),
+  },
+};
+
+/** Tables keyed by something other than id. */
+const PRIMARY_KEY: Partial<Record<TableName, string[]>> = {
+  shop_closures: ['shop_id', 'day'],
 };
 
 /** Postgres trim(): spaces only, unlike String.prototype.trim. */
@@ -176,6 +194,7 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['bookings_check', (r) => Date.parse(String(r.ends_at)) > Date.parse(String(r.starts_at))],
     ['bookings_check1', (r) => Boolean(r.is_block) || r.customer_id != null || r.guest_name != null],
   ],
+  shop_closures: [['shop_closures_reason_check', (r) => atMost(r.reason, 80)]],
 };
 
 const UNIQUE: Partial<Record<TableName, [string, string][]>> = {
@@ -249,6 +268,13 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     references: 'profiles',
     onDelete: 'cascade',
   },
+  {
+    name: 'shop_closures_shop_id_fkey',
+    table: 'shop_closures',
+    column: 'shop_id',
+    references: 'shops',
+    onDelete: 'cascade',
+  },
 ];
 
 // Values ---------------------------------------------------------------------
@@ -292,6 +318,13 @@ export function toColumnValue(table: TableName, column: string, value: unknown):
       const t = Date.parse(String(value));
       if (Number.isNaN(t)) throw bad('timestamp with time zone');
       return new Date(t).toISOString();
+    }
+    case 'date': {
+      const d = String(value);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || addDays(d, 0) !== d) {
+        throw new PgError('22007', `invalid input syntax for type date: "${d}"`, 400);
+      }
+      return d;
     }
     case 'time': {
       const t = parseTime(value);
@@ -343,8 +376,11 @@ function storage(): Storage | null {
 
 const today = () => localDateString(new Date(clock()), TZ);
 
+const emptyTables = () =>
+  Object.fromEntries(Object.keys(COLUMNS).map((t) => [t, [] as Row[]])) as unknown as Tables;
+
 function seeded(): Tables {
-  current = { users: [], profiles: [], shops: [], barbers: [], services: [], working_hours: [], bookings: [] };
+  current = emptyTables();
   seededOn = today();
   seedFn?.();
   save();
@@ -361,9 +397,13 @@ function moveToToday(saved: Tables, savedOn: string) {
   if (!Number.isFinite(days) || days === 0) return;
   for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
     const moved = Object.keys(columns).filter((c) => columns[c].type === 'timestamptz');
+    const dates = Object.keys(columns).filter((c) => columns[c].type === 'date');
     for (const row of saved[table] ?? []) {
       for (const c of moved) {
         if (row[c] != null) row[c] = new Date(ms(row[c]) + days * 86_400_000).toISOString();
+      }
+      for (const c of dates) {
+        if (row[c] != null) row[c] = addDays(String(row[c]), days);
       }
     }
   }
@@ -376,7 +416,8 @@ export function tables(): Tables {
     const parsed = saved ? (JSON.parse(saved) as { tables?: Tables; seededOn?: string }) : null;
     if (parsed?.tables && Array.isArray(parsed.tables.bookings)) {
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn);
-      current = parsed.tables;
+      // A demo saved before a table was added has no list for it yet.
+      current = { ...emptyTables(), ...parsed.tables };
       seededOn = today();
       if (parsed.seededOn !== seededOn) save();
     }
@@ -444,7 +485,8 @@ function checkRow(table: TableName, row: Row) {
     if (!ok(row)) throw new PgError('23514', `new row for relation "${table}" violates check constraint "${name}"`, 400);
   }
   const all = tables();
-  if (all[table].some((other) => other.id === row.id)) {
+  const key = PRIMARY_KEY[table] ?? ['id'];
+  if (all[table].some((other) => key.every((k) => other[k] === row[k]))) {
     throw new PgError('23505', `duplicate key value violates unique constraint "${table}_pkey"`, 409);
   }
   for (const [name, column] of UNIQUE[table] ?? []) {

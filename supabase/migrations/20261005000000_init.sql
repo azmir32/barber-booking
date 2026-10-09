@@ -182,6 +182,16 @@ create index bookings_shop_starts_idx on public.bookings (shop_id, starts_at);
 -- shop's history grows.
 create index bookings_customer_idx on public.bookings (customer_id, shop_id, starts_at);
 
+-- Days the whole shop is shut, like Hari Raya. Kept apart from the barbers'
+-- own blocks so reopening never touches them, and so a barber who joins
+-- later is closed on those days too.
+create table public.shop_closures (
+  shop_id uuid not null references public.shops (id) on delete cascade,
+  day date not null,
+  reason text check (length(reason) <= 80),
+  primary key (shop_id, day)
+);
+
 -- Row level security --------------------------------------------------------
 
 alter table public.profiles enable row level security;
@@ -190,6 +200,8 @@ alter table public.barbers enable row level security;
 alter table public.services enable row level security;
 alter table public.working_hours enable row level security;
 alter table public.bookings enable row level security;
+-- No policies: read and written only through the functions below.
+alter table public.shop_closures enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -252,8 +264,41 @@ grant insert (owner_id, name, slug, about, address, area, phone, instagram, is_p
 grant update (name, slug, about, address, area, phone, instagram, is_published)
   on public.shops to authenticated;
 revoke insert, update, delete on public.bookings from anon, authenticated;
+revoke insert, update, delete on public.shop_closures from anon, authenticated;
 
 -- Finding a barber ----------------------------------------------------------
+
+-- A shop's hours today by its own clock: the first barber in to the last one
+-- out, leaving out barbers with the whole day off. Nulls when nobody is in,
+-- or the shop is closed for the day. Breaks are ignored.
+create function public.shop_hours_today(p_shop_id uuid)
+returns table (opens_today time, closes_today time)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select min(wh.opens_at), max(wh.closes_at)
+  from shops s
+  cross join lateral (select (now() at time zone s.time_zone)::date as d) today
+  join barbers b on b.shop_id = s.id and b.is_active
+  join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from today.d)::int
+  where s.id = p_shop_id
+    and (public.shop_is_live(s) or s.owner_id = (select auth.uid()))
+    and not exists (select 1 from shop_closures c where c.shop_id = s.id and c.day = today.d)
+    and not exists (
+      -- Bounded to today so this stays one short index lookup however long
+      -- the shop's history grows.
+      select 1 from bookings bk
+      where bk.shop_id = s.id
+        and bk.starts_at >= today.d::timestamp at time zone s.time_zone
+        and bk.starts_at < (today.d + 1)::timestamp at time zone s.time_zone
+        and bk.barber_id = b.id
+        and bk.is_block
+        and bk.status = 'confirmed'
+        and bk.ends_at - bk.starts_at >= interval '24 hours'
+    );
+$$;
 
 -- The customer's shop list: live shops whose name, area or address contains
 -- the search, a page at a time, with each shop's lowest price, number of
@@ -285,7 +330,7 @@ security definer
 set search_path = public
 as $$
   -- The page is picked first, so today's hours are only worked out for the
-  -- shops sent back, in one look at their barbers' hours each.
+  -- shops sent back.
   select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
          h.opens_today, h.closes_today
   from (
@@ -303,23 +348,7 @@ as $$
     limit least(greatest(coalesce(p_limit, 20), 1), 50)
     offset greatest(coalesce(p_offset, 0), 0)
   ) p
-  left join lateral (
-    select min(wh.opens_at) as opens_today, max(wh.closes_at) as closes_today
-    from barbers b
-    join working_hours wh on wh.barber_id = b.id
-    where b.shop_id = p.id
-      and b.is_active
-      and wh.weekday = extract(dow from now() at time zone p.time_zone)::int
-      -- A barber with the whole day off (or the shop closed for Hari Raya) isn't in.
-      and not exists (
-        select 1 from bookings bk
-        where bk.barber_id = b.id
-          and bk.is_block
-          and bk.status = 'confirmed'
-          and bk.ends_at - bk.starts_at >= interval '24 hours'
-          and (bk.starts_at at time zone p.time_zone)::date = (now() at time zone p.time_zone)::date
-      )
-  ) h on true
+  left join lateral public.shop_hours_today(p.id) h on true
   order by lower(p.name), p.id;
 $$;
 
@@ -408,6 +437,7 @@ as $$
       and s.is_active
       and (public.shop_is_live(sh) or sh.owner_id = auth.uid())
       and p_day <= (now() at time zone sh.time_zone)::date + public.booking_horizon_days()
+      and not exists (select 1 from shop_closures c where c.shop_id = s.shop_id and c.day = p_day)
   ),
   candidates as (
     select distinct
@@ -567,9 +597,7 @@ $$;
 
 -- Move a booking to another free time instead of cancelling and booking
 -- again, so it keeps its place in the diary, its note and its price.
--- Customers move their own upcoming bookings; shop owners move any of their
--- shop's bookings except blocked time, including one whose time has started
--- (a customer running late). The new time follows the same rules as
+-- Customers move their own upcoming bookings. The new time follows the same rules as
 -- booking, except that the booking's own time doesn't count as taken, so
 -- moving 15 minutes later works. With no barber given it stays with the
 -- same barber if they are free, else goes to whoever is least busy that day.
@@ -597,16 +625,11 @@ begin
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
 
-  if public.owns_shop(v_booking.shop_id) then
-    if v_booking.status <> 'confirmed' then
-      raise exception 'You can only change an upcoming booking.' using errcode = '42501';
-    end if;
-  elsif v_booking.customer_id = auth.uid() then
-    if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
-      raise exception 'You can only change an upcoming booking.' using errcode = '42501';
-    end if;
-  else
+  if v_booking.customer_id is distinct from auth.uid() then
     raise exception 'Booking not found.' using errcode = 'P0002';
+  end if;
+  if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
+    raise exception 'You can only change an upcoming booking.' using errcode = '42501';
   end if;
 
   select * into v_service from services where id = v_booking.service_id and is_active;
@@ -759,10 +782,9 @@ begin
 end;
 $$;
 
--- Close the whole shop for a run of days, like Hari Raya: a whole-day block
--- for every barber on each day, so customers see those days as closed. It
--- refuses while customers are booked on any of them, so nobody turns up to a
--- locked door. Blocks already on those days give way to the closure.
+-- Close the whole shop for a run of days, like Hari Raya. It refuses while
+-- customers are still to come on any of them, so nobody turns up to a
+-- locked door. Barbers' own blocks are left as they are.
 create function public.close_shop_days(p_from date, p_days int, p_reason text default null)
 returns int
 language plpgsql
@@ -772,9 +794,6 @@ as $$
 declare
   v_shop shops;
   v_today date;
-  v_start timestamptz;
-  v_end timestamptz;
-  v_reason text := coalesce(left(nullif(trim(p_reason), ''), 80), 'Closed');
 begin
   select * into v_shop from shops where owner_id = auth.uid();
   if not found then
@@ -784,44 +803,35 @@ begin
     raise exception 'Pick between 1 and 31 days.' using errcode = '22023';
   end if;
   v_today := (now() at time zone v_shop.time_zone)::date;
-  if p_from < v_today or p_from + p_days - 1 > v_today + public.booking_horizon_days() then
+  if p_from is null or p_from < v_today or p_from + p_days - 1 > v_today + public.booking_horizon_days() then
     raise exception 'Pick days from today up to 60 days ahead.' using errcode = '22023';
   end if;
-  v_start := p_from::timestamp at time zone v_shop.time_zone;
-  v_end := (p_from + p_days)::timestamp at time zone v_shop.time_zone;
 
   perform public.lock_shop_diary(v_shop.id);
+  -- Customers already served today don't count, only those still to come.
   if exists (
     select 1 from bookings
     where shop_id = v_shop.id
       and not is_block
       and status = 'confirmed'
-      and tstzrange(starts_at, ends_at) && tstzrange(v_start, v_end)
+      and ends_at > now()
+      and starts_at < (p_from + p_days)::timestamp at time zone v_shop.time_zone
+      and ends_at > p_from::timestamp at time zone v_shop.time_zone
   ) then
     raise exception 'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.'
       using errcode = 'P0001';
   end if;
 
-  update bookings set status = 'cancelled'
-  where shop_id = v_shop.id
-    and is_block
-    and status = 'confirmed'
-    and tstzrange(starts_at, ends_at) && tstzrange(v_start, v_end);
-
-  -- Same shape as a whole-day block from add_shop_booking: midnight, 24 hours.
-  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
-  select v_shop.id, b.id, true, v_reason, 0,
-         d::date::timestamp at time zone v_shop.time_zone,
-         (d::date::timestamp at time zone v_shop.time_zone) + make_interval(mins => 1440)
-  from barbers b
-  cross join generate_series(p_from, p_from + p_days - 1, interval '1 day') as d
-  where b.shop_id = v_shop.id and b.is_active;
+  insert into shop_closures (shop_id, day, reason)
+  select v_shop.id, d::date, left(nullif(trim(p_reason), ''), 80)
+  from generate_series(p_from, p_from + p_days - 1, interval '1 day') as d
+  on conflict (shop_id, day) do update set reason = excluded.reason;
 
   return p_days;
 end;
 $$;
 
--- Undo a closure: removes the whole-day blocks on those days.
+-- Undo a closure. Returns how many closed days were opened again.
 create function public.reopen_shop_days(p_from date, p_days int)
 returns int
 language plpgsql
@@ -829,44 +839,40 @@ security definer
 set search_path = public
 as $$
 declare
-  v_shop shops;
+  v_shop_id uuid := public.my_shop_id();
   v_count int;
 begin
-  select * into v_shop from shops where owner_id = auth.uid();
-  if not found then
+  if v_shop_id is null then
     raise exception 'Set up your shop first.' using errcode = 'P0002';
   end if;
-  perform public.lock_shop_diary(v_shop.id);
-  update bookings set status = 'cancelled'
-  where shop_id = v_shop.id
-    and is_block
-    and status = 'confirmed'
-    and ends_at - starts_at >= interval '24 hours'
-    and starts_at >= p_from::timestamp at time zone v_shop.time_zone
-    and starts_at < (p_from + greatest(p_days, 0))::timestamp at time zone v_shop.time_zone;
+  perform public.lock_shop_diary(v_shop_id);
+  delete from shop_closures
+  where shop_id = v_shop_id and day >= p_from and day < p_from + greatest(p_days, 0);
   get diagnostics v_count = row_count;
   return v_count;
 end;
 $$;
 
--- Days in a range when every barber of a shop has a whole-day block, so the
--- booking page can show them as closed. Only the owner sees the reason.
+-- Days in a range the booking page should show as closed: days the owner
+-- closed the shop, and days every barber has the whole day off. Only the
+-- owner sees the reason. is_closure marks the first kind, which Reopen undoes.
 create function public.shop_closed_days(p_shop_id uuid, p_from date, p_to date)
-returns table (day date, reason text)
+returns table (day date, reason text, is_closure boolean)
 language sql
 stable
 security definer
 set search_path = public
 as $$
   with shop as (
-    select sh.id, sh.time_zone, sh.owner_id = (select auth.uid()) as mine
+    select sh.id, sh.time_zone, sh.owner_id = (select auth.uid()) as mine,
+           least(p_to, p_from + 90) as last_day
     from shops sh
     where sh.id = p_shop_id and (public.shop_is_live(sh) or sh.owner_id = (select auth.uid()))
   ),
   team as (
     select count(*) as n from barbers b join shop on b.shop_id = shop.id where b.is_active
   ),
-  closed as (
+  all_off as (
     select (bk.starts_at at time zone shop.time_zone)::date as day,
            count(distinct bk.barber_id) as n,
            min(bk.service_name) as reason
@@ -877,13 +883,18 @@ as $$
       and bk.status = 'confirmed'
       and bk.ends_at - bk.starts_at >= interval '24 hours'
       and bk.starts_at >= p_from::timestamp at time zone shop.time_zone
-      and bk.starts_at < (least(p_to, p_from + 90) + 1)::timestamp at time zone shop.time_zone
+      and bk.starts_at < (shop.last_day + 1)::timestamp at time zone shop.time_zone
     group by 1
   )
-  select closed.day, case when shop.mine then closed.reason end
-  from closed, team, shop
-  where closed.n = team.n and team.n > 0
-  order by closed.day;
+  select c.day, case when shop.mine then c.reason end, true
+  from shop_closures c join shop on c.shop_id = shop.id
+  where c.day between p_from and shop.last_day
+  union all
+  select a.day, case when shop.mine then a.reason end, false
+  from all_off a, team, shop
+  where a.n = team.n and team.n > 0
+    and not exists (select 1 from shop_closures c where c.shop_id = shop.id and c.day = a.day)
+  order by 1;
 $$;
 
 -- People can delete their own account (the app stores require it).
