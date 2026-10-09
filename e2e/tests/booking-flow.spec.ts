@@ -147,6 +147,14 @@ test.describe.serial('booking flow', () => {
     await snap(page, '08b-poster');
     await page.getByLabel('Go back').click();
     await expect(page.getByText('You are live')).toBeVisible();
+
+    // Takings: nothing booked yet, so the summary says how it fills up.
+    await page.getByRole('link', { name: 'Takings: This week: no cuts marked done yet' }).click();
+    await expect(page.getByRole('radio', { name: 'This week' })).toBeChecked();
+    await expect(page.getByText('No bookings this week yet')).toBeVisible();
+    await snap(page, '08c-takings-empty');
+    await page.getByLabel('Go back').click();
+    await expect(page.getByText('You are live')).toBeVisible();
     await signOut(page);
   });
 

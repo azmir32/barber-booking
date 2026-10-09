@@ -25,6 +25,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Bookings by day with expected takings, refreshed every minute and by pulling down; mark done or no-show once the time has started, cancel, WhatsApp the customer
 - WhatsApp reminders the day before: one tap opens WhatsApp with the message written, and every phone in the shop sees who has been reminded (moving a booking clears it; one that never went out can be taken back). Today's view says how many of tomorrow's customers are still to remind. Customers who booked today, or are coming later today, can still be reminded from More
 - Add walk-in, WhatsApp or phone bookings, and block time or a whole day off, so online customers can't take those times
+- Takings for this week, last week or this month: money in and cuts done against the same point in the period before, no-shows and cancellations, the busiest days and hours, each barber's share and the top services. My shop shows the week so far in one line
 - Go live / pause, share or copy the booking link; while paused, the link asks customers to WhatsApp the shop
 - One-month free trial on every new shop
 
@@ -32,6 +33,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - A barber can never be double-booked (Postgres exclusion constraint)
 - Bookings are only created through `book_appointment` (customers) and `add_shop_booking` (owners), and moved through `reschedule_booking`, which re-check the slot is free and inside working hours
 - Customers only see their own bookings; owners only see their own shop's bookings and customers
+- Takings come from one owner-only `shop_summary` call over at most 93 days, counted at the price each booking was made at
 - Shops are only visible while published and paid up or inside the free trial
 - Owners can't change their own trial or subscription status
 - Limits against abuse: bookings at most 60 days ahead, at most 4 upcoming bookings per customer per shop, notes up to 280 characters

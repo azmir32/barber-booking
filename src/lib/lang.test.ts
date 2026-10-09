@@ -65,6 +65,7 @@ const DYNAMIC_KEYS = [
   'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.',
   'You can only change an upcoming booking.',
   'You can only remind a customer about an upcoming booking.',
+  'Pick a period of up to 93 days.',
   'This booking has changed. Check the new time.',
   'Invalid login credentials',
   'User already registered',

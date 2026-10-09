@@ -59,6 +59,9 @@ test('formatTime shows shop-local time', () => {
 test('formatPrice and formatDuration', () => {
   assert.equal(formatPrice(25), 'RM25');
   assert.equal(formatPrice('25.5'), 'RM25.50');
+  assert.equal(formatPrice(1240), 'RM1,240');
+  assert.equal(formatPrice('12480.5'), 'RM12,480.50');
+  assert.equal(formatPrice(999), 'RM999');
   assert.equal(formatDuration(45), '45 min');
   assert.equal(formatDuration(60), '1 hr');
   assert.equal(formatDuration(75), '1 hr 15 min');

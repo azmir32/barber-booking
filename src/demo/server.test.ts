@@ -5,7 +5,7 @@ import { beforeEach, test } from 'node:test';
 import { createClient } from '@supabase/supabase-js';
 
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { reloadTables, save, setClock, tables } from './db.ts';
+import { insertRow, reloadTables, save, setClock, tables } from './db.ts';
 import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
@@ -843,4 +843,193 @@ test('a day every barber is off reads as closed, and closing today works once cu
   ]);
   assert.deepEqual(await hours(), { opens_today: null, closes_today: null });
   assert.deepEqual(await listed(), [null, null]);
+});
+
+test('the sample shop has weeks of takings to look back on', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  // Last week, Monday to Sunday.
+  const weekday = new Date(`${today()}T00:00:00Z`).getUTCDay();
+  const monday = addDays(today(), -((weekday + 6) % 7) - 7);
+  const { data, error } = await ali.rpc('shop_summary', { p_from: monday, p_to: addDays(monday, 6) });
+  assert.equal(error, null);
+  assert.ok(data.totals.done >= 30 && data.totals.takings >= 600, `a busy week: ${JSON.stringify(data.totals)}`);
+  assert.ok(data.totals.no_shows > 0 && data.totals.cancelled > 0);
+  assert.ok(data.previous.done >= 30, 'and a week before it to compare');
+  assert.equal(data.days.length, 7);
+  assert.ok(data.days.every((d: { bookings: number }) => d.bookings > 0), 'every day has someone');
+  assert.ok(data.hours.length >= 8, 'from morning to evening');
+  assert.deepEqual(data.barbers.map((b: { name: string }) => b.name).sort(), ['Ali', 'Danial']);
+  assert.ok(data.services.length >= 3);
+});
+
+test('the owner sees a week’s takings and the week before, and nobody else does', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const [aliChair, danial] = barbers!;
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  const kemas = await shopBySlug(rahman, 'kemas-barber-kajang');
+  const kemasChair = tables().barbers.find((b) => b.shop_id === kemas.id)!;
+  tables().bookings = tables().bookings.filter((b) => b.shop_id !== shop.id);
+
+  // The same weeks as booking_test.sql: three weeks ago, and the week before it.
+  const d = addDays(today(), -20);
+  const add = (barber: unknown, day: string, clock: string, name: string, price: number, status: string, block = false) => {
+    const [h, m] = clock.split(':').map(Number);
+    const at = dayBounds(day, TZ).start.getTime() + (h * 60 + m) * 60_000;
+    insertRow('bookings', {
+      shop_id: tables().barbers.find((b) => b.id === barber)!.shop_id,
+      barber_id: barber,
+      guest_name: block ? null : 'Guest',
+      is_block: block,
+      service_name: name,
+      price,
+      starts_at: new Date(at).toISOString(),
+      ends_at: new Date(at + 30 * 60_000).toISOString(),
+      status,
+    });
+  };
+  // This week: one haircut was booked at an old price of 18.
+  add(aliChair.id, d, '10:00', 'Haircut', 25, 'completed');
+  add(aliChair.id, d, '11:00', 'Skin fade', 30, 'completed');
+  add(danial.id, addDays(d, 1), '10:00', 'Haircut', 25, 'no_show');
+  add(aliChair.id, addDays(d, 2), '10:00', 'Haircut', 25, 'cancelled');
+  add(danial.id, addDays(d, 2), '10:00', 'Haircut', 25, 'completed');
+  add(aliChair.id, addDays(d, 3), '13:00', 'Lunch', 50, 'confirmed', true);
+  add(danial.id, addDays(d, 4), '15:00', 'Haircut', 25, 'confirmed');
+  add(aliChair.id, addDays(d, 5), '10:00', 'Haircut', 18, 'completed');
+  add(aliChair.id, addDays(d, 6), '23:30', 'Haircut', 40, 'completed');
+  // Not this week: the day after, and another shop.
+  add(aliChair.id, addDays(d, 7), '00:00', 'Haircut', 99, 'completed');
+  add(kemasChair.id, addDays(d, 1), '10:00', 'Haircut', 500, 'completed');
+  // The week before, and one from before that.
+  add(aliChair.id, addDays(d, -7), '10:00', 'Haircut', 25, 'completed');
+  add(aliChair.id, addDays(d, -3), '10:00', 'Skin fade', 30, 'no_show');
+  add(danial.id, addDays(d, -1), '23:45', 'Haircut', 20, 'completed');
+  add(aliChair.id, addDays(d, -1), '12:00', 'Haircut', 25, 'cancelled');
+  add(aliChair.id, addDays(d, -8), '10:00', 'Haircut', 1000, 'completed');
+
+  const { data: s, error } = await ali.rpc('shop_summary', { p_from: d, p_to: addDays(d, 6) });
+  assert.equal(error, null);
+  assert.deepEqual(s.totals, {
+    done: 5,
+    takings: 138,
+    no_shows: 1,
+    no_show_value: 25,
+    cancelled: 1,
+    to_come: 0,
+    to_come_value: 0,
+    unmarked: 1,
+    unmarked_value: 25,
+  });
+  const { until, ...previous } = s.previous;
+  assert.deepEqual(previous, {
+    from: addDays(d, -7),
+    to: addDays(d, -1),
+    done: 2,
+    takings: 45,
+    no_shows: 1,
+    no_show_value: 30,
+    cancelled: 1,
+  });
+  assert.equal(Date.parse(until), dayBounds(d, TZ).start.getTime(), 'a finished week compares with the whole week before');
+  assert.deepEqual(
+    s.days.map((x: { bookings: number }) => x.bookings),
+    [2, 1, 1, 0, 1, 1, 1],
+  );
+  assert.deepEqual(s.days[6], { day: addDays(d, 6), bookings: 1, done: 1, takings: 40 });
+  assert.deepEqual(s.hours, [
+    { hour: 10, bookings: 4 },
+    { hour: 11, bookings: 1 },
+    { hour: 15, bookings: 1 },
+    { hour: 23, bookings: 1 },
+  ]);
+  assert.deepEqual(s.barbers, [
+    { barber_id: aliChair.id, name: 'Ali', bookings: 4, done: 4, takings: 113, no_shows: 0 },
+    { barber_id: danial.id, name: 'Danial', bookings: 3, done: 1, takings: 25, no_shows: 1 },
+  ]);
+  assert.deepEqual(s.services, [
+    { name: 'Haircut', done: 4, takings: 108 },
+    { name: 'Skin fade', done: 1, takings: 30 },
+  ]);
+
+  // A quiet week; and the period before has the same length, except a whole month.
+  const quiet = (await ali.rpc('shop_summary', { p_from: addDays(d, -50), p_to: addDays(d, -44) })).data;
+  assert.equal(quiet.totals.done, 0);
+  assert.deepEqual([quiet.hours, quiet.barbers, quiet.services], [[], [], []]);
+  const before = async (from: string, to: string) =>
+    (await ali.rpc('shop_summary', { p_from: from, p_to: to })).data.previous as { from: string; to: string };
+  assert.equal((await before('2026-01-01', '2026-01-31')).from, '2025-12-01');
+  const march = await before('2026-03-01', '2026-03-31');
+  assert.deepEqual([march.from, march.to], ['2026-02-01', '2026-02-28']);
+  assert.equal((await before('2026-03-01', '2026-03-15')).from, '2026-02-14');
+  assert.equal((await before('2026-01-02', '2026-02-01')).from, '2025-12-02');
+
+  // At most 93 days, and only forwards.
+  assert.equal((await ali.rpc('shop_summary', { p_from: addDays(d, -92), p_to: d })).data.days.length, 93);
+  const long = await ali.rpc('shop_summary', { p_from: addDays(d, -93), p_to: d });
+  assert.equal(long.error?.code, '22023');
+  assert.equal(long.error?.message, 'Pick a period of up to 93 days.');
+  assert.equal((await ali.rpc('shop_summary', { p_from: d, p_to: addDays(d, -1) })).error?.code, '22023');
+  assert.equal((await ali.rpc('shop_summary', { p_from: null, p_to: d })).error?.code, '22023');
+
+  // Each owner gets their own shop; customers have none, and guests can't ask.
+  assert.equal((await rahman.rpc('shop_summary', { p_from: d, p_to: addDays(d, 6) })).data.totals.takings, 500);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const notOwner = await hakim.rpc('shop_summary', { p_from: d, p_to: addDays(d, 6) });
+  assert.equal(notOwner.error?.message, 'Set up your shop first.');
+  assert.equal((await client().rpc('shop_summary', { p_from: d, p_to: addDays(d, 6) })).error?.code, '42501');
+});
+
+test('a week still running counts what is to come, and the week before only up to this time', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const [aliChair, danial] = barbers!;
+  tables().bookings = tables().bookings.filter((b) => b.shop_id !== shop.id);
+  const fixed = Date.now();
+  const HOUR = 3_600_000;
+  const add = (barber: unknown, at: number, price: number, status: string) =>
+    insertRow('bookings', {
+      shop_id: shop.id,
+      barber_id: barber,
+      guest_name: 'Guest',
+      service_name: 'Haircut',
+      price,
+      starts_at: new Date(at).toISOString(),
+      ends_at: new Date(at + 30 * 60_000).toISOString(),
+      status,
+    });
+  add(aliChair.id, fixed + 2 * HOUR, 25, 'confirmed');
+  add(danial.id, fixed - 10 * 60_000, 30, 'confirmed');
+  add(aliChair.id, fixed - HOUR, 20, 'confirmed');
+  add(danial.id, fixed - 24 * HOUR, 18, 'completed');
+  // The week before: an hour before this time of the week, and an hour after.
+  add(aliChair.id, fixed - 7 * 24 * HOUR - HOUR, 25, 'completed');
+  add(aliChair.id, fixed - 7 * 24 * HOUR + HOUR, 30, 'completed');
+  setClock(() => fixed);
+  try {
+    const { data: s, error } = await ali.rpc('shop_summary', { p_from: addDays(today(), -1), p_to: addDays(today(), 5) });
+    assert.equal(error, null);
+    // To come includes the one in the chair; over and not marked is counted apart.
+    assert.deepEqual(s.totals, {
+      done: 1,
+      takings: 18,
+      no_shows: 0,
+      no_show_value: 0,
+      cancelled: 0,
+      to_come: 2,
+      to_come_value: 55,
+      unmarked: 1,
+      unmarked_value: 20,
+    });
+    assert.equal(Date.parse(s.previous.until), fixed - 7 * 24 * HOUR, 'up to this time last week');
+    assert.deepEqual([s.previous.done, s.previous.takings], [1, 25]);
+    // A week that hasn't started has nothing before it to compare.
+    const later = (await ali.rpc('shop_summary', { p_from: addDays(today(), 7), p_to: addDays(today(), 13) })).data;
+    assert.ok(Date.parse(later.previous.until) < dayBounds(today(), TZ).start.getTime());
+    assert.equal(later.previous.done, 0);
+  } finally {
+    setClock(() => Date.now());
+  }
 });

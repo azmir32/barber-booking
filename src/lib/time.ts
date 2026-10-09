@@ -156,10 +156,11 @@ export function formatDay(at: string | Date, timeZone = DEFAULT_TIME_ZONE): stri
   }).format(new Date(at));
 }
 
-/** "RM25" or "RM25.50". */
+/** "RM25", "RM25.50" or, for a week's takings, "RM1,240". */
 export function formatPrice(amount: number | string): string {
   const n = Number(amount);
-  return `RM${Number.isInteger(n) ? n : n.toFixed(2)}`;
+  const [whole, cents] = (Number.isInteger(n) ? String(n) : n.toFixed(2)).split('.');
+  return `RM${whole.replace(/\B(?=(\d{3})+$)/g, ',')}${cents ? `.${cents}` : ''}`;
 }
 
 /** "45 min" or "1 hr 15 min". */

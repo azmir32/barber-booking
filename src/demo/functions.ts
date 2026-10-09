@@ -572,6 +572,134 @@ export function shopClosedDays(c: Caller, shopId: unknown, fromArg: unknown, toA
   return [...closures, ...allOff].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }
 
+// Takings --------------------------------------------------------------------
+
+const money = (n: number) => Math.round(n * 100) / 100;
+const daysBetween = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
+
+/** shop_summary: the owner's takings for p_from to p_to on the shop's clock, and the period before. */
+export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
+  const shop = myShop(c);
+  const from = fromArg == null ? null : parseDate(fromArg);
+  const to = toArg == null ? null : parseDate(toArg);
+  const days = from == null || to == null ? null : daysBetween(from, to) + 1;
+  if (from == null || to == null || days == null || days < 1 || days > 93) {
+    throw new PgError('22023', 'Pick a period of up to 93 days.', 400);
+  }
+  const tz = String(shop.time_zone);
+  // A whole month compares with the whole month before; anything else with the same number of days.
+  const [y, m] = from.split('-').map(Number);
+  const firstOf = (month: number) => new Date(Date.UTC(y, month, 1)).toISOString().slice(0, 10);
+  const wholeMonth = from === firstOf(m - 1) && addDays(to, 1) === firstOf(m);
+  const prevFrom = wholeMonth ? firstOf(m - 2) : addDays(from, -days);
+  const start = dayBounds(from, tz).start.getTime();
+  const end = dayBounds(addDays(to, 1), tz).start.getTime();
+  const prevStart = dayBounds(prevFrom, tz).start.getTime();
+  // As far into the period before as now is into this one, by the shop's clock.
+  const today = localDateString(new Date(now()), tz);
+  const sinceMidnight = now() - dayBounds(today, tz).start.getTime();
+  const prevUntil = Math.min(start, dayBounds(addDays(prevFrom, daysBetween(from, today)), tz).start.getTime() + sinceMidnight);
+
+  const rows = tables().bookings.filter((b) => {
+    const at = ms(b.starts_at);
+    return b.shop_id === shop.id && !b.is_block && at >= prevStart && at < end && (at >= start || at < prevUntil);
+  });
+  const current = rows.filter((b) => ms(b.starts_at) >= start);
+  const before = rows.filter((b) => ms(b.starts_at) < start);
+  const count = (list: Row[], status: string) => list.filter((b) => b.status === status).length;
+  const sum = (list: Row[], keep: (b: Row) => boolean = () => true) =>
+    money(list.filter(keep).reduce((n, b) => n + Number(b.price), 0));
+  const is = (status: string) => (b: Row) => b.status === status;
+  const toCome = (b: Row) => b.status === 'confirmed' && ms(b.ends_at) > now();
+  const unmarked = (b: Row) => b.status === 'confirmed' && ms(b.ends_at) <= now();
+  const taken = current.filter((b) => b.status !== 'cancelled');
+  // Each booking's day and start hour by the shop's clock, with one formatter: a new one per booking is slow.
+  const clock = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+  });
+  const local = new Map(
+    current.map((b) => {
+      const p = Object.fromEntries(clock.formatToParts(new Date(ms(b.starts_at))).map((x) => [x.type, x.value]));
+      return [b, { day: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) }];
+    }),
+  );
+  const totals = (list: Row[]) => ({
+    done: count(list, 'completed'),
+    takings: sum(list, is('completed')),
+    no_shows: count(list, 'no_show'),
+    no_show_value: sum(list, is('no_show')),
+    cancelled: count(list, 'cancelled'),
+  });
+
+  const hours = new Map<number, number>();
+  for (const b of taken) hours.set(local.get(b)!.hour, (hours.get(local.get(b)!.hour) ?? 0) + 1);
+  const barbers = [...new Set(taken.map((b) => b.barber_id))]
+    .map((id) => {
+      const barber = findById('barbers', id)!;
+      const theirs = current.filter((b) => b.barber_id === id);
+      return {
+        barber,
+        row: {
+          barber_id: barber.id,
+          name: barber.name,
+          bookings: theirs.filter((b) => b.status !== 'cancelled').length,
+          done: count(theirs, 'completed'),
+          takings: sum(theirs, is('completed')),
+          no_shows: count(theirs, 'no_show'),
+        },
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.row.takings - a.row.takings ||
+        b.row.done - a.row.done ||
+        Number(a.barber.sort_order) - Number(b.barber.sort_order) ||
+        ms(a.barber.created_at) - ms(b.barber.created_at) ||
+        (String(a.barber.id) < String(b.barber.id) ? -1 : 1),
+    )
+    .map(({ row }) => row);
+  const services = new Map<string, { name: string; done: number; takings: number }>();
+  for (const b of current.filter(is('completed'))) {
+    const s = services.get(String(b.service_name)) ?? { name: String(b.service_name), done: 0, takings: 0 };
+    services.set(s.name, { ...s, done: s.done + 1, takings: money(s.takings + Number(b.price)) });
+  }
+
+  return {
+    from,
+    to,
+    totals: {
+      ...totals(current),
+      // Still to come, or in the chair now; and over, but nobody marked them.
+      to_come: current.filter(toCome).length,
+      to_come_value: sum(current, toCome),
+      unmarked: current.filter(unmarked).length,
+      unmarked_value: sum(current, unmarked),
+    },
+    previous: { from: prevFrom, to: addDays(from, -1), until: new Date(prevUntil).toISOString(), ...totals(before) },
+    days: Array.from({ length: days }, (_, i) => {
+      const day = addDays(from, i);
+      const that = current.filter((b) => local.get(b)!.day === day);
+      return {
+        day,
+        bookings: that.filter((b) => b.status !== 'cancelled').length,
+        done: count(that, 'completed'),
+        takings: sum(that, is('completed')),
+      };
+    }),
+    hours: [...hours.entries()].sort((a, b) => a[0] - b[0]).map(([hour, bookings]) => ({ hour, bookings })),
+    barbers,
+    // The five most done, by the name they were booked under.
+    services: [...services.values()]
+      .sort((a, b) => b.done - a.done || b.takings - a.takings || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .slice(0, 5),
+  };
+}
+
 export function deleteMyAccount(c: Caller) {
   if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
   const mine = tables().bookings.filter((b) => b.customer_id === c.uid);
@@ -599,6 +727,7 @@ const SIGNED_IN_ONLY = new Set([
   'delete_my_account',
   'close_shop_days',
   'reopen_shop_days',
+  'shop_summary',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -643,6 +772,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: reopenShopDays(c, args.p_from, args.p_days) };
     case 'shop_closed_days':
       return { status: 200, body: shopClosedDays(c, args.p_shop_id, args.p_from, args.p_to) };
+    case 'shop_summary':
+      return { status: 200, body: shopSummary(c, args.p_from, args.p_to) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };

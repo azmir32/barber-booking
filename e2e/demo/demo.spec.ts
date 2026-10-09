@@ -287,6 +287,54 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   await expect(app.getByText('Ali Barber Sungai Chua')).toBeVisible();
 });
 
+test('the owner sees this week’s takings, and last week’s and the month’s', async ({ page }) => {
+  // The narrowest phone the app is made for.
+  await page.setViewportSize({ width: 360, height: 760 });
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+
+  // Under the shop's status, the week so far in one line.
+  const card = app.getByRole('link', {
+    name: /^Takings: This week: (RM[\d,.]+ from \d+ cuts?|no cuts marked done yet)$/,
+  });
+  await expect(card).toBeVisible();
+  await snap(page, 'demo-12-takings-card');
+  await card.click();
+
+  const periods = app.getByRole('radiogroup', { name: 'Show takings for' });
+  await expect(periods.getByRole('radio', { name: 'This week' })).toBeChecked();
+  await expect(app.getByText('Money in', { exact: true })).toBeVisible();
+  // While the week runs, it is compared with the week before up to this time.
+  await expect(app.getByText(/this time last week$/)).toHaveCount(2);
+  await expect(
+    app.getByRole('img', {
+      name: /^Bookings by day: Monday \d+, Tuesday \d+, Wednesday \d+, Thursday \d+, Friday \d+, Saturday \d+, Sunday \d+$/,
+    }),
+  ).toBeVisible();
+  await expect(app.getByRole('img', { name: /^Bookings by hour: \d{1,2}:00 (am|pm) \d+/ })).toBeVisible();
+  await snap(page, 'demo-13-takings-week');
+
+  // Last week is all in the past: money, both barbers and the top services.
+  await periods.getByRole('radio', { name: 'Last week' }).click();
+  await expect(periods.getByRole('radio', { name: 'Last week' })).toBeChecked();
+  await expect(app.getByText(/the week before$/)).toHaveCount(2);
+  await expect(app.getByText(/^RM[1-9][\d,]*(\.\d\d)?$/).first()).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Barbers', exact: true })).toBeVisible();
+  await expect(app.getByText(/^\d+ cuts?( · \d+ no-shows?)?$/)).toHaveCount(2);
+  await expect(app.getByRole('heading', { name: 'Top services' })).toBeVisible();
+  await expect(app.getByText(/^Haircut$/)).toBeVisible();
+
+  // The month is named, and compared with last month up to the same day.
+  await periods.getByRole('radio', { name: 'This month' }).click();
+  const month = new Intl.DateTimeFormat('en-MY', { month: 'long', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur' });
+  await expect(app.getByRole('heading', { name: month.format(new Date()) })).toBeVisible();
+  await expect(app.getByText(/this time last month$/)).toHaveCount(2);
+  await snap(page, 'demo-14-takings-month');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await snap(page, 'demo-15-takings-month-dark');
+});
+
 test.describe('on an iPhone', () => {
   // Chromium, telling the app it is Safari on an iPhone.
   test.use({ userAgent: devices['iPhone 13'].userAgent });

@@ -3,7 +3,7 @@
 // to "now", so the demo always looks lived in.
 
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { insertRow, now, setSeed, type Row } from './db.ts';
+import { insertRow, now, setSeed, tables, type Row } from './db.ts';
 
 export const DEMO_PASSWORD = 'demo1234';
 export const DEMO_CUSTOMER_EMAIL = 'hakim@demo.potongku.my';
@@ -80,9 +80,12 @@ function seed() {
   next = 0;
   const today = localDateString(new Date(now()), TZ);
 
+  // Each day's midnight is worked out once: the time zone lookup is slow, and there are weeks of bookings.
+  const midnights = new Map<number, number>();
   const startOf = (day: number, at: string) => {
     const [h, m] = at.split(':').map(Number);
-    return dayBounds(addDays(today, day), TZ).start.getTime() + (h * 60 + m) * 60_000;
+    if (!midnights.has(day)) midnights.set(day, dayBounds(addDays(today, day), TZ).start.getTime());
+    return midnights.get(day)! + (h * 60 + m) * 60_000;
   };
   /** Only book times the barber actually works, so every weekday looks right. */
   const works = (hours: Hours, day: number, at: string, minutes: number) => {
@@ -283,6 +286,55 @@ function seed() {
   book(f.shop, { barber: f.barbers[0], day: 1, at: '20:00', service: f.services[0], customer: ravi });
   book(m.shop, { barber: m.barbers[0], day: 0, at: '09:00', service: m.services[0], guest: ['Pak Long'] });
   book(m.shop, { barber: m.barbers[1], day: 0, at: '15:00', service: m.services[1], guest: ['Adik Amin'] });
+
+  // Eight weeks of history at Ali's, and a few afternoons in the coming
+  // days, so Takings has weeks and months to compare. Weekends and evenings
+  // are busiest, after lunch is quiet, and about one in twenty is a no-show.
+  // Each chair takes at most one cut an hour, starting on the hour or at a
+  // quarter past, so the 45-minute ones never run into the next.
+  const regulars = [farid, weiJie, ravi, aiman, syafiq, jason];
+  const walkIns = ['Uncle Lim', 'Pak Abu', 'Kumar', 'Mr Tan', 'Faiz', 'Haziq', 'Adik Irfan', 'Encik Zul'];
+  const menu = [haircut, haircut, haircut, fade, fade, haircutBeard, beard, kids];
+  // Only the bookings above can be in the way.
+  const before = [...tables().bookings];
+  const free = (barberId: unknown, start: number, minutes: number) =>
+    !before.some(
+      (b) =>
+        b.barber_id === barberId &&
+        b.status !== 'cancelled' &&
+        Date.parse(String(b.starts_at)) < start + minutes * 60_000 &&
+        start < Date.parse(String(b.ends_at)),
+    );
+  let n = 0;
+  for (let day = -56; day <= 6; day++) {
+    if (day >= -1 && day <= 2) continue;
+    const weekday = new Date(`${addDays(today, day)}T00:00:00Z`).getUTCDay();
+    for (const [chair, barber] of [aliChair, danial].entries()) {
+      // Coming days only have afternoons booked so far, by walk-ins who rang.
+      for (let hour = day > 0 ? 14 : 10; hour <= 20; hour++) {
+        n++;
+        const roll = (n * 37 + (day + 100) * 11 + hour * 7 + chair * 13) % 100;
+        const chance =
+          (weekday === 6 ? 75 : weekday === 0 || weekday === 5 ? 60 : 40) +
+          (hour >= 17 ? 20 : hour >= 14 && hour < 16 ? -15 : 0) -
+          (day > 0 ? 25 : 0);
+        if (roll >= chance) continue;
+        const service = menu[(n * 7 + hour) % menu.length];
+        const at = `${hour}:${n % 3 === 0 ? '15' : '00'}`;
+        if (!free(barber.row.id, startOf(day, at), service.duration_min as number)) continue;
+        book(sa, {
+          barber,
+          day,
+          at,
+          service,
+          ...(day < 0 && n % 3 === 1
+            ? { customer: regulars[n % regulars.length] }
+            : { guest: [walkIns[n % walkIns.length]] as [string] }),
+          status: day > 0 ? 'confirmed' : roll % 20 === 5 ? 'no_show' : roll % 11 === 7 ? 'cancelled' : 'completed',
+        });
+      }
+    }
+  }
 }
 
 setSeed(seed);

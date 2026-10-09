@@ -1010,6 +1010,183 @@ begin
   end;
 end $$;
 
+-- Takings summary ----------------------------------------------------------
+-- A finished week three weeks ago, the week before it, and a second shop
+-- whose bookings must not show up.
+begin;
+reset role;
+delete from bookings;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-00000000005b', 'Rahman');
+do $$
+declare
+  tz text := 'Asia/Kuala_Lumpur';
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date - 20;
+  ali uuid := '00000000-0000-0000-0000-0000000000a1';
+  danial uuid := '00000000-0000-0000-0000-0000000000a2';
+begin
+  insert into bookings (shop_id, barber_id, guest_name, is_block, service_name, price, starts_at, ends_at, status)
+  select coalesce(shop, '00000000-0000-0000-0000-00000000005a'), barber, case when block then null else 'Guest' end,
+         block, name, price, (day + at) at time zone tz, (day + at) at time zone tz + interval '30 minutes',
+         status::booking_status
+  from (values
+    -- This week: Haircut is 25 now, but one was booked at the old price of 18.
+    (null::uuid, ali, d, time '10:00', 'Haircut', 25, 'completed', false),
+    (null, ali, d, '11:00', 'Skin fade', 30, 'completed', false),
+    (null, danial, d + 1, '10:00', 'Haircut', 25, 'no_show', false),
+    (null, ali, d + 2, '10:00', 'Haircut', 25, 'cancelled', false),
+    (null, danial, d + 2, '10:00', 'Haircut', 25, 'completed', false),
+    (null, ali, d + 3, '13:00', 'Lunch', 50, 'confirmed', true),
+    (null, danial, d + 4, '15:00', 'Haircut', 25, 'confirmed', false),
+    (null, ali, d + 5, '10:00', 'Haircut', 18, 'completed', false),
+    (null, ali, d + 6, '23:30', 'Haircut', 40, 'completed', false),
+    -- Not this week: the day after, and another shop.
+    (null, ali, d + 7, '00:00', 'Haircut', 99, 'completed', false),
+    ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000a9', d + 1, '10:00', 'Haircut', 500, 'completed', false),
+    -- The week before, and one from before that.
+    (null, ali, d - 7, '10:00', 'Haircut', 25, 'completed', false),
+    (null, ali, d - 3, '10:00', 'Skin fade', 30, 'no_show', false),
+    (null, danial, d - 1, '23:45', 'Haircut', 20, 'completed', false),
+    (null, ali, d - 1, '12:00', 'Haircut', 25, 'cancelled', false),
+    (null, ali, d - 8, '10:00', 'Haircut', 1000, 'completed', false)
+  ) v(shop, barber, day, at, name, price, status, block);
+end $$;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date - 20;
+  s jsonb := shop_summary(d, d + 6);
+begin
+  assert s -> 'totals' = '{"done": 5, "takings": 138, "no_shows": 1, "no_show_value": 25, "cancelled": 1,
+                          "to_come": 0, "to_come_value": 0, "unmarked": 1, "unmarked_value": 25}'::jsonb,
+    'totals should count this shop''s bookings at their booked price, without blocked time: ' || (s -> 'totals');
+  assert (s -> 'previous') - 'until' = jsonb_build_object(
+      'from', d - 7, 'to', d - 1, 'done', 2, 'takings', 45, 'no_shows', 1, 'no_show_value', 30, 'cancelled', 1),
+    'the week before should be counted the same way: ' || (s -> 'previous');
+  assert (s #>> '{previous,until}')::timestamptz = d::timestamp at time zone 'Asia/Kuala_Lumpur',
+    'a finished week compares with the whole week before';
+  assert jsonb_array_length(s -> 'days') = 7 and s #>> '{days,0,day}' = d::text and s #>> '{days,6,day}' = (d + 6)::text,
+    'every day of the period should be there';
+  assert (select array_agg((x ->> 'bookings')::int order by i) from jsonb_array_elements(s -> 'days') with ordinality a(x, i))
+         = array[2, 1, 1, 0, 1, 1, 1], 'bookings by day leave out cancellations and blocks: ' || (s -> 'days');
+  assert s -> 'days' -> 6 = jsonb_build_object('day', d + 6, 'bookings', 1, 'done', 1, 'takings', 40),
+    'a late booking on the last day is that day''s, by the shop''s clock';
+  assert s -> 'hours' = '[{"hour": 10, "bookings": 4}, {"hour": 11, "bookings": 1}, {"hour": 15, "bookings": 1},
+                         {"hour": 23, "bookings": 1}]'::jsonb, 'by start hour, shop time: ' || (s -> 'hours');
+  assert s -> 'barbers' = '[{"barber_id": "00000000-0000-0000-0000-0000000000a1", "name": "Ali", "bookings": 4, "done": 4,
+                              "takings": 113, "no_shows": 0},
+                             {"barber_id": "00000000-0000-0000-0000-0000000000a2", "name": "Danial", "bookings": 3, "done": 1,
+                              "takings": 25, "no_shows": 1}]'::jsonb, 'by barber, most takings first: ' || (s -> 'barbers');
+  assert s -> 'services' = '[{"name": "Haircut", "done": 4, "takings": 108}, {"name": "Skin fade", "done": 1, "takings": 30}]'::jsonb,
+    'services by how many were done: ' || (s -> 'services');
+
+  -- A quiet week has nothing in the lists, and zeros elsewhere.
+  s := shop_summary(d - 50, d - 44);
+  assert (s #>> '{totals,done}')::int = 0 and s -> 'hours' = '[]' and s -> 'barbers' = '[]' and s -> 'services' = '[]'
+     and jsonb_array_length(s -> 'days') = 7, 'an empty week';
+
+  -- The period before has the same length, except a whole month, which compares with the month before.
+  assert shop_summary('2026-01-01', '2026-01-31') #>> '{previous,from}' = '2025-12-01', 'January compares with December';
+  assert (select x ->> 'from' = '2026-02-01' and x ->> 'to' = '2026-02-28'
+          from (select shop_summary('2026-03-01', '2026-03-31') -> 'previous' as x) y), 'March compares with February';
+  assert shop_summary('2026-03-01', '2026-03-15') #>> '{previous,from}' = '2026-02-14', 'half a month: the 15 days before';
+  assert shop_summary('2026-01-02', '2026-02-01') #>> '{previous,from}' = '2025-12-02', '31 days that aren''t a month';
+
+  assert jsonb_array_length(shop_summary(d - 92, d) -> 'days') = 93, '93 days is the most';
+  begin
+    perform shop_summary(d - 93, d);
+    raise exception '94 days should be refused';
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'Pick a period of up to 93 days.', 'unexpected message: ' || sqlerrm;
+  end;
+  begin
+    perform shop_summary(d, d - 1);
+    raise exception 'a period ending before it starts should be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform shop_summary(null, d);
+    raise exception 'a period without a start should be refused';
+  exception when sqlstate '22023' then null;
+  end;
+end $$;
+
+-- The other shop's owner only sees their own takings.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date - 20;
+begin
+  assert shop_summary(d, d + 6) #> '{totals,takings}' = '500', 'each owner gets their own shop';
+end $$;
+
+-- Customers have no shop, and guests can't ask.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform shop_summary(current_date - 6, current_date);
+  raise exception 'customers should not get a summary';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'Set up your shop first.', 'unexpected message: ' || sqlerrm;
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform shop_summary(current_date - 6, current_date);
+  raise exception 'guests must not call shop_summary';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
+
+-- A week that is still running: bookings to come, one in the chair, one
+-- over and not marked, and the week before counted only up to the same
+-- point, so the comparison is fair whatever the time of day.
+begin;
+reset role;
+delete from bookings;
+do $$
+declare
+  ali uuid := '00000000-0000-0000-0000-0000000000a1';
+  danial uuid := '00000000-0000-0000-0000-0000000000a2';
+begin
+  insert into bookings (shop_id, barber_id, guest_name, service_name, price, starts_at, ends_at, status)
+  select '00000000-0000-0000-0000-00000000005a', barber, 'Guest', 'Haircut', price, at, at + interval '30 minutes',
+         status::booking_status
+  from (values
+    (ali, now() + interval '2 hours', 25, 'confirmed'),
+    (danial, now() - interval '10 minutes', 30, 'confirmed'),
+    (ali, now() - interval '1 hour', 20, 'confirmed'),
+    (danial, now() - interval '1 day', 18, 'completed'),
+    -- The week before: an hour before this time of the week, and an hour after.
+    (ali, now() - interval '7 days 1 hour', 25, 'completed'),
+    (ali, now() - interval '7 days' + interval '1 hour', 30, 'completed')
+  ) v(barber, at, price, status);
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  s jsonb := shop_summary(today - 1, today + 5);
+begin
+  assert s -> 'totals' = '{"done": 1, "takings": 18, "no_shows": 0, "no_show_value": 0, "cancelled": 0,
+                          "to_come": 2, "to_come_value": 55, "unmarked": 1, "unmarked_value": 20}'::jsonb,
+    'to come includes the one in the chair; over and unmarked is counted apart: ' || (s -> 'totals');
+  assert (s #>> '{previous,until}')::timestamptz = now() - interval '7 days',
+    'the week before is counted up to this time last week: ' || (s #>> '{previous,until}');
+  assert s #> '{previous,done}' = '1' and s #> '{previous,takings}' = '25', 'only what was done by this time last week';
+  -- A week that hasn't started yet has nothing before it to compare.
+  assert (shop_summary(today + 7, today + 13) #>> '{previous,until}')::timestamptz
+         < (today::timestamp at time zone 'Asia/Kuala_Lumpur'), 'a later week';
+  assert shop_summary(today + 7, today + 13) #> '{previous,done}' = '0', 'nothing to compare before it starts';
+end $$;
+rollback;
+
 -- Deleting an account ------------------------------------------------------
 reset role;
 set role anon;
