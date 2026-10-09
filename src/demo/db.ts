@@ -163,6 +163,7 @@ const atMost = (v: unknown, max: number) => v == null || (len(v) as number) <= m
 const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
   profiles: [
     ['profiles_full_name_check', (r) => atMost(r.full_name, 80)],
+    ['profiles_full_name_not_blank', (r) => (len(pgTrim(String(r.full_name))) as number) > 0],
     ['profiles_phone_check', (r) => atMost(r.phone, 20)],
   ],
   shops: [
@@ -654,7 +655,8 @@ function handleNewUser(user: Row) {
   insertRow('profiles', {
     id: user.id,
     role: meta.role === 'barber' ? 'barber' : 'customer',
-    full_name: clip(meta.full_name, 80),
+    // Named after the email when no name was given, as the migration does.
+    full_name: clip(meta.full_name, 80) || clip(String(user.email ?? '').split('@')[0], 80) || 'Customer',
     phone: clip(meta.phone, 20) || null,
   });
 }

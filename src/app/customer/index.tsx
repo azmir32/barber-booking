@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshControl, ScrollView } from 'react-native';
+import { RefreshControl, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Button, Card, Chip, Empty, Field, Row, T } from '@/components/ui';
@@ -49,10 +49,17 @@ export default function Explore() {
   // Today's hours come with the list, so after midnight it is fetched again.
   const today = localDateString(new Date(now));
   const [listedOn, setListedOn] = useState(today);
+  const chipsRef = useRef<ScrollView>(null);
+  // A saved area's chip can sit past the right edge of a small phone; it is scrolled into view once.
+  const revealSavedArea = useRef(false);
 
   useEffect(() => {
     AsyncStorage.getItem(AREA_KEY)
-      .then((saved) => saved && setArea(saved))
+      .then((saved) => {
+        if (!saved) return;
+        revealSavedArea.current = true;
+        setArea(saved);
+      })
       .catch(() => {})
       .finally(() => setAreaRestored(true));
   }, []);
@@ -120,6 +127,12 @@ export default function Explore() {
     (next ? AsyncStorage.setItem(AREA_KEY, next) : AsyncStorage.removeItem(AREA_KEY)).catch(() => {});
   }
 
+  /** Back to every area, with "All areas" in view again. */
+  function showAllAreas() {
+    pickArea(null);
+    chipsRef.current?.scrollTo({ x: 0, animated: true });
+  }
+
   const searching = query.trim() !== '';
   // The saved area may have no live shops any more; keep its chip so it can be cleared.
   const areaChips =
@@ -162,21 +175,42 @@ export default function Explore() {
         />
         {areaChips.length > 1 ? (
           <ScrollView
+            ref={chipsRef}
             horizontal
             showsHorizontalScrollIndicator={false}
             accessibilityLabel={t('Area')}
             contentContainerStyle={{ gap: Spacing.sm, paddingHorizontal: Spacing.lg }}
             style={{ marginHorizontal: -Spacing.lg, flexGrow: 0 }}>
             <Chip label={t('All areas')} selected={!area} onPress={() => pickArea(null)} />
-            {areaChips.map((a) => (
-              <Chip
-                key={a.area}
-                label={a.area}
-                selected={area?.toLowerCase() === a.area.toLowerCase()}
-                onPress={() => pickArea(area?.toLowerCase() === a.area.toLowerCase() ? null : a.area)}
-              />
-            ))}
+            {areaChips.map((a) => {
+              const selected = area?.toLowerCase() === a.area.toLowerCase();
+              return (
+                <View
+                  key={a.area}
+                  onLayout={
+                    selected
+                      ? (e) => {
+                          if (!revealSavedArea.current) return;
+                          revealSavedArea.current = false;
+                          const x = e.nativeEvent.layout.x - Spacing.lg;
+                          chipsRef.current?.scrollTo({ x: Math.max(0, x), animated: false });
+                        }
+                      : undefined
+                  }>
+                  <Chip label={a.area} selected={selected} onPress={() => pickArea(selected ? null : a.area)} />
+                </View>
+              );
+            })}
           </ScrollView>
+        ) : null}
+        {/* The filter is remembered between visits, so say it is on even when its chip is off screen. */}
+        {area ? (
+          <Row style={{ flexWrap: 'nowrap', marginVertical: -Spacing.sm }}>
+            <T variant="small" style={{ flex: 1 }}>
+              {t('Showing barbers in {area}', { area })}
+            </T>
+            <Button title={t('Show all')} variant="ghost" onPress={showAllAreas} />
+          </Row>
         ) : null}
         {error ? (
           <Empty title={t('Couldn’t load barbers')} body={t('Check your connection and try again.')}>
@@ -187,14 +221,19 @@ export default function Explore() {
         {!loading && !error && shops.length === 0 ? (
           searching || area ? (
             <Empty title={t('No matches')} body={t('Try another name or area.')}>
-              <Button
-                title={t('Show all barbers')}
-                variant="secondary"
-                onPress={() => {
-                  setQuery('');
-                  pickArea(null);
-                }}
-              />
+              {/* A search inside one area can miss a shop in the next; one tap looks everywhere. */}
+              {searching && area ? (
+                <Button title={t('Search all areas')} variant="secondary" onPress={showAllAreas} />
+              ) : (
+                <Button
+                  title={t('Show all barbers')}
+                  variant="secondary"
+                  onPress={() => {
+                    setQuery('');
+                    showAllAreas();
+                  }}
+                />
+              )}
             </Empty>
           ) : (
             <Empty title={t('No barbers yet')} body={t('Barbers in your area are joining soon. Check back shortly.')} />

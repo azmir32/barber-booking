@@ -121,7 +121,7 @@ export const ms: Record<string, string> = {
     'Tempahan anda yang akan datang akan dibatalkan. Tindakan ini tidak boleh dibatalkan.',
 
   // Finding a barber
-  'Shop name or area, e.g. Sungai Chua': 'Nama kedai atau kawasan, cth. Sungai Chua',
+  'Shop name or area, e.g. Sungai Chua': 'Nama kedai atau kawasan',
   'Couldn’t load barbers': 'Tidak dapat memuatkan barber',
   'Check your connection and try again.': 'Semak sambungan internet anda dan cuba lagi.',
   'Try again': 'Cuba lagi',
@@ -154,7 +154,7 @@ export const ms: Record<string, string> = {
     'Tiada masa kosong pada hari itu. Cuba hari lain atau mana-mana barber.',
   'Pay at the shop.': 'Bayar di kedai.',
   'Note for your barber (optional)': 'Nota untuk barber anda (pilihan)',
-  'e.g. low fade, keep the top long': 'cth. low fade, rambut atas kekal panjang',
+  'e.g. low fade, keep the top long': 'cth. low fade, atas panjang',
   'Confirm booking': 'Sahkan tempahan',
   'Opening hours': 'Waktu operasi',
   'You’re booked!': 'Tempahan berjaya!',
@@ -175,7 +175,6 @@ export const ms: Record<string, string> = {
   'Cancel booking?': 'Batalkan tempahan?',
   'Cancel booking': 'Batalkan tempahan',
   'your barber': 'barber anda',
-  'WhatsApp shop': 'WhatsApp kedai',
   'Book again': 'Tempah lagi',
 
   // Barber: bookings for the day
@@ -337,7 +336,6 @@ export const ms: Record<string, string> = {
   'This service is no longer available.': 'Servis ini tidak lagi ditawarkan.',
   'You can mark this once the appointment has started.': 'Anda boleh tanda ini selepas temujanji bermula.',
   'You can only cancel an upcoming booking.': 'Anda hanya boleh membatalkan tempahan yang akan datang.',
-  'Invalid login credentials': 'E-mel atau kata laluan salah.',
   'User already registered': 'E-mel ini sudah didaftarkan. Cuba log masuk.',
   'Email not confirmed': 'E-mel belum disahkan. Semak e-mel anda untuk pautan pengesahan.',
   'New password should be different from the old password.': 'Kata laluan baharu mesti berbeza daripada yang lama.',
@@ -684,4 +682,26 @@ export const ms: Record<string, string> = {
     'Hai {name}, sudah {time} sejak kali terakhir anda potong rambut di {shop}. Nak tempah masa?',
   'Hi, it’s been {time} since your last cut at {shop}. Want to book a time?':
     'Hai, sudah {time} sejak kali terakhir anda potong rambut di {shop}. Nak tempah masa?',
+
+  // Round 7, customer side: My bookings, Find a barber, the shop page, sign in and Account
+  'Loading your bookings…': 'Memuatkan tempahan anda…',
+  'Couldn’t load your bookings': 'Tidak dapat memuatkan tempahan anda',
+  'Online booking is paused at this shop. Your booking still stands; WhatsApp them if unsure.':
+    'Tempahan dalam talian di kedai ini sedang ditutup. Tempahan anda masih kekal; WhatsApp mereka jika ragu-ragu.',
+  'Cancel booking on {day}': 'Batalkan tempahan pada {day}',
+  'Booking cancelled.': 'Tempahan dibatalkan.',
+  'Hi {shop}, this is {name}. I’ve cancelled my {service} on {day} at {time}.':
+    'Hai {shop}, saya {name}. Saya dah batalkan {service} saya pada {day} jam {time}.',
+  'Showing barbers in {area}': 'Menunjukkan barber di {area}',
+  'Show all': 'Tunjuk semua',
+  'Search all areas': 'Cari di semua kawasan',
+  '+ Add note': '+ Nota',
+  'Edit note': 'Ubah nota',
+  'Add a note for your barber': 'Tambah nota untuk barber anda',
+  'Edit your note for the barber': 'Ubah nota anda untuk barber',
+  '{service} with {barber} at {shop}': '{service} bersama {barber} di {shop}',
+  'Closed now': 'Sudah tutup',
+  'Wrong email or password.': 'E-mel atau kata laluan salah.',
+  'Enter your name': 'Masukkan nama anda',
+  'Enter a WhatsApp number so your barber can reach you': 'Masukkan nombor WhatsApp supaya barber boleh hubungi anda',
 };

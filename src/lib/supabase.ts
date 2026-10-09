@@ -54,6 +54,8 @@ export function errorMessage(error: unknown): string {
     if (!('code' in error && error.code) && /fetch|network|timed? ?out/i.test(error.message)) {
       return t('No internet connection. Check your data and try again.');
     }
+    // The sign-in service's own words, which read like a server log in English.
+    if (error.message === 'Invalid login credentials') return t('Wrong email or password.');
     const limit = /^You already have (\d+) upcoming bookings here\./.exec(error.message);
     if (limit) {
       return t('You already have {count} upcoming bookings here. Cancel one to book another.', { count: limit[1] });

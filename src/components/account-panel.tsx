@@ -59,8 +59,26 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // Field errors show once Save is pressed, then clear as soon as the field is fixed.
+  const [checked, setChecked] = useState(false);
+
+  const changed = fullName.trim() !== profile.full_name || (phone.trim() || null) !== (profile.phone ?? null);
+  // The barber recognises and reaches a customer by these; a barber's shop has its own number.
+  const nameError = checked && !fullName.trim() ? t('Enter your name') : null;
+  const phoneError =
+    checked && profile.role === 'customer' && !phone.trim()
+      ? t('Enter a WhatsApp number so your barber can reach you')
+      : null;
+
+  // Any edit makes "Saved." untrue until Save is pressed again.
+  const edit = (set: (value: string) => void) => (value: string) => {
+    set(value);
+    setSaved(false);
+  };
 
   async function save() {
+    setChecked(true);
+    if (!fullName.trim() || (profile.role === 'customer' && !phone.trim())) return;
     setBusy(true);
     setSaved(false);
     const { error } = await supabase
@@ -96,11 +114,27 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
   return (
     <Card>
       <T variant="muted">{email}</T>
-      <Field label={t('Full name')} value={fullName} onChangeText={setFullName} maxLength={80} />
-      <Field label={t('Phone (WhatsApp)')} value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={20} />
+      <Field
+        label={t('Full name')}
+        value={fullName}
+        onChangeText={edit(setFullName)}
+        maxLength={80}
+        autoComplete="name"
+        error={nameError}
+      />
+      <Field
+        label={t('Phone (WhatsApp)')}
+        value={phone}
+        onChangeText={edit(setPhone)}
+        keyboardType="phone-pad"
+        autoComplete="tel"
+        maxLength={20}
+        error={phoneError}
+      />
       <ErrorText message={error} />
       {saved ? <T variant="small">{t('Saved.')}</T> : null}
-      <Button title={t('Save')} variant="secondary" onPress={save} loading={busy} />
+      {/* Nothing to save until something has changed. */}
+      <Button title={t('Save')} variant="secondary" onPress={save} loading={busy} disabled={!changed} />
       <Button
         title={t('Sign out')}
         variant="ghost"

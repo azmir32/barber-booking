@@ -24,6 +24,8 @@ const button = (page: Page, name: string | RegExp) => page.getByRole('button', {
 /** A chip that is one choice of several, like a day, a time or a service. */
 const choice = (page: Page, name: string | RegExp) => page.getByRole('radio', { name, exact: typeof name === 'string' });
 const field = (page: Page, label: string) => page.getByLabel(label, { exact: true });
+/** A time such as "3:15 pm" for a RegExp, matching it when its spaces don't break. */
+const spaced = (time: string) => time.replace(/\s/g, '\\s');
 
 /** Opens a time picker by its label and picks a time such as "2:30 pm". */
 async function pickClock(page: Page, label: string, time: string) {
@@ -173,11 +175,12 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('1. Pick a service')).toBeVisible();
     // Open 10 am to 8 pm every day, so whatever the time it is one of these. The
     // list underneath says the same, hidden, so only the visible line counts.
-    const openLine = /^(Opens 10:00 am|Open now · until 8:00 pm|Closed today)$/;
+    const openLine = /^(Opens 10:00 am|Open now · until 8:00 pm|Closed now)$/;
     await expect(page.getByText(openLine).filter({ visible: true })).toBeVisible();
 
     const time = await pickHaircutTomorrow(page);
-    bookedTime = (await time.textContent()) ?? '';
+    // The chip shows the clock under its part of the day; its name is the whole time.
+    bookedTime = (await time.getAttribute('aria-label')) ?? '';
     await time.click();
     await field(page, 'Note for your barber (optional)').fill('Low fade please');
     await snap(page, '10-shop-page');
@@ -185,7 +188,7 @@ test.describe.serial('booking flow', () => {
 
     // Not signed in yet: the account is made for this booking, then it books straight away.
     await expect(page.getByText('Your booking')).toBeVisible();
-    await expect(page.getByText(new RegExp(`^Haircut · .*, ${bookedTime}$`))).toBeVisible();
+    await expect(page.getByText(new RegExp(`^Haircut at ${shopName} · .*, ${spaced(bookedTime)}$`))).toBeVisible();
     await signUp(page, customer);
 
     await expect(page.getByText('You’re booked!')).toBeVisible();
@@ -216,15 +219,15 @@ test.describe.serial('booking flow', () => {
     await expect(choice(page, `${bookedTime}, your current time`)).toBeVisible();
     const newTime = page.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
     await expect(newTime).toBeVisible();
-    const movedTo = (await newTime.textContent()) ?? '';
+    const movedTo = (await newTime.getAttribute('aria-label')) ?? '';
     // Later tests block 12:00 pm, add a booking at 3:00 pm and expect 11:00 am to be free.
     expect(['11:00 am', '12:00 pm', '12:30 pm', '3:00 pm', bookedTime]).not.toContain(movedTo);
     await newTime.click();
     await snap(page, '12b-change-time');
     await button(page, 'Move to this time').click();
     await expect(page.getByText('Booking moved')).toBeVisible();
-    await expect(page.getByText(new RegExp(`^Was .* at ${bookedTime}\\.$`))).toBeVisible();
-    await expect(button(page, 'WhatsApp shop')).toBeVisible();
+    await expect(page.getByText(new RegExp(`^Was .* at ${spaced(bookedTime)}\\.$`))).toBeVisible();
+    await expect(button(page, 'WhatsApp the shop')).toBeVisible();
     // The calendar entry added above is now at the old time: the new time can be added, and the old one deleted.
     await expect(page.getByText('Added it to your calendar before? Delete the old one there.')).toBeVisible();
     const [movedCalendar] = await Promise.all([
@@ -412,8 +415,9 @@ test.describe.serial('booking flow', () => {
   test('customer sees the cancellation', async ({ page }) => {
     await signIn(page, customer);
     await page.getByRole('tab', { name: /My bookings/ }).click();
-    await expect(page.getByText('Earlier')).toBeVisible();
-    await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
+    // Still to come, so it is listed as cancelled rather than at the top of Earlier.
+    await expect(page.getByRole('heading', { name: 'Cancelled', exact: true })).toBeVisible();
+    await expect(page.getByText(`Haircut with ${barber.name}`, { exact: true })).toBeVisible();
     await expect(page.getByText('Upcoming')).toHaveCount(0);
   });
 
@@ -449,6 +453,6 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Are you a barber?')).toBeVisible();
 
     await signIn(page, { ...customer2, password: 'new-password-456' });
-    await expect(page.getByText('Invalid login credentials')).toBeVisible();
+    await expect(page.getByText('Wrong email or password.')).toBeVisible();
   });
 });

@@ -106,19 +106,38 @@ export function localClock(at: string | Date, timeZone = DEFAULT_TIME_ZONE, step
  * and malam.
  */
 export function clockLabel(hour: number, minute: number): string {
-  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  const mm = String(minute).padStart(2, '0');
+  const digits = clockDigits(hour, minute);
   if (getLang() === 'ms') {
     const period = hour < 12 ? 'pagi' : hour < 14 ? 'tengah hari' : hour < 19 ? 'petang' : 'malam';
-    return `${hour12}.${mm} ${period}`;
+    return `${digits} ${period}`;
   }
-  return `${hour12}:${mm} ${hour < 12 ? 'am' : 'pm'}`;
+  return `${digits} ${hour < 12 ? 'am' : 'pm'}`;
+}
+
+/** "8:30", or "8.30" in Malay: the 12-hour clock without am/pm. */
+function clockDigits(hour: number, minute: number): string {
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}${getLang() === 'ms' ? '.' : ':'}${String(minute).padStart(2, '0')}`;
 }
 
 /** "10:30 am" in the shop's zone. */
 export function formatTime(at: string | Date, timeZone = DEFAULT_TIME_ZONE): string {
   const [h, m] = localClock(at, timeZone).split(':').map(Number);
   return clockLabel(h, m);
+}
+
+/**
+ * "3:15" ("3.15" in Malay) in the shop's zone: for times listed under a part
+ * of the day ("Afternoon", "Petang") that already says am or pm.
+ */
+export function formatClockOnly(at: string | Date, timeZone = DEFAULT_TIME_ZONE): string {
+  const [h, m] = localClock(at, timeZone).split(':').map(Number);
+  return clockDigits(h, m);
+}
+
+/** Text with non-breaking spaces, so "4:00 pm" or "Sat, 10 Oct" never splits over two lines. */
+export function noBreak(text: string): string {
+  return text.replace(/ /g, ' ');
 }
 
 export type PartOfDay = 'Morning' | 'Midday' | 'Afternoon' | 'Evening';

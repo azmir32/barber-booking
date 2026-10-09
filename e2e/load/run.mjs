@@ -93,17 +93,7 @@ const SCENARIOS = {
         p_barber_id: null,
       }),
     ),
-  'My bookings': async () => {
-    const id = idOf(`customer${pick(CUSTOMERS)}`);
-    return must(
-      client(id)
-        .from('bookings')
-        .select('*, shops(name, slug, address, phone, time_zone), barbers(name)')
-        .eq('customer_id', id)
-        .order('starts_at', { ascending: false })
-        .limit(100),
-    );
-  },
+  'My bookings': async () => must(client(idOf(`customer${pick(CUSTOMERS)}`)).rpc('my_bookings')),
   // Not something the app sends, but anyone with an account can: the
   // bookings policy has to stay fast without the app's filter.
   'Every booking I may see': async () =>

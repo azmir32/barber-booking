@@ -1,6 +1,6 @@
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
-import { Linking, View, type LayoutChangeEvent, type ScrollView } from 'react-native';
+import { Linking, View, type LayoutChangeEvent, type ScrollView, type TextInput } from 'react-native';
 
 import { DayPicker } from '@/components/day-picker';
 import { Button, Card, Chip, Empty, ErrorText, Field, Loading, Row, Screen, Section, T } from '@/components/ui';
@@ -12,10 +12,12 @@ import { addToCalendar } from '@/lib/add-to-calendar';
 import { useAuth } from '@/lib/auth';
 import { bookingEvent } from '@/lib/calendar';
 import { t } from '@/lib/lang';
+import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
 import {
+  formatClockOnly,
   formatDay,
   formatDuration,
   formatPrice,
@@ -23,6 +25,7 @@ import {
   groupByPartOfDay,
   localClock,
   localDateString,
+  noBreak,
   partOfDay,
   upcomingDays,
   type PartOfDay,
@@ -30,7 +33,7 @@ import {
 import { WEEKDAYS, type Barber, type Booking, type Service, type Shop, type Slot, type WorkingHours } from '@/lib/types';
 
 type BarberWithHours = Barber & { working_hours: Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>[] };
-type Step = 'move' | 'barber' | 'time';
+type Step = 'move' | 'barber' | 'time' | 'note';
 /** A shop that exists but is hidden from customers (paused, or its trial ended). */
 type HiddenShop = { name: string; phone: string | null; is_live: boolean };
 
@@ -133,6 +136,7 @@ export default function ShopPage() {
   const pendingBook = useRef(false);
 
   const scrollRef = useRef<ScrollView>(null);
+  const noteRef = useRef<TextInput>(null);
   // Where the steps below the services (or the booking being moved) start, and a step to scroll to once it is laid out.
   const stepY = useRef<Partial<Record<Step, number>>>({});
   const scrollAfterLayout = useRef<Step | null>(null);
@@ -307,13 +311,18 @@ export default function ShopPage() {
     if (!service || !startsAt) return;
     if (!session) {
       // Sign-up comes back to this page with the picks intact, then the effect below books.
+      // The summary names the shop (and barber), for someone who has looked at a few.
       pendingBook.current = true;
+      const barberName = barbers.find((b) => b.id === barberId)?.name;
+      const what = barberName
+        ? t('{service} with {barber} at {shop}', { service: service.name, barber: barberName, shop: shop?.name ?? '' })
+        : t('{service} at {shop}', { service: service.name, shop: shop?.name ?? '' });
       router.push({
         pathname: '/sign-up',
         params: {
           next: `/shop/${slug}`,
           role: 'customer',
-          summary: `${service.name} · ${formatDay(startsAt, shop?.time_zone)}, ${formatTime(startsAt, shop?.time_zone)}`,
+          summary: `${what} · ${noBreak(formatDay(startsAt, shop?.time_zone))}, ${noBreak(formatTime(startsAt, shop?.time_zone))}`,
         },
       });
       return;
@@ -429,6 +438,8 @@ export default function ShopPage() {
   const openNow =
     hoursToday?.date === todayDate && week.some(Boolean) ? openStatus(hoursToday.opens, hoursToday.closes, now, tz) : null;
   const when = (at: string) => ({ day: formatDay(at, tz), time: formatTime(at, tz) });
+  /** The same, kept whole on screen: a heading never breaks between "4:00" and "pm". */
+  const whenShown = (at: string) => ({ day: noBreak(formatDay(at, tz)), time: noBreak(formatTime(at, tz)) });
   const dayAndTime = (at: string) => `${formatDay(at, tz)}, ${formatTime(at, tz)}`;
   /** "Haircut with Ali", or just "Haircut" if that barber is away now. */
   const withBarber = (b: Booking) => {
@@ -466,11 +477,13 @@ export default function ShopPage() {
     return (
       <Screen key="moved" edges={[]}>
         {header}
-        <Empty title={t('Booking moved')} body={t('{service} on {day} at {time}.', { service: what, ...when(moved.starts_at) })}>
+        <Empty
+          title={t('Booking moved')}
+          body={t('{service} on {day} at {time}.', { service: what, ...whenShown(moved.starts_at) })}>
           <T variant="muted" style={{ textAlign: 'center' }}>
             {barberChanged
-              ? t('Was {service} on {day} at {time}.', { service: withBarber(moving), ...when(moving.starts_at) })
-              : t('Was {day} at {time}.', when(moving.starts_at))}
+              ? t('Was {service} on {day} at {time}.', { service: withBarber(moving), ...whenShown(moving.starts_at) })
+              : t('Was {day} at {time}.', whenShown(moving.starts_at))}
           </T>
           {/* An entry at the old time would remind them at the wrong time. Adding again
               doesn't move it in Google Calendar, so the old one has to be deleted there. */}
@@ -493,7 +506,7 @@ export default function ShopPage() {
           {shop.address ? <T variant="muted">{shop.address}</T> : null}
           {shop.phone ? (
             <Button
-              title={t('WhatsApp shop')}
+              title={t('WhatsApp the shop')}
               variant="secondary"
               onPress={() => Linking.openURL(whatsappUrl(shop.phone!, message))}
             />
@@ -517,7 +530,6 @@ export default function ShopPage() {
           ...booked,
         })
       : undefined;
-    const place = encodeURIComponent(`${shop.name}, ${shop.address || shop.area}`);
     const calendarEvent = () =>
       bookingEvent({
         booking: confirmed,
@@ -530,7 +542,9 @@ export default function ShopPage() {
       // A new key starts the booked page at the top instead of where the picker was scrolled.
       <Screen key="booked" edges={[]}>
         {header}
-        <Empty title={t('You’re booked!')} body={t('{service} on {day} at {time}.', { service: what, ...booked })}>
+        <Empty
+          title={t('You’re booked!')}
+          body={t('{service} on {day} at {time}.', { service: what, ...whenShown(confirmed.starts_at) })}>
           <T variant="label">
             {formatPrice(confirmed.price)} · {t('Pay at the shop.')}
           </T>
@@ -550,12 +564,7 @@ export default function ShopPage() {
         <Card>
           <T variant="label">{shop.name}</T>
           {shop.address ? <T variant="muted">{shop.address}</T> : null}
-          {/* A maps search link needs no API key, and Android offers Google Maps or Waze. */}
-          <Button
-            title={t('Directions')}
-            variant="secondary"
-            onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${place}`)}
-          />
+          <Button title={t('Directions')} variant="secondary" onPress={() => Linking.openURL(directionsUrl(shop))} />
           {shop.phone ? (
             <Button
               title={t('WhatsApp the shop')}
@@ -583,6 +592,13 @@ export default function ShopPage() {
     );
   }
 
+  // The note sits under the times, out of sight behind this bar; a tap here goes to it.
+  // Focus first: on the web, focusing stops a smooth scroll that has already started.
+  const openNote = () => {
+    noteRef.current?.focus();
+    scrollToStep('note');
+  };
+
   // Stays at the bottom so Confirm is never buried under the time chips.
   const footer =
     service && startsAt ? (
@@ -593,7 +609,21 @@ export default function ShopPage() {
         {moving ? (
           <Button title={t('Move to this time')} onPress={move} loading={booking} />
         ) : (
-          <Button title={session ? t('Confirm booking') : t('Continue to book')} onPress={book} loading={booking} />
+          <Row style={{ flexWrap: 'nowrap' }}>
+            <Button
+              title={note.trim() ? t('Edit note') : t('+ Add note')}
+              variant="secondary"
+              accessibilityLabel={note.trim() ? t('Edit your note for the barber') : t('Add a note for your barber')}
+              onPress={openNote}
+              style={{ paddingHorizontal: Spacing.md }}
+            />
+            <Button
+              title={session ? t('Confirm booking') : t('Continue to book')}
+              onPress={book}
+              loading={booking}
+              style={{ flex: 1 }}
+            />
+          </Row>
         )}
       </>
     ) : bookError ? (
@@ -617,8 +647,14 @@ export default function ShopPage() {
         ) : null}
         {shop.about ? <T>{shop.about}</T> : null}
         <Row>
+          {/* Where it is, before booking: often what decides between two barbers. */}
+          <Button title={t('Directions')} variant="secondary" onPress={() => Linking.openURL(directionsUrl(shop))} />
           {shop.phone ? (
-            <Button title="WhatsApp" variant="secondary" onPress={() => Linking.openURL(whatsappUrl(shop.phone!))} />
+            <Button
+              title={t('WhatsApp the shop')}
+              variant="secondary"
+              onPress={() => Linking.openURL(whatsappUrl(shop.phone!))}
+            />
           ) : null}
           {shop.instagram ? (
             <Button
@@ -726,15 +762,20 @@ export default function ShopPage() {
                           // The booking's own time stays in view, so the customer sees where it sits.
                           const current = isCurrent(time);
                           return (
+                            // The tab above says am or pm, so the chip shows only the clock and three or
+                            // more fit a row in Malay too; screen readers still hear the whole time.
                             <Chip
                               key={time}
-                              label={formatTime(time, tz)}
+                              label={formatClockOnly(time, tz)}
                               sublabel={current ? t('Your time') : undefined}
                               accessibilityLabel={
-                                current ? t('{time}, your current time', { time: formatTime(time, tz) }) : undefined
+                                current
+                                  ? t('{time}, your current time', { time: formatTime(time, tz) })
+                                  : formatTime(time, tz)
                               }
                               selected={startsAt === time}
                               disabled={current}
+                              current={current}
                               onPress={() => pickTime(time)}
                             />
                           );
@@ -747,23 +788,21 @@ export default function ShopPage() {
             </>
           ) : null}
 
+          {/* The bar below already says the day, time, service and price. */}
           {service && startsAt && !moving ? (
-            <Card>
-              <T variant="heading">
-                {formatDay(startsAt, tz)}, {formatTime(startsAt, tz)}
-              </T>
-              <T>
-                {serviceWith(service.name)} · {formatDuration(service.duration_min)} · {formatPrice(service.price)}
-              </T>
-              <T variant="small">{t('Pay at the shop.')}</T>
-              <Field
-                label={t('Note for your barber (optional)')}
-                value={note}
-                onChangeText={setNote}
-                placeholder={t('e.g. low fade, keep the top long')}
-                maxLength={280}
-              />
-            </Card>
+            <View onLayout={(e) => onStepLayout('note', e)}>
+              <Card>
+                <Field
+                  ref={noteRef}
+                  label={t('Note for your barber (optional)')}
+                  value={note}
+                  onChangeText={setNote}
+                  placeholder={t('e.g. low fade, keep the top long')}
+                  maxLength={280}
+                />
+                <T variant="small">{t('Pay at the shop.')}</T>
+              </Card>
+            </View>
           ) : null}
         </>
       )}

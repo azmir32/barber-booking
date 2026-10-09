@@ -160,12 +160,15 @@ export function Field({
   label,
   hint,
   error,
+  ref,
   ...props
 }: TextInputProps & {
   label: string;
   hint?: string;
   /** Shown under the field in red, and read out, when what was typed is not right. */
   error?: string | null;
+  /** To focus the field from elsewhere, e.g. a button that jumps to it. */
+  ref?: Ref<TextInput>;
 }) {
   const theme = useTheme();
   const [focused, setFocused] = useState(false);
@@ -173,6 +176,7 @@ export function Field({
     <View style={styles.field}>
       <T variant="label">{label}</T>
       <TextInput
+        ref={ref}
         accessibilityLabel={label}
         accessibilityHint={hint}
         aria-invalid={Boolean(error)}
@@ -253,6 +257,7 @@ export function Chip({
   sublabel,
   selected,
   disabled,
+  current,
   mode = 'radio',
   accessibilityLabel,
   onPress,
@@ -260,14 +265,26 @@ export function Chip({
   label: string;
   sublabel?: string;
   selected?: boolean;
-  /** Shown faded and can't be tapped, e.g. a day the shop is closed. */
+  /**
+   * Can't be tapped, e.g. a day the shop is closed: unfilled with a dashed
+   * edge, its words still readable so it is clear why.
+   */
   disabled?: boolean;
+  /** What is already in place, e.g. a booking's own time while moving it: outlined in the brand colour. */
+  current?: boolean;
   mode?: 'radio' | 'toggle';
   accessibilityLabel?: string;
   onPress?: () => void;
 }) {
   const theme = useTheme();
   const choice = selected !== undefined;
+  const look = selected
+    ? { box: { backgroundColor: theme.accent, borderColor: theme.accent }, text: theme.accentText, sub: theme.accentText }
+    : current
+      ? { box: [styles.chipCurrent, { borderColor: theme.tint }], text: theme.text, sub: theme.tint }
+      : disabled
+        ? { box: [styles.chipDisabled, { borderColor: theme.inputBorder }], text: theme.textSecondary, sub: theme.textSecondary }
+        : { box: { backgroundColor: theme.chip, borderColor: theme.inputBorder }, text: theme.text, sub: theme.textSecondary };
   // react-native-web only passes aria-* props to the page, so set both kinds.
   const state = choice
     ? mode === 'toggle'
@@ -283,18 +300,9 @@ export function Chip({
       accessibilityLabel={accessibilityLabel}
       disabled={disabled}
       onPress={onPress}
-      style={[
-        styles.chip,
-        {
-          backgroundColor: selected ? theme.accent : theme.chip,
-          borderColor: selected ? theme.accent : theme.inputBorder,
-          opacity: disabled ? 0.45 : 1,
-        },
-      ]}>
-      <Text style={[styles.chipText, { color: selected ? theme.accentText : theme.text }]}>{label}</Text>
-      {sublabel ? (
-        <Text style={[styles.chipSub, { color: selected ? theme.accentText : theme.textSecondary }]}>{sublabel}</Text>
-      ) : null}
+      style={[styles.chip, look.box]}>
+      <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+      {sublabel ? <Text style={[styles.chipSub, { color: look.sub }]}>{sublabel}</Text> : null}
     </Pressable>
   );
 }
@@ -435,7 +443,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buttonText: { fontSize: 16, fontWeight: '600' },
+  // Centred, so a label that wraps in a narrow button still sits in the middle.
+  buttonText: { fontSize: 16, fontWeight: '600', textAlign: 'center' },
   field: { gap: Spacing.xs },
   input: {
     minHeight: 48,
@@ -460,6 +469,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minWidth: 64,
     minHeight: 48,
+  },
+  chipDisabled: { backgroundColor: 'transparent', borderStyle: 'dashed' },
+  // A thicker edge, with the padding trimmed to match, so it stays the size of its neighbours.
+  chipCurrent: {
+    backgroundColor: 'transparent',
+    borderWidth: 2,
+    paddingHorizontal: Spacing.md - 1,
+    paddingVertical: Spacing.sm - 1,
   },
   iconButton: {
     minWidth: 48,

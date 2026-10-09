@@ -67,7 +67,6 @@ const DYNAMIC_KEYS = [
   'You can only remind a customer about an upcoming booking.',
   'Pick a period of up to 93 days.',
   'This booking has changed. Check the new time.',
-  'Invalid login credentials',
   'User already registered',
   'Email not confirmed',
   'New password should be different from the old password.',
@@ -117,6 +116,7 @@ test('dates, times and hours read naturally in Malay', () => {
     assert.equal(openStatus('10:00:00', '20:00:00', at('08:30')).label, 'Buka jam 10.00 pagi');
     assert.equal(openStatus('10:00:00', '20:00:00', at('15:00')).label, 'Buka sekarang · hingga 8.00 malam');
     assert.equal(openStatus(null, null, at('15:00')).label, 'Tutup hari ini');
+    assert.equal(openStatus('10:00:00', '20:00:00', at('21:30')).label, 'Sudah tutup');
     const slots = ['2026-10-06T03:00:00Z', '2026-10-06T05:00:00Z', '2026-10-06T07:00:00Z', '2026-10-06T12:00:00Z'];
     assert.deepEqual(
       groupByPartOfDay(slots, 'Asia/Kuala_Lumpur').map(([part, [at]]) => `${t(part)}: ${formatTime(at, 'Asia/Kuala_Lumpur')}`),

@@ -100,13 +100,20 @@ test('a customer books a cut, it survives a reload, then cancels it', async ({ p
   await page.frameLocator('#app').getByRole('tab', { name: /My bookings/ }).click();
   await expect(booked).toBeVisible();
 
-  await button(app, 'Cancel').first().click();
+  // Each Cancel button says which booking it cancels.
+  await expect(button(app, /^Cancel booking on /)).toHaveCount(2);
+  await button(app, /^Cancel booking on /).first().click();
   await expect(app.getByRole('alertdialog')).toBeVisible();
   await expect(app.getByRole('alertdialog').getByText(/Added it to your calendar\? Delete it there too\.$/)).toBeVisible();
   await snap(page, 'demo-06-confirm');
   await app.getByRole('alertdialog').getByRole('button', { name: 'Cancel booking', exact: true }).click();
   await expect(booked).toHaveCount(0);
-  await expect(app.getByText('Cancelled', { exact: true }).first()).toBeVisible();
+  // It says it worked, and offers to tell the shop.
+  const bar = app.getByRole('status').filter({ hasText: 'Booking cancelled.' });
+  await expect(bar).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'WhatsApp the shop', exact: true })).toBeVisible();
+  // Its time is still to come, so it is listed as cancelled, not as the newest of Earlier.
+  await expect(app.getByRole('heading', { name: 'Cancelled', exact: true })).toBeVisible();
 });
 
 test('the barber reminds tomorrow’s customers on WhatsApp', async ({ page, context }) => {
@@ -330,6 +337,18 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   await button(app, 'See the customer side').click();
   await expect(app.getByText('Kemas Barber Kajang')).toBeVisible();
   await expect(app.getByText('Ali Barber Sungai Chua')).toHaveCount(0);
+  // Hakim's booking there still stands: he still sees where to go and how to reach them,
+  // but can't move it online.
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(
+    app.getByText('Online booking is paused at this shop. Your booking still stands; WhatsApp them if unsure.'),
+  ).toBeVisible();
+  await expect(app.getByText(/^Ali Barber Sungai Chua · No\. 12, Jalan Sungai Chua/)).toBeVisible();
+  await expect(app.getByText(/^Skin fade with (Ali|Danial) · RM25$/)).toBeVisible();
+  await expect(button(app, 'Directions')).toBeVisible();
+  await expect(button(app, 'WhatsApp the shop')).toBeVisible();
+  await expect(button(app, 'Change time')).toHaveCount(0);
+  await snap(page, 'demo-08b-bookings-shop-paused');
 
   await app.getByRole('tab', { name: /Account/ }).click();
   await button(app, 'Sign out').click();

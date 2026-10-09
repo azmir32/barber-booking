@@ -6,6 +6,7 @@
 import { toWhatsAppNumber } from '../lib/phone.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import {
+  COLUMNS,
   deleteRows,
   findById,
   insertRow,
@@ -371,6 +372,32 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
     () => updateRows('bookings', [booking], { status: next })[0],
     'That time has been booked by someone else since.',
   );
+}
+
+/**
+ * The caller's own bookings, newest first, each with its shop and barber even
+ * when the shop is hidden (paused, or its trial ended), and whether it is live.
+ */
+export function myBookings(c: Caller, limitArg: unknown = 100) {
+  const limit = Math.min(Math.max(Number(limitArg ?? 100), 1), 200);
+  return tables()
+    .bookings.filter((b) => c.uid != null && b.customer_id === c.uid)
+    .sort((a, b) => ms(b.starts_at) - ms(a.starts_at) || (String(a.id) < String(b.id) ? -1 : 1))
+    .slice(0, limit)
+    .flatMap((b) => {
+      const shop = findById('shops', b.shop_id);
+      const barber = findById('barbers', b.barber_id);
+      if (!shop || !barber) return [];
+      const booking = Object.fromEntries(Object.keys(COLUMNS.bookings).map((k) => [k, b[k]]));
+      const { name, slug, address, area, phone, time_zone } = shop;
+      return [
+        {
+          ...booking,
+          shops: { name, slug, address, area, phone, time_zone, is_live: shopIsLive(shop) },
+          barbers: { name: barber.name },
+        },
+      ];
+    });
 }
 
 export function setBarberHours(c: Caller, barberId: unknown, hours: unknown) {
@@ -863,6 +890,7 @@ const SIGNED_IN_ONLY = new Set([
   'reopen_shop_days',
   'shop_summary',
   'shop_customers',
+  'my_bookings',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -911,6 +939,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: shopSummary(c, args.p_from, args.p_to) };
     case 'shop_customers':
       return { status: 200, body: shopCustomers(c, args) };
+    case 'my_bookings':
+      return { status: 200, body: myBookings(c, args.p_limit) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };

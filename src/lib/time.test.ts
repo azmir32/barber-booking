@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import {
   addDays,
   dayBounds,
+  formatClockOnly,
   formatCount,
   formatDuration,
   formatPrice,
@@ -12,10 +13,12 @@ import {
   groupByPartOfDay,
   localClock,
   localDateString,
+  noBreak,
   normalizeTime,
   slugify,
   upcomingDays,
 } from './time.ts';
+import { setCurrentLang } from './lang.ts';
 
 test('localDateString uses the shop zone, not UTC', () => {
   // 20:00 UTC on 5 Oct is 04:00 on 6 Oct in Kajang.
@@ -55,6 +58,23 @@ test('dayBounds gives the local midnight instants', () => {
 
 test('formatTime shows shop-local time', () => {
   assert.match(formatTime('2026-10-06T02:00:00Z'), /^10:00\s?am$/i);
+});
+
+test('formatClockOnly leaves am and pm to the part of the day above it', () => {
+  assert.equal(formatClockOnly('2026-10-06T07:15:00Z'), '3:15');
+  assert.equal(formatClockOnly('2026-10-06T04:00:00Z'), '12:00');
+  setCurrentLang('ms');
+  try {
+    assert.equal(formatClockOnly('2026-10-06T07:15:00Z'), '3.15');
+    assert.equal(formatClockOnly('2026-10-06T01:05:00Z', 'Asia/Kuala_Lumpur'), '9.05');
+  } finally {
+    setCurrentLang('en');
+  }
+});
+
+test('noBreak keeps a time on one line', () => {
+  assert.equal(noBreak('4:00 pm'), '4:00\u00a0pm');
+  assert.equal(noBreak('12.15 tengah hari'), '12.15\u00a0tengah\u00a0hari');
 });
 
 test('formatPrice, formatCount and formatDuration', () => {

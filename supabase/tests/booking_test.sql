@@ -349,6 +349,63 @@ begin
   end;
 end $$;
 
+-- My bookings keeps the shop when it pauses ---------------------------------
+begin;
+do $$
+declare v jsonb;
+begin
+  v := my_bookings();
+  assert jsonb_array_length(v) = 2, 'my_bookings should list the customer''s two bookings';
+  assert (select bool_and(e ->> 'customer_id' = '00000000-0000-0000-0000-0000000000c1') from jsonb_array_elements(v) e),
+    'my_bookings should only list the caller''s own';
+  assert (v -> 0 ->> 'starts_at')::timestamptz >= (v -> 1 ->> 'starts_at')::timestamptz, 'newest first';
+  assert v -> 0 -> 'shops' ->> 'name' = 'Ali Cuts' and (v -> 0 -> 'shops' ->> 'is_live')::boolean
+     and v -> 0 -> 'shops' ->> 'phone' = '012-345 6789' and v -> 0 -> 'shops' ->> 'slug' = 'ali-cuts'
+     and v -> 0 -> 'barbers' ->> 'name' in ('Ali', 'Danial'),
+    'each booking should come with its shop and barber';
+  assert jsonb_array_length(my_bookings(1)) = 1, 'p_limit caps the list';
+
+  reset role;
+  update shops set is_published = false where id = '00000000-0000-0000-0000-00000000005a';
+  set role authenticated;
+  assert (select count(*) from bookings b join shops s on s.id = b.shop_id) = 0,
+    'a paused shop is hidden from its customers';
+  v := my_bookings();
+  assert jsonb_array_length(v) = 2
+     and v -> 0 -> 'shops' ->> 'name' = 'Ali Cuts' and not (v -> 0 -> 'shops' ->> 'is_live')::boolean
+     and v -> 0 -> 'shops' ->> 'phone' = '012-345 6789' and v -> 0 -> 'barbers' ->> 'name' is not null,
+    'my_bookings should keep a paused shop''s details and say it is not live';
+end $$;
+rollback;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  assert jsonb_array_length(my_bookings()) = 0, 'other customers see none of them';
+end $$;
+set role anon;
+do $$ begin
+  perform my_bookings();
+  raise exception 'guests must not call my_bookings';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+
+-- Names can't be cleared, and an account made without one is named after its email.
+do $$ begin
+  update profiles set full_name = '   ' where id = auth.uid();
+  raise exception 'a blank name should be refused';
+exception when check_violation then null;
+end $$;
+begin;
+reset role;
+insert into auth.users (id, email) values ('00000000-0000-0000-0000-0000000000d9', 'no.name@test');
+do $$ begin
+  assert (select full_name from profiles where id = '00000000-0000-0000-0000-0000000000d9') = 'no.name',
+    'an account made without a name should be named after its email';
+end $$;
+rollback;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+
 -- The owner sees all shop bookings and the customer's name ------------------
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 do $$

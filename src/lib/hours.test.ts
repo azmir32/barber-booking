@@ -51,7 +51,9 @@ test('openStatus reads the shop\'s own clock', () => {
   assert.deepEqual(status('09:59'), { state: 'later', label: 'Opens 10:00 am' });
   assert.deepEqual(status('10:00'), { state: 'open', label: 'Open now · until 8:00 pm' });
   assert.deepEqual(status('19:59'), { state: 'open', label: 'Open now · until 8:00 pm' });
-  assert.deepEqual(status('20:00'), { state: 'closed', label: 'Closed today' });
+  // After closing it says so, rather than "Closed today", which reads like a day off.
+  assert.deepEqual(status('20:00'), { state: 'closed', label: 'Closed now' });
+  assert.deepEqual(status('21:30'), { state: 'closed', label: 'Closed now' });
   assert.deepEqual(status('12:00', null, null), { state: 'closed', label: 'Closed today' });
   assert.equal(status('21:00', '09:30', '21:15').label, 'Open now · until 9:15 pm');
   // 1 am in Kajang is still the evening before in London.
@@ -73,7 +75,7 @@ test('nextFreeLine says when a listed shop can next take someone', () => {
   const opening = (next: string) => nextFreeLine(next, 'later', new Date(at('08:00')), 'Asia/Kuala_Lumpur', '10:00:00');
   assert.equal(opening(at('10:00')), null);
   assert.equal(opening(at('10:30'))?.label, 'Next free: today, 10:30 am');
-  // Full or closed today: tomorrow, which never disagrees with "Closed today".
+  // Full or closed today: tomorrow, which never disagrees with "Closed now" or "Closed today".
   assert.equal(line(at('10:00', '07'), 'open', '15:00')?.label, 'Next free: tomorrow, 10:00 am');
   assert.equal(line(at('10:00', '07'), 'closed', '20:30')?.label, 'Next free: tomorrow, 10:00 am');
   // Nothing to say: none, already gone, today on a closed day, or further off.

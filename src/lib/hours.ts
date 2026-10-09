@@ -42,8 +42,10 @@ export type OpenStatus = { state: 'open' | 'later' | 'closed'; label: string };
 /**
  * Whether a shop is open right now, from today's first opening and last
  * closing time in its zone ("10:00" or "10:00:00", null when nobody works
- * today): "Opens 10:00 am", "Open now · until 8:00 pm" or "Closed today".
- * Breaks don't count, so a shop on its lunch break still reads as open.
+ * today): "Opens 10:00 am", "Open now · until 8:00 pm", "Closed now" once
+ * today's hours are over, or "Closed today" on a day nobody works, so an
+ * evening never reads like a day off. Breaks don't count, so a shop on its
+ * lunch break still reads as open.
  */
 export function openStatus(
   opensToday: string | null,
@@ -54,7 +56,8 @@ export function openStatus(
   const clock = localClock(new Date(now), timeZone);
   const opens = opensToday?.slice(0, 5);
   const closes = closesToday?.slice(0, 5);
-  if (!opens || !closes || clock >= closes) return { state: 'closed', label: t('Closed today') };
+  if (!opens || !closes) return { state: 'closed', label: t('Closed today') };
+  if (clock >= closes) return { state: 'closed', label: t('Closed now') };
   if (clock < opens) return { state: 'later', label: t('Opens {time}', { time: formatClock(opens) }) };
   return { state: 'open', label: t('Open now · until {time}', { time: formatClock(closes) }) };
 }
@@ -67,7 +70,7 @@ const FREE_NOW_MS = 15 * 60_000;
  * today or tomorrow: "Free now" when that is within 15 minutes and the shop
  * is open, else "Next free: today, 3:15 pm" or "Next free: tomorrow, 10:00 am".
  * Null when there is none or it has passed, for a time today when the open
- * line says "Closed today", so the two lines never disagree, and for the
+ * line says the shop is closed, so the two lines never disagree, and for the
  * opening time itself, which the open line already gives.
  */
 export function nextFreeLine(

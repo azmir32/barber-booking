@@ -207,6 +207,67 @@ test('a paused shop\'s link still says whose shop it is', async () => {
   assert.equal((await hakim.rpc('shop_public_status', { p_slug: 'ali-barber' })).data[0].is_live, false);
 });
 
+test('My bookings keeps the shop and barber when the shop pauses, and shows only the customer’s own', async () => {
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const hakimId = (await hakim.auth.getUser()).data.user!.id;
+  const mine = async () => {
+    const { data, error } = await hakim.rpc('my_bookings');
+    assert.equal(error, null);
+    return data as (Row & { shops: Row & { is_live: boolean }; barbers: Row })[];
+  };
+  const before = await mine();
+  const own = tables().bookings.filter((b) => b.customer_id === hakimId);
+  assert.equal(before.length, own.length);
+  assert.ok(before.length >= 2);
+  // Newest first, every column of the booking, and its shop and barber.
+  const starts = before.map((b) => Date.parse(String(b.starts_at)));
+  assert.deepEqual(starts, [...starts].sort((a, b) => b - a));
+  assert.ok(before.every((b) => b.customer_id === hakimId && b.service_name && b.price != null && b.status));
+  const atAli = before.find((b) => b.shops.slug === 'ali-barber')!;
+  assert.deepEqual(atAli.shops, {
+    name: 'Ali Barber Sungai Chua',
+    slug: 'ali-barber',
+    address: 'No. 12, Jalan Sungai Chua 3/1, 43000 Kajang',
+    area: 'Sungai Chua',
+    phone: '012-345 6789',
+    time_zone: TZ,
+    is_live: true,
+  });
+  assert.match(String(atAli.barbers.name), /^(Ali|Danial)$/);
+
+  // Ali pauses bookings: the shop is hidden, but Hakim still sees where to go and whom to message.
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  await ali.from('shops').update({ is_published: false }).eq('id', shop.id);
+  const joined = await hakim.from('bookings').select('id, shops(name), barbers(name)').eq('shop_id', shop.id);
+  assert.ok(joined.data!.every((b) => b.shops === null && b.barbers === null));
+  const paused = (await mine()).find((b) => b.id === atAli.id)!;
+  assert.deepEqual(paused.shops, { ...atAli.shops, is_live: false });
+  assert.deepEqual(paused.barbers, atAli.barbers);
+
+  // Nobody else's bookings, and guests can't ask.
+  const ravi = await signedIn('ravi@demo.potongku.my');
+  const raviId = (await ravi.auth.getUser()).data.user!.id;
+  const theirs = (await ravi.rpc('my_bookings')).data as Row[];
+  assert.ok(theirs.every((b) => b.customer_id === raviId));
+  assert.equal((await client().rpc('my_bookings')).error?.code, '42501');
+  assert.equal(((await hakim.rpc('my_bookings', { p_limit: 1 })).data as Row[]).length, 1);
+});
+
+test('a name can’t be cleared, and an account made without one is named after its email', async () => {
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const id = (await hakim.auth.getUser()).data.user!.id;
+  const blank = await hakim.from('profiles').update({ full_name: '   ' }).eq('id', id);
+  assert.equal(blank.error?.code, '23514');
+  assert.equal((await hakim.from('profiles').update({ full_name: 'Hakim R' }).eq('id', id)).error, null);
+
+  const c = client();
+  const signUp = await c.auth.signUp({ email: 'nobody.named@shop.my', password: 'password123' });
+  assert.equal(signUp.error, null);
+  const { data: profile } = await c.from('profiles').select('full_name').eq('id', signUp.data.user!.id).single();
+  assert.equal(profile!.full_name, 'nobody.named');
+});
+
 test('a customer books, sees and cancels, and the same time cannot be taken twice', async () => {
   const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
   const mine = await hakim
