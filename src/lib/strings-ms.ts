@@ -548,4 +548,21 @@ export const ms: Record<string, string> = {
     'Setelah langganan anda aktif, pelanggan boleh menempah melalui poster ini semula.',
   'A poster needs your shop’s web link, and this version of the app doesn’t have one yet.':
     'Poster memerlukan pautan web kedai anda, dan versi aplikasi ini belum ada pautan itu.',
+
+  // Barber: WhatsApp reminders the day before (barber/(tabs)/index.tsx, lib/reminders.ts)
+  'Remind on WhatsApp': 'Ingatkan melalui WhatsApp',
+  'Remind {name} on WhatsApp': 'Ingatkan {name} melalui WhatsApp',
+  'Remind again': 'Ingatkan sekali lagi',
+  Reminded: 'Sudah diingatkan',
+  'Remind tomorrow’s customers': 'Ingatkan pelanggan esok',
+  '{count} still to remind': '{count} belum diingatkan',
+  'Reminder for {name} not saved. {reason}': 'Peringatan untuk {name} tidak disimpan. {reason}',
+  'You can only remind a customer about an upcoming booking.':
+    'Anda hanya boleh mengingatkan pelanggan tentang tempahan yang akan datang.',
+  'Hi {who}, a reminder from {shop}: your {service} is today at {time}. Can’t make it? Just reply here so we can give the slot to someone else.':
+    'Hai {who}, peringatan daripada {shop}: {service} anda hari ini jam {time}. Tidak dapat datang? Balas sahaja di sini supaya kami boleh beri slot itu kepada orang lain.',
+  'Hi {who}, a reminder from {shop}: your {service} is tomorrow at {time}. Can’t make it? Just reply here so we can give the slot to someone else.':
+    'Hai {who}, peringatan daripada {shop}: {service} anda esok jam {time}. Tidak dapat datang? Balas sahaja di sini supaya kami boleh beri slot itu kepada orang lain.',
+  'Hi {who}, a reminder from {shop}: your {service} is on {day} at {time}. Can’t make it? Just reply here so we can give the slot to someone else.':
+    'Hai {who}, peringatan daripada {shop}: {service} anda pada {day} jam {time}. Tidak dapat datang? Balas sahaja di sini supaya kami boleh beri slot itu kepada orang lain.',
 };

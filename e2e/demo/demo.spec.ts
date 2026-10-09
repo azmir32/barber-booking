@@ -81,6 +81,71 @@ test('a customer books a cut, it survives a reload, then cancels it', async ({ p
   await expect(app.getByText('Cancelled', { exact: true }).first()).toBeVisible();
 });
 
+test('the barber reminds tomorrow’s customers on WhatsApp', async ({ page, context }) => {
+  // WhatsApp opens in a new tab; answer it here so nothing leaves the machine.
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+
+  // Today: a card says how many of tomorrow's customers nobody has reminded yet.
+  await expect(app.getByText('Remind tomorrow’s customers')).toBeVisible();
+  const left = app.getByText(/^\d+ still to remind$/);
+  const before = Number((await left.textContent())?.split(' ')[0]);
+  expect(before).toBeGreaterThanOrEqual(2);
+  await snap(page, 'demo-09-remind-card');
+  await button(app, /^Remind tomorrow’s customers/).click();
+  await expect(app.getByText('Hakim', { exact: true })).toBeVisible();
+
+  const opened = context.waitForEvent('page');
+  await button(app, 'Remind Hakim on WhatsApp').click();
+  const whatsapp = await opened;
+  await whatsapp.waitForLoadState();
+  expect(new URL(whatsapp.url()).searchParams.get('text')).toBe(
+    'Hi Hakim, a reminder from Ali Barber Sungai Chua: your Skin fade is tomorrow at 4:30 pm. ' +
+      'Can’t make it? Just reply here so we can give the slot to someone else.',
+  );
+  await whatsapp.close();
+
+  // The row says so quietly, and another reminder waits under More.
+  await expect(app.getByText('✓ Reminded').first()).toBeVisible();
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
+  await button(app, 'More actions for Hakim').click();
+  await expect(button(app, 'Remind again')).toBeVisible();
+  await snap(page, 'demo-10-reminded');
+
+  await app.getByRole('radio', { name: /^Today/ }).click();
+  await expect(left).toHaveText(`${before - 1} still to remind`);
+});
+
+test('a reminder that can’t be saved still opens WhatsApp, and says so', async ({ page, context }) => {
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
+  const reminded = await app.getByText('✓ Reminded').count();
+
+  // Meanwhile another phone in the shop cancels Hakim's booking.
+  const other = await context.newPage();
+  await other.goto('/host');
+  const app2 = other.frameLocator('#app');
+  await app2.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await button(app2, 'More actions for Hakim').click();
+  await button(app2, 'Cancel booking').click();
+  await app2.getByRole('alertdialog').getByRole('button', { name: 'Cancel and WhatsApp', exact: true }).click();
+  await expect(app2.getByText('Booking cancelled. Let Hakim know.')).toBeVisible();
+  await other.close();
+
+  const opened = context.waitForEvent('page');
+  await button(app, 'Remind Hakim on WhatsApp').click();
+  expect((await opened).url()).toMatch(/^https:\/\/wa\.me\/601122334455\?text=Hi%20Hakim/);
+  await expect(app.getByRole('alert')).toHaveText(
+    'Reminder for Hakim not saved. You can only remind a customer about an upcoming booking.',
+  );
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
+  await expect(app.getByText('✓ Reminded')).toHaveCount(reminded);
+});
+
 test('one tap across to the barber side, and the demo starts over cleanly', async ({ page }) => {
   const app = await open(page);
   await button(app, 'Try as a customer').click();

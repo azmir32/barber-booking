@@ -22,6 +22,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Services menu with prices and durations, plus quick-add suggestions
 - Barbers (one per chair) with weekly working hours and an optional daily break (e.g. Friday prayers); a solo barber is a shop with one chair
 - Bookings by day with expected takings, refreshed every minute and by pulling down; mark done or no-show once the time has started, cancel, WhatsApp the customer
+- WhatsApp reminders for today's and tomorrow's customers: one tap opens WhatsApp with the message written, and every phone in the shop sees who has been reminded (moving a booking clears it). Today's view says how many of tomorrow's customers are still to remind
 - Add walk-in, WhatsApp or phone bookings, and block time or a whole day off, so online customers can't take those times
 - Go live / pause, share or copy the booking link; while paused, the link asks customers to WhatsApp the shop
 - One-month free trial on every new shop
@@ -81,7 +82,7 @@ Tip for testing: in Supabase under Authentication > Sign In / Providers > Email,
 ```bash
 npm run typecheck   # TypeScript
 npm run lint        # ESLint
-npm test            # date, money, phone and language helpers, and the demo backend
+npm test            # date, money, phone, reminder and language helpers, and the demo backend
 npm run test:db     # schema + booking rules against a throwaway local Postgres 16+
 npm run test:e2e    # the whole app in a browser: barber sets up, customers book
 npm run test:demo   # the one-file demo, in a locked-down iframe with no network
@@ -132,7 +133,7 @@ The name shown in the app comes from `name` in `app.json`. Also update `slug`, `
 
 ## Next phases
 
-- WhatsApp / push reminders the day before, to cut no-shows
+- Automatic push reminders the day before, to cut no-shows (for now, barbers send WhatsApp reminders from the app)
 - Online subscription payments for barbers (FPX and cards)
 - Optional deposits at booking
 - Reviews and a photo gallery of cuts

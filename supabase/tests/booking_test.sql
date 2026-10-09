@@ -809,6 +809,97 @@ begin
   end;
 end $$;
 
+-- Reminders ------------------------------------------------------------------
+-- The shop records that it WhatsApped a customer, and moving the booking
+-- clears it. A second shop's owner is added for this part only.
+begin;
+reset role;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (owner_id, name, slug) values ('00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$
+declare
+  v_id uuid;
+  b bookings;
+begin
+  select id into v_id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
+    and status = 'confirmed' and starts_at > now();
+  assert (select reminded_at is null from bookings where id = v_id), 'a booking starts out not reminded';
+  b := mark_booking_reminded(v_id);
+  assert b.id = v_id and b.reminded_at = now(), 'the owner should mark a booking as reminded';
+
+  -- Not blocked time, a cancelled booking, or one that doesn't exist.
+  begin
+    perform mark_booking_reminded((select id from bookings where is_block and status = 'confirmed' and starts_at > now() limit 1));
+    raise exception 'blocked time should not be reminded';
+  exception when sqlstate 'P0002' then null;
+  end;
+  begin
+    perform mark_booking_reminded((select id from bookings where status = 'cancelled' and not is_block limit 1));
+    raise exception 'a cancelled booking should not be reminded';
+  exception when sqlstate '42501' then
+    assert sqlerrm = 'You can only remind a customer about an upcoming booking.', 'unexpected message: ' || sqlerrm;
+  end;
+  begin
+    perform mark_booking_reminded(gen_random_uuid());
+    raise exception 'an unknown booking should not be found';
+  exception when sqlstate 'P0002' then null;
+  end;
+end $$;
+
+-- Only that shop's owner: not another shop's owner, nor the customer.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  perform mark_booking_reminded((select id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
+                                 and status = 'confirmed' and starts_at > now()));
+  raise exception 'another shop''s owner should not mark it';
+exception when sqlstate 'P0002' then null;
+end $$;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 5;
+  v_id uuid;
+  moved bookings;
+begin
+  select id into v_id from bookings where customer_id = auth.uid() and status = 'confirmed' and starts_at > now();
+  begin
+    perform mark_booking_reminded(v_id);
+    raise exception 'the customer should not mark their own booking';
+  exception when sqlstate 'P0002' then null;
+  end;
+  assert (select reminded_at is not null from bookings where id = v_id), 'the customer sees it was reminded';
+
+  -- The reminder named the old time, so a move clears it.
+  moved := reschedule_booking(v_id, (d + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  assert moved.reminded_at is null, 'moving a booking should clear its reminder';
+end $$;
+
+reset role;
+set role anon;
+do $$ begin
+  perform mark_booking_reminded(gen_random_uuid());
+  raise exception 'guests must not call mark_booking_reminded';
+exception when insufficient_privilege then null;
+end $$;
+
+-- Once it has started, it is too late to remind.
+reset role;
+update bookings set starts_at = now() - interval '5 minutes', ends_at = now() + interval '25 minutes'
+where customer_id = '00000000-0000-0000-0000-0000000000c1' and status = 'confirmed' and starts_at > now();
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$ begin
+  perform mark_booking_reminded((select id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
+                                 and status = 'confirmed' and starts_at = now() - interval '5 minutes'));
+  raise exception 'a booking that has started should not be reminded';
+exception when sqlstate '42501' then null;
+end $$;
+rollback;
+
 -- Once its time has passed, the customer can't move it.
 reset role;
 update bookings set starts_at = now() - interval '2 days', ends_at = now() - interval '2 days' + interval '30 minutes'

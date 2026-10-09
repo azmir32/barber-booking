@@ -167,6 +167,9 @@ create table public.bookings (
   ends_at timestamptz not null,
   status public.booking_status not null default 'confirmed',
   customer_note text check (length(customer_note) <= 280),
+  -- When the shop last WhatsApped the customer a reminder, so every phone in
+  -- the shop knows. Cleared when the booking moves.
+  reminded_at timestamptz,
   created_at timestamptz not null default now(),
   check (ends_at > starts_at),
   check (is_block or customer_id is not null or guest_name is not null),
@@ -717,6 +720,31 @@ begin
 end;
 $$;
 
+-- The shop owner WhatsApps a customer a reminder and records it here, so the
+-- other phones in the shop don't send a second one. Only for a booking that
+-- is still to come.
+create function public.mark_booking_reminded(p_booking_id uuid)
+returns public.bookings
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_booking bookings;
+begin
+  select * into v_booking from bookings where id = p_booking_id;
+  if not found or v_booking.is_block or not public.owns_shop(v_booking.shop_id) then
+    raise exception 'Booking not found.' using errcode = 'P0002';
+  end if;
+  if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
+    raise exception 'You can only remind a customer about an upcoming booking.' using errcode = '42501';
+  end if;
+
+  update bookings set reminded_at = now() where id = p_booking_id returning * into v_booking;
+  return v_booking;
+end;
+$$;
+
 -- Move a booking to another free time instead of cancelling and booking
 -- again, so it keeps its place in the diary, its note and its price.
 -- Customers move their own upcoming bookings. The new time follows the same rules as
@@ -785,7 +813,9 @@ begin
     update bookings set
       barber_id = v_barber,
       starts_at = p_starts_at,
-      ends_at = p_starts_at + make_interval(mins => v_service.duration_min)
+      ends_at = p_starts_at + make_interval(mins => v_service.duration_min),
+      -- Any reminder named the old time.
+      reminded_at = null
     where id = v_booking.id
     returning * into v_booking;
   exception when exclusion_violation then
@@ -1053,10 +1083,12 @@ revoke execute on function public.add_shop_booking(uuid, date, time, int, uuid, 
 grant execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) to authenticated;
 revoke execute on function public.book_appointment(uuid, timestamptz, uuid, text) from public, anon;
 revoke execute on function public.set_booking_status(uuid, public.booking_status) from public, anon;
+revoke execute on function public.mark_booking_reminded(uuid) from public, anon;
 revoke execute on function public.reschedule_booking(uuid, timestamptz, uuid) from public, anon;
 revoke execute on function public.set_barber_hours(uuid, jsonb) from public, anon;
 grant execute on function public.book_appointment(uuid, timestamptz, uuid, text) to authenticated;
 grant execute on function public.set_booking_status(uuid, public.booking_status) to authenticated;
+grant execute on function public.mark_booking_reminded(uuid) to authenticated;
 grant execute on function public.reschedule_booking(uuid, timestamptz, uuid) to authenticated;
 grant execute on function public.set_barber_hours(uuid, jsonb) to authenticated;
 revoke execute on function public.close_shop_days(date, int, text) from public, anon;

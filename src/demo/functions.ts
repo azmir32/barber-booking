@@ -327,9 +327,22 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
         barber_id: free[0].barber_id,
         starts_at: new Date(at).toISOString(),
         ends_at: new Date(at + Number(service.duration_min) * 60_000).toISOString(),
+        // Any reminder named the old time.
+        reminded_at: null,
       })[0],
     TAKEN,
   );
+}
+
+export function markBookingReminded(c: Caller, bookingId: unknown) {
+  const booking = findById('bookings', bookingId);
+  if (!booking || booking.is_block || !ownsShop(booking.shop_id, c.uid)) {
+    throw new PgError('P0002', 'Booking not found.', 500);
+  }
+  if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
+    throw new PgError('42501', 'You can only remind a customer about an upcoming booking.', 403);
+  }
+  return updateRows('bookings', [booking], { reminded_at: new Date(now()).toISOString() })[0];
 }
 
 export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown) {
@@ -573,6 +586,7 @@ export function deleteMyAccount(c: Caller) {
 const SIGNED_IN_ONLY = new Set([
   'book_appointment',
   'set_booking_status',
+  'mark_booking_reminded',
   'reschedule_booking',
   'set_barber_hours',
   'add_shop_booking',
@@ -606,6 +620,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       };
     case 'set_booking_status':
       return { status: 200, body: setBookingStatus(c, args.p_booking_id, args.p_status) };
+    case 'mark_booking_reminded':
+      return { status: 200, body: markBookingReminded(c, args.p_booking_id) };
     case 'reschedule_booking':
       return {
         status: 200,

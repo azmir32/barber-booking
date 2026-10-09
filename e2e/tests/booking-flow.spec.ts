@@ -262,6 +262,20 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Pak Abu (added by you)')).toBeVisible();
     await snap(page, '15-barber-day-with-guest');
 
+    // The day before: WhatsApp opens with a reminder (answered here, so it stays offline),
+    // and the row says it was sent.
+    await page.context().route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+    const opened = page.context().waitForEvent('page');
+    await button(page, 'Remind Pak Abu on WhatsApp').click();
+    const whatsapp = await opened;
+    await whatsapp.waitForLoadState();
+    expect(new URL(whatsapp.url()).searchParams.get('text')).toMatch(
+      new RegExp(`^Hi Pak Abu, a reminder from ${shopName}: your Haircut is tomorrow at 3:00 pm\\.`),
+    );
+    await whatsapp.close();
+    await expect(page.getByText('✓ Reminded')).toBeVisible();
+    await expect(button(page, 'Remind Pak Abu on WhatsApp')).toHaveCount(0);
+
     await choice(page, dayChip(2)).click();
     await button(page, '+ Add booking or block time').click();
     await choice(page, 'Block time').click();

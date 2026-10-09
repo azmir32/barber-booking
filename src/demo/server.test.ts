@@ -461,6 +461,92 @@ test('the barber sees the day with customer details and runs the diary', async (
   assert.equal(taken.error?.code, '23505');
 });
 
+test('the shop records who it reminded on WhatsApp, and a move clears it', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const tomorrow = dayBounds(addDays(today(), 1), TZ);
+  // What the bookings tab loads for its "Remind tomorrow's customers" card.
+  const toRemind = async () => {
+    const { data, error } = await ali
+      .from('bookings')
+      .select('id, barber_id, status, is_block, starts_at, reminded_at, guest_phone, customer:profiles!bookings_customer_id_fkey(phone)')
+      .eq('shop_id', shop.id)
+      .eq('status', 'confirmed')
+      .eq('is_block', false)
+      .is('reminded_at', null)
+      .gte('starts_at', tomorrow.start.toISOString())
+      .lt('starts_at', tomorrow.end.toISOString());
+    assert.equal(error, null);
+    type Row = { guest_phone: string | null; customer: { phone: string | null } | null };
+    return (data as unknown as Row[]).filter((b) => b.customer?.phone ?? b.guest_phone);
+  };
+  // The sample day always has Hakim and a WhatsApp customer to remind.
+  const before = await toRemind();
+  assert.ok(before.length >= 2);
+
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const hakimId = (await hakim.auth.getUser()).data.user!.id;
+  const mine = tables().bookings.find(
+    (b) => b.customer_id === hakimId && b.shop_id === shop.id && Date.parse(String(b.starts_at)) > Date.now(),
+  )!;
+  assert.equal(mine.reminded_at, null);
+  const marked = await ali.rpc('mark_booking_reminded', { p_booking_id: mine.id });
+  assert.equal(marked.error, null);
+  assert.ok(Math.abs(Date.parse(marked.data.reminded_at) - Date.now()) < 5000);
+  // Every phone in the shop sees it, and it drops off the list still to remind.
+  const seen = await ali.from('bookings').select('reminded_at').eq('id', mine.id).single();
+  assert.equal(seen.data!.reminded_at, marked.data.reminded_at);
+  assert.equal((await toRemind()).length, before.length - 1);
+
+  // Only the shop's owner: not the customer, another shop's owner or a guest.
+  const remind = (c: ReturnType<typeof client>, id: unknown) => c.rpc('mark_booking_reminded', { p_booking_id: id });
+  assert.equal((await remind(hakim, mine.id)).error?.message, 'Booking not found.');
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  assert.equal((await remind(rahman, mine.id)).error?.message, 'Booking not found.');
+  assert.equal((await remind(client(), mine.id)).error?.code, '42501');
+
+  // Not blocked time, a cancelled booking or one that has started.
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const later = addDays(today(), 5);
+  const block = await ali.rpc('add_shop_booking', {
+    p_barber_id: barbers![0].id,
+    p_day: later,
+    p_time: '09:00',
+    p_duration_min: 30,
+    p_is_block: true,
+  });
+  assert.equal((await remind(ali, block.data.id)).error?.message, 'Booking not found.');
+  const walkIn = await ali.rpc('add_shop_booking', {
+    p_barber_id: barbers![0].id,
+    p_day: later,
+    p_time: '10:00',
+    p_duration_min: 30,
+    p_guest_name: 'Pak Abu',
+    p_guest_phone: '019-111 2222',
+  });
+  await ali.rpc('set_booking_status', { p_booking_id: walkIn.data.id, p_status: 'cancelled' });
+  const cancelled = await remind(ali, walkIn.data.id);
+  assert.equal(cancelled.error?.code, '42501');
+  assert.equal(cancelled.error?.message, 'You can only remind a customer about an upcoming booking.');
+  setClock(() => Date.parse(String(mine.starts_at)) + 60_000);
+  try {
+    assert.equal((await remind(ali, mine.id)).error?.code, '42501');
+  } finally {
+    setClock(() => Date.now());
+  }
+
+  // The reminder named the old time, so moving the booking clears it.
+  const { data: slots } = await hakim.rpc('available_slots', {
+    p_service_id: mine.service_id,
+    p_day: addDays(today(), 3),
+    p_barber_id: null,
+    p_ignore_booking: mine.id,
+  });
+  const moved = await hakim.rpc('reschedule_booking', { p_booking_id: mine.id, p_starts_at: slots[0].starts_at });
+  assert.equal(moved.error, null);
+  assert.equal(moved.data.reminded_at, null);
+});
+
 test('a new barber signs up, sets up a shop and goes live', async () => {
   const c = client();
   const signUp = await c.auth.signUp({
@@ -578,6 +664,12 @@ test('opened on a later day, the sample week moves forward with it', async () =>
     reloadTables();
     assert.deepEqual(tables().shop_closures, []);
     assert.equal(tables().bookings.length, after.length);
+
+    // And one saved before bookings had reminders opens with none sent.
+    for (const b of old.tables.bookings) delete b.reminded_at;
+    saved.set(key, JSON.stringify(old));
+    reloadTables();
+    assert.ok(tables().bookings.every((b) => b.reminded_at === null));
   } finally {
     setClock(() => Date.now());
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });

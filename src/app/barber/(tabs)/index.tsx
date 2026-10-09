@@ -15,8 +15,10 @@ import { summarizeWeek } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { whatsappUrl } from '@/lib/phone';
+import { canRemind, needsReminder, reminderMessage } from '@/lib/reminders';
 import { errorMessage, supabase } from '@/lib/supabase';
 import {
+  addDays,
   dayBounds,
   formatDay,
   formatDuration,
@@ -30,6 +32,11 @@ import type { Barber, Booking, BookingStatus, WorkingHours } from '@/lib/types';
 type ShopBooking = Booking & {
   barbers: { name: string } | null;
   customer: { full_name: string; phone: string | null } | null;
+};
+
+/** Just enough of tomorrow's bookings to count who still needs a reminder. */
+type ToRemind = Pick<Booking, 'id' | 'barber_id' | 'status' | 'is_block' | 'starts_at' | 'reminded_at' | 'guest_phone'> & {
+  customer: { phone: string | null } | null;
 };
 
 type BarberWithHours = Barber & { working_hours: WorkingHours[] };
@@ -53,6 +60,7 @@ export default function BarberBookings() {
   const days = useMemo(() => upcomingDays(15, tz, new Date(), -1), [tz]);
   const [day, setDay] = useState(days[1].date);
   const [bookings, setBookings] = useState<ShopBooking[]>([]);
+  const [tomorrow, setTomorrow] = useState<ToRemind[]>([]);
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
   const [services, setServices] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -84,7 +92,10 @@ export default function BarberBookings() {
     // Only the newest load fills the screen, so a slow answer for the day before can't replace it.
     const request = ++latest.current;
     const { start, end } = dayBounds(day, tz);
-    const [list, active, team, closed] = await Promise.all([
+    const today = localDateString(new Date(), tz);
+    // On today, tomorrow's bookings nobody has reminded yet, for the card at the top.
+    const next = day === today ? dayBounds(addDays(today, 1), tz) : null;
+    const [list, active, team, closed, unreminded] = await Promise.all([
       supabase
         .from('bookings')
         .select('*, barbers(name), customer:profiles!bookings_customer_id_fkey(full_name, phone)')
@@ -95,6 +106,17 @@ export default function BarberBookings() {
       supabase.from('services').select('id', { count: 'exact', head: true }).eq('shop_id', shop.id).eq('is_active', true),
       supabase.from('barbers').select('*, working_hours(*)').eq('shop_id', shop.id).order('sort_order').order('created_at'),
       supabase.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: day, p_to: day }),
+      next
+        ? supabase
+            .from('bookings')
+            .select('id, barber_id, status, is_block, starts_at, reminded_at, guest_phone, customer:profiles!bookings_customer_id_fkey(phone)')
+            .eq('shop_id', shop.id)
+            .eq('status', 'confirmed')
+            .eq('is_block', false)
+            .is('reminded_at', null)
+            .gte('starts_at', next.start.toISOString())
+            .lt('starts_at', next.end.toISOString())
+        : null,
     ]);
     if (request !== latest.current) return;
     if (list.error) return setError(errorMessage(list.error));
@@ -106,6 +128,9 @@ export default function BarberBookings() {
       const row = ((closed.data ?? []) as { reason: string | null; is_closure: boolean }[]).find((d) => d.is_closure);
       setClosure(row ? { reason: row.reason } : null);
     }
+    if (!unreminded) setTomorrow([]);
+    // The client can't tell that the customer is one profile rather than a list.
+    else if (!unreminded.error) setTomorrow((unreminded.data ?? []) as unknown as ToRemind[]);
   }, [shop, day, tz]);
 
   // Reloads after a status change use the day on screen by then, not the day the button was tapped on.
@@ -180,6 +205,26 @@ export default function BarberBookings() {
     if (phone) openWhatsApp(phone, t('Hi {who}, this is {shop} about your {service} on {day} at {time}.', messageVars(b)));
   };
 
+  /**
+   * Opens WhatsApp first, while the tap still counts (browsers block a new tab
+   * after a round trip), then records it so the other phones in the shop see it.
+   */
+  const remind = async (b: ShopBooking) => {
+    const phone = phoneOf(b);
+    if (!phone) return;
+    openWhatsApp(phone, reminderMessage(messageVars(b), b.starts_at, now, tz));
+    const { data, error: failed } = await supabase.rpc('mark_booking_reminded', { p_booking_id: b.id });
+    if (failed) {
+      // Another phone may have cancelled or moved it; the reload shows that, then the error.
+      loadRef.current().then(() =>
+        setError(t('Reminder for {name} not saved. {reason}', { name: whoFor(b), reason: errorMessage(failed) })),
+      );
+      return;
+    }
+    const at = (data as Booking).reminded_at;
+    setBookings((all) => all.map((x) => (x.id === b.id ? { ...x, reminded_at: at } : x)));
+  };
+
   const cancel = async (b: ShopBooking) => {
     const phone = phoneOf(b);
     const when = { who: whoFor(b), service: b.service_name, time: formatTime(b.starts_at, tz) };
@@ -242,6 +287,9 @@ export default function BarberBookings() {
   const shown = filterId ? kept.filter((b) => b.barber_id === filterId) : kept;
   const showBarber = barbers.length > 1 && !filterId;
   const isToday = day === localDateString(new Date(now), tz);
+  const toRemind = isToday
+    ? tomorrow.filter((b) => (!filterId || b.barber_id === filterId) && needsReminder(b, phoneOf(b), now, tz)).length
+    : 0;
   const started = (b: Booking) => new Date(b.starts_at).getTime() <= now;
   const ended = (b: Booking) => new Date(b.ends_at).getTime() <= now;
   // Blocks are never marked, so they count as finished once their time is over.
@@ -281,6 +329,7 @@ export default function BarberBookings() {
         onMark={(status) => mark([b], status)}
         onCancel={() => cancel(b)}
         onWhatsApp={() => whatsapp(b)}
+        onRemind={() => remind(b)}
       />
     );
 
@@ -349,6 +398,23 @@ export default function BarberBookings() {
             <Chip key={b.id} label={b.name} selected={filterId === b.id} onPress={() => pickBarber(b.id)} />
           ))}
         </Row>
+      ) : null}
+
+      {/* By the day picker it changes; the whole card is the button, so the words fit at phone width. */}
+      {toRemind > 0 ? (
+        <Card
+          style={styles.compactCard}
+          onPress={() => setDay(addDays(day, 1))}
+          accessibilityLabel={`${t('Remind tomorrow’s customers')}: ${t('{count} still to remind', { count: toRemind })}`}>
+          <View style={styles.compactRow}>
+            <Ionicons name="logo-whatsapp" size={22} color={theme.success} />
+            <View style={styles.info}>
+              <T variant="label">{t('Remind tomorrow’s customers')}</T>
+              <T variant="small">{t('{count} still to remind', { count: toRemind })}</T>
+            </View>
+            <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+          </View>
+        </Card>
       ) : null}
 
       <ErrorText message={error} />
@@ -446,7 +512,8 @@ function whoFor(b: ShopBooking): string {
   return b.customer?.full_name || b.guest_name || t('Customer');
 }
 
-const phoneOf = (b: ShopBooking) => (b.is_block ? null : (b.customer?.phone ?? b.guest_phone));
+const phoneOf = (b: Pick<Booking, 'is_block' | 'guest_phone'> & { customer: { phone: string | null } | null }) =>
+  b.is_block ? null : (b.customer?.phone ?? b.guest_phone);
 
 const openWhatsApp = (phone: string, message: string) => Linking.openURL(whatsappUrl(phone, message)).catch(() => {});
 
@@ -455,7 +522,8 @@ const call = (phone: string) => Linking.openURL(`tel:${phone.replace(/[^\d+]/g, 
 /**
  * A booking still to come or still to mark. The time sits on the left so a
  * column of cards reads like the day; Cancel and Call wait behind "more", away
- * from Done and No-show.
+ * from Done and No-show. Before it starts, Remind takes Done's place until
+ * someone in the shop has sent one; Remind again then waits behind "more".
  */
 function LiveCard({
   booking: b,
@@ -465,6 +533,7 @@ function LiveCard({
   onMark,
   onCancel,
   onWhatsApp,
+  onRemind,
 }: {
   booking: ShopBooking;
   tz: string;
@@ -473,11 +542,22 @@ function LiveCard({
   onMark: (status: 'completed' | 'no_show') => void;
   onCancel: () => void;
   onWhatsApp: () => void;
+  onRemind: () => Promise<void>;
 }) {
   const theme = useTheme();
   const [more, setMore] = useState(false);
+  const [reminding, setReminding] = useState(false);
   const who = whoFor(b);
   const phone = phoneOf(b);
+  const remindable = canRemind(b, phone, now, tz);
+  const remind = async () => {
+    setReminding(true);
+    try {
+      await onRemind();
+    } finally {
+      setReminding(false);
+    }
+  };
   // The server only takes Done or No-show once the appointment has started.
   const started = new Date(b.starts_at).getTime() <= now;
   const ended = new Date(b.ends_at).getTime() <= now;
@@ -507,6 +587,7 @@ function LiveCard({
               “{b.customer_note}”
             </T>
           ) : null}
+          {b.reminded_at ? <T variant="small">✓ {t('Reminded')}</T> : null}
         </View>
         <View>
           {phone ? (
@@ -531,9 +612,20 @@ function LiveCard({
           <Button title={t('Done')} variant="secondary" style={{ flex: 1 }} onPress={() => onMark('completed')} />
           <Button title={t('No-show')} variant="ghost" onPress={() => onMark('no_show')} />
         </Row>
+      ) : remindable && !b.reminded_at ? (
+        <Button
+          title={t('Remind on WhatsApp')}
+          accessibilityLabel={t('Remind {name} on WhatsApp', { name: who })}
+          variant="secondary"
+          loading={reminding}
+          onPress={remind}
+        />
       ) : null}
       {more ? (
         <Row>
+          {remindable && b.reminded_at ? (
+            <Button title={t('Remind again')} variant="secondary" loading={reminding} onPress={remind} />
+          ) : null}
           {phone ? <Button title={t('Call')} variant="secondary" onPress={() => call(phone)} /> : null}
           <Button title={t('Cancel booking')} variant="danger" onPress={onCancel} />
         </Row>

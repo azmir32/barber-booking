@@ -138,6 +138,7 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     ends_at: req('timestamptz'),
     status: req('text', () => 'confirmed', ['confirmed', 'cancelled', 'completed', 'no_show']),
     customer_note: opt('text'),
+    reminded_at: opt('timestamptz'),
     created_at: createdAt,
   },
   shop_closures: {
@@ -416,8 +417,16 @@ export function tables(): Tables {
     const parsed = saved ? (JSON.parse(saved) as { tables?: Tables; seededOn?: string }) : null;
     if (parsed?.tables && Array.isArray(parsed.tables.bookings)) {
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn);
-      // A demo saved before a table was added has no list for it yet.
+      // A demo saved before a table was added has no list for it yet,
+      // and one saved before a column was added has it empty.
       current = { ...emptyTables(), ...parsed.tables };
+      for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
+        for (const row of current[table]) {
+          for (const [column, col] of Object.entries(columns)) {
+            if (!(column in row)) row[column] = col.default ? col.default() : null;
+          }
+        }
+      }
       seededOn = today();
       if (parsed.seededOn !== seededOn) save();
     }

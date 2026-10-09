@@ -68,6 +68,8 @@ export type Booking = {
   ends_at: string;
   status: BookingStatus;
   customer_note: string | null;
+  /** When the shop last sent a WhatsApp reminder; cleared when the booking moves. */
+  reminded_at: string | null;
 };
 
 export type Slot = { barber_id: string; starts_at: string };

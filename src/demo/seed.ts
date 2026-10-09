@@ -72,6 +72,8 @@ type Booked = {
   block?: [string, number];
   status?: string;
   note?: string;
+  /** Someone in the shop already sent a WhatsApp reminder. */
+  reminded?: boolean;
 };
 
 function seed() {
@@ -113,6 +115,7 @@ function seed() {
       ends_at: new Date(starts + minutes * 60_000).toISOString(),
       status: b.status ?? 'confirmed',
       customer_note: b.note ?? null,
+      reminded_at: b.reminded ? new Date(now() - 2 * 3_600_000).toISOString() : null,
       created_at: new Date(Math.min(now(), starts) - 2 * DAY).toISOString(),
     });
     return true;
@@ -253,9 +256,12 @@ function seed() {
   book(sa, { barber: danial, day: 0, at: '12:00', service: kids, customer: farid, note: 'For my son, he is 7' });
   book(sa, { barber: danial, day: 0, at: '16:00', service: haircut, customer: aiman });
   book(sa, { barber: danial, day: 0, at: '19:00', service: haircut, guest: ['Kumar', '016-210 3398'] });
-  // Coming days
-  book(sa, { barber: aliChair, day: 1, at: '10:00', service: haircut, customer: jason });
+  // Coming days. Encik Rosli and Hakim (below) land tomorrow whatever the
+  // weekday, so there is always someone to remind on WhatsApp.
+  book(sa, { barber: aliChair, day: 1, at: '10:00', service: haircut, customer: jason, reminded: true });
   book(sa, { barber: aliChair, day: 1, at: '18:00', service: beard, customer: weiJie });
+  const rosli = { day: 1, at: '11:30', service: haircut, guest: ['Encik Rosli', '019-765 4321'] as [string, string] };
+  book(sa, { barber: danial, ...rosli }) || book(sa, { barber: aliChair, ...rosli });
   book(sa, { barber: aliChair, day: 2, at: '11:00', service: haircut, customer: ravi });
   book(sa, { barber: danial, day: 2, at: '20:00', service: fade, customer: syafiq });
 
