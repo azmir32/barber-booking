@@ -179,6 +179,19 @@ test.describe.serial('booking flow', () => {
 
     await expect(page.getByText('You’re booked!')).toBeVisible();
     await snap(page, '11-booked');
+    // So the phone reminds them: opens Google Calendar's add-event page, answered here to stay offline.
+    await page.context().route('https://calendar.google.com/**', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<title>Google Calendar</title>' }),
+    );
+    const [calendar] = await Promise.all([page.context().waitForEvent('page'), button(page, 'Add to calendar').click()]);
+    await calendar.waitForLoadState();
+    const added = new URL(calendar.url());
+    await calendar.close();
+    expect(`${added.origin}${added.pathname}`).toBe('https://calendar.google.com/calendar/render');
+    expect(added.searchParams.get('text')).toBe(`Haircut at ${shopName}`);
+    expect(added.searchParams.get('location')).toBe('No. 12, Jalan Reko, Kajang');
+    expect(added.searchParams.get('details')).toContain(`Barber: ${barber.name}\nRM20 · Pay at the shop.`);
+    expect(added.searchParams.get('details')).toContain(`/shop/${shopSlug}`);
     await button(page, 'See my bookings').click();
     await expect(page.getByText('Upcoming')).toBeVisible();
     await expect(page.getByText(`Haircut with ${barber.name} · RM20`)).toBeVisible();

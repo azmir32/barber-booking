@@ -548,4 +548,11 @@ export const ms: Record<string, string> = {
     'Setelah langganan anda aktif, pelanggan boleh menempah melalui poster ini semula.',
   'A poster needs your shop’s web link, and this version of the app doesn’t have one yet.':
     'Poster memerlukan pautan web kedai anda, dan versi aplikasi ini belum ada pautan itu.',
+
+  // Customer: add a booking to the phone's calendar (lib/calendar.ts)
+  'Add to calendar': 'Tambah ke kalendar',
+  '{service} at {shop}': '{service} di {shop}',
+  'Barber: {name}': 'Barber: {name}',
+  'Shop page: {link}': 'Halaman kedai: {link}',
+  'To change or cancel, go to My bookings in {app}.': 'Untuk tukar atau batal, pergi ke Tempahan saya dalam {app}.',
 };

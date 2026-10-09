@@ -16,6 +16,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
 - See upcoming and past bookings, move one to another time, cancel, WhatsApp the shop, book again
+- Add a booking to the phone's calendar, so it reminds them: Safari on iPhone, iPad and Mac gets a calendar file for Apple Calendar (with an alert an hour before); Android, the iOS app and other browsers open Google Calendar's add-event page (with their usual Google reminder)
 
 **Barbers and shop owners**
 - Create a shop with a booking link (`/shop/your-shop`)
