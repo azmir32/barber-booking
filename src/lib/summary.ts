@@ -4,7 +4,7 @@
 
 import { dateRange } from './closures.ts';
 import { dateLocale, t } from './lang.ts';
-import { addDays, clockLabel, formatPrice, localDateString } from './time.ts';
+import { addDays, clockLabel, dayBounds, formatCount, formatPrice, localDateString } from './time.ts';
 
 export type Period = 'week' | 'last-week' | 'month';
 
@@ -58,7 +58,7 @@ export function weekLine(totals: Pick<Totals, 'done' | 'takings'>): string {
   const money = formatPrice(totals.takings);
   if (totals.done === 0) return t('This week: no cuts marked done yet');
   if (totals.done === 1) return t('This week: {money} from 1 cut', { money });
-  return t('This week: {money} from {count} cuts', { money, count: totals.done });
+  return t('This week: {money} from {count} cuts', { money, count: formatCount(totals.done) });
 }
 
 /** What the period before is called in a comparison. A running period is compared up to the same point. */
@@ -69,6 +69,18 @@ export function previousLabel(period: Period): string {
 }
 
 export type Change = { direction: 'up' | 'down' | 'same'; label: string };
+
+/**
+ * Whether the shop was already on the app when the period before began.
+ * Cuts from before it joined were never counted here, so its first weeks
+ * would look like growth that isn't real.
+ */
+export function canCompare(previousFrom: string, shopCreatedAt: string, timeZone: string): boolean {
+  return Date.parse(shopCreatedAt) <= dayBounds(previousFrom, timeZone).start.getTime();
+}
+
+/** In place of a comparison, while the period before is from before the shop joined. */
+export const noComparison = (): Change => ({ direction: 'same', label: t('Nothing to compare with yet') });
 
 /** "RM120 more than this time last week". */
 export function moneyChange(current: number, before: number, period: Period): Change {
@@ -83,16 +95,34 @@ export function moneyChange(current: number, before: number, period: Period): Ch
 export function countChange(current: number, before: number, period: Period): Change {
   const then = previousLabel(period);
   const diff = current - before;
-  if (diff > 0) return { direction: 'up', label: t('{count} more than {then}', { count: diff, then }) };
-  if (diff < 0) return { direction: 'down', label: t('{count} fewer than {then}', { count: -diff, then }) };
+  const count = formatCount(Math.abs(diff));
+  if (diff > 0) return { direction: 'up', label: t('{count} more than {then}', { count, then }) };
+  if (diff < 0) return { direction: 'down', label: t('{count} fewer than {then}', { count, then }) };
   return { direction: 'same', label: t('Same as {then}', { then }) };
 }
 
-/** Bookings on each weekday over the period, Monday first. */
-export function byWeekday(days: Summary['days']): number[] {
+/**
+ * Average bookings a day on each weekday, Monday first, over the days up to
+ * today: a month has five of some weekdays and four of the others, and days
+ * still to come only hold what has been booked so far. Null for a weekday
+ * the period hasn't reached yet. To one decimal place, so days that look the
+ * same tie.
+ */
+export function byWeekday(days: Summary['days'], today: string): (number | null)[] {
   const totals = [0, 0, 0, 0, 0, 0, 0];
-  for (const d of days) totals[(new Date(`${d.day}T00:00:00Z`).getUTCDay() + 6) % 7] += d.bookings;
-  return totals;
+  const seen = [0, 0, 0, 0, 0, 0, 0];
+  for (const d of days) {
+    if (d.day > today) continue;
+    const weekday = (new Date(`${d.day}T00:00:00Z`).getUTCDay() + 6) % 7;
+    totals[weekday] += d.bookings;
+    seen[weekday] += 1;
+  }
+  return totals.map((total, i) => (seen[i] ? Math.round((total / seen[i]) * 10) / 10 : null));
+}
+
+/** The busiest weekdays, once every weekday has come round: on a Tuesday, Monday would always win. */
+export function busiestDays(averages: (number | null)[]): number[] {
+  return averages.every((a): a is number => a !== null) ? busiest(averages) : [];
 }
 
 /** Every hour from the first to the last that has bookings, quiet hours in between as 0. */

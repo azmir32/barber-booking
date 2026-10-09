@@ -3,15 +3,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { setCurrentLang } from './lang.ts';
+import { addDays } from './time.ts';
 import {
   busiest,
+  busiestDays,
   byWeekday,
+  canCompare,
   countChange,
   hasBookings,
   hourMark,
   hourRange,
   joinAnd,
   moneyChange,
+  noComparison,
   peakRanges,
   periodDays,
   periodTitle,
@@ -62,6 +66,8 @@ test('the comparison says more, less or the same, and against what', () => {
   assert.deepEqual(countChange(42, 36, 'week'), { direction: 'up', label: '6 more than this time last week' });
   assert.deepEqual(countChange(3, 5, 'last-week'), { direction: 'down', label: '2 fewer than the week before' });
   assert.deepEqual(countChange(7, 7, 'month'), { direction: 'same', label: 'Same as this time last month' });
+  // A busy shop's month: counts are grouped like the money beside them.
+  assert.equal(countChange(1250, 200, 'month').label, '1,050 more than this time last month');
 
   setCurrentLang('ms');
   try {
@@ -73,22 +79,36 @@ test('the comparison says more, less or the same, and against what', () => {
   }
 });
 
-test('busiest days add up each weekday, Monday first', () => {
-  const day = (d: string, bookings: number) => ({ day: d, bookings, done: 0, takings: 0 });
-  // Mon 5 Oct to Sun 11 Oct, then Mon 12 and Sat 17.
-  const days = [
-    day('2026-10-05', 4),
-    day('2026-10-06', 2),
-    day('2026-10-07', 0),
-    day('2026-10-08', 3),
-    day('2026-10-09', 5),
-    day('2026-10-10', 9),
-    day('2026-10-11', 1),
-    day('2026-10-12', 1),
-    day('2026-10-17', 2),
-  ];
-  assert.deepEqual(byWeekday(days), [5, 2, 0, 3, 5, 11, 1]);
-  assert.deepEqual(busiest(byWeekday(days)), [5]);
+test('busiest days compare the average day, over the days the period has reached', () => {
+  const month = (from: string, length: number, bookings: (day: string, i: number) => number) =>
+    Array.from({ length }, (_, i) => {
+      const day = addDays(from, i);
+      return { day, bookings: bookings(day, i), done: 0, takings: 0 };
+    });
+  // October 2026 starts on a Thursday, so it has five Thursdays, Fridays and
+  // Saturdays and four of every other day. Ten a day is the same every day.
+  const october = month('2026-10-01', 31, () => 10);
+  assert.deepEqual(byWeekday(october, '2026-11-15'), [10, 10, 10, 10, 10, 10, 10]);
+  assert.deepEqual(busiestDays(byWeekday(october, '2026-11-15')), [0, 1, 2, 3, 4, 5, 6], 'all the same');
+
+  // On Friday 9 October, Thursday and Friday have come round twice and the
+  // rest once; from Saturday 10th on there are only advance bookings.
+  const running = month('2026-10-01', 31, (day) => (day <= '2026-10-09' ? 10 : 2));
+  assert.deepEqual(byWeekday(running, '2026-10-09'), [10, 10, 10, 10, 10, 10, 10]);
+
+  // On a Tuesday, only Monday and Tuesday have happened: no busiest day yet.
+  const week = month('2026-10-05', 7, (_, i) => [12, 8, 3, 3, 3, 3, 3][i]);
+  assert.deepEqual(byWeekday(week, '2026-10-06'), [12, 8, null, null, null, null, null]);
+  assert.deepEqual(busiestDays(byWeekday(week, '2026-10-06')), []);
+  assert.deepEqual(busiestDays(byWeekday(week, '2026-10-11')), [0], 'once Sunday is here, Monday can win');
+
+  // Averages to one decimal place; two Saturdays of 9 and 14 beat Fridays of 11.
+  const busy: Record<string, number> = { '2026-10-09': 11, '2026-10-16': 11, '2026-10-10': 9, '2026-10-17': 14 };
+  const weeks = month('2026-10-05', 14, (day) => busy[day] ?? 1);
+  assert.deepEqual(byWeekday(weeks, '2026-10-18'), [1, 1, 1, 1, 11, 11.5, 1]);
+  assert.deepEqual(busiestDays(byWeekday(weeks, '2026-10-18')), [5]);
+  assert.deepEqual(byWeekday(month('2026-10-05', 21, (day) => (day === '2026-10-05' ? 10 : 0)), '2026-10-31')[0], 3.3);
+
   assert.deepEqual(busiest([3, 7, 1, 7]), [1, 3], 'a tie has two busiest days');
   assert.deepEqual(busiest([0, 0, 0]), [], 'nothing booked');
   assert.deepEqual(busiest([]), []);
@@ -97,6 +117,22 @@ test('busiest days add up each weekday, Monday first', () => {
   try {
     assert.equal(weekdayName(5), 'Sabtu');
     assert.equal(weekdayName(0), 'Isnin');
+  } finally {
+    setCurrentLang('en');
+  }
+});
+
+test('a shop is only compared with a period it was already on the app for', () => {
+  // The week before this one starts on Monday 28 September, midnight in Kajang (16:00 UTC the day before).
+  assert.equal(canCompare('2026-09-28', '2026-08-01T03:00:00Z', TZ), true);
+  assert.equal(canCompare('2026-09-28', '2026-09-27T15:59:00Z', TZ), true, 'joined late on Sunday');
+  assert.equal(canCompare('2026-09-28', '2026-09-27T16:30:00Z', TZ), false, 'joined just after midnight on Monday');
+  assert.equal(canCompare('2026-09-28', '2026-10-07T04:00:00Z', TZ), false, 'joined this week');
+  assert.equal(canCompare('2026-09-28', '2026-09-27T16:30:00Z', 'UTC'), true, 'on a shop clock in UTC, still Sunday');
+  assert.deepEqual(noComparison(), { direction: 'same', label: 'Nothing to compare with yet' });
+  setCurrentLang('ms');
+  try {
+    assert.equal(noComparison().label, 'Belum ada yang boleh dibandingkan');
   } finally {
     setCurrentLang('en');
   }
@@ -156,6 +192,7 @@ test('My shop sums up the week in one line', () => {
   assert.equal(weekLine({ done: 42, takings: 1240 }), 'This week: RM1,240 from 42 cuts');
   assert.equal(weekLine({ done: 1, takings: 25 }), 'This week: RM25 from 1 cut');
   assert.equal(weekLine({ done: 0, takings: 0 }), 'This week: no cuts marked done yet');
+  assert.equal(weekLine({ done: 1250, takings: 31250 }), 'This week: RM31,250 from 1,250 cuts');
   setCurrentLang('ms');
   try {
     assert.equal(weekLine({ done: 42, takings: 1240 }), 'Minggu ini: RM1,240 daripada 42 pelanggan');

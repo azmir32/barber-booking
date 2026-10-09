@@ -1191,16 +1191,21 @@ begin
           group by 1
         ) h
       ),
+      -- Every barber working here now, even one with nothing booked (a week
+      -- away is worth seeing), and anyone since marked away who did have
+      -- bookings in the period.
       'barbers', (
         select coalesce(jsonb_agg(jsonb_build_object(
                  'barber_id', br.id,
                  'name', br.name,
-                 'bookings', x.bookings,
-                 'done', x.done,
-                 'takings', x.takings,
-                 'no_shows', x.no_shows
-               ) order by x.takings desc, x.done desc, br.sort_order, br.created_at, br.id), '[]')
-        from (
+                 'bookings', coalesce(x.bookings, 0),
+                 'done', coalesce(x.done, 0),
+                 'takings', coalesce(x.takings, 0),
+                 'no_shows', coalesce(x.no_shows, 0)
+               ) order by coalesce(x.takings, 0) desc, coalesce(x.done, 0) desc, br.sort_order, br.created_at, br.id),
+               '[]')
+        from barbers br
+        left join (
           select barber_id,
                  count(*) filter (where status <> 'cancelled') as bookings,
                  count(*) filter (where status = 'completed') as done,
@@ -1208,9 +1213,9 @@ begin
                  count(*) filter (where status = 'no_show') as no_shows
           from now_b
           group by barber_id
-          having count(*) filter (where status <> 'cancelled') > 0
-        ) x
-        join barbers br on br.id = x.barber_id and br.shop_id = v_shop.id
+        ) x on x.barber_id = br.id
+        where br.shop_id = v_shop.id
+          and (br.is_active or x.bookings > 0)
       ),
       -- The five most done, by the name they were booked under.
       'services', (

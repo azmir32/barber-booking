@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import {
   addDays,
   dayBounds,
+  formatCount,
   formatDuration,
   formatPrice,
   formatTime,
@@ -56,12 +57,18 @@ test('formatTime shows shop-local time', () => {
   assert.match(formatTime('2026-10-06T02:00:00Z'), /^10:00\s?am$/i);
 });
 
-test('formatPrice and formatDuration', () => {
+test('formatPrice, formatCount and formatDuration', () => {
   assert.equal(formatPrice(25), 'RM25');
   assert.equal(formatPrice('25.5'), 'RM25.50');
   assert.equal(formatPrice(1240), 'RM1,240');
   assert.equal(formatPrice('12480.5'), 'RM12,480.50');
   assert.equal(formatPrice(999), 'RM999');
+  assert.equal(formatCount(1250), '1,250');
+  assert.equal(formatCount(1234567), '1,234,567');
+  assert.equal(formatCount(999), '999');
+  assert.equal(formatCount(0), '0');
+  assert.equal(formatCount(12.5), '12.5');
+  assert.equal(formatCount(1012.3), '1,012.3');
   assert.equal(formatDuration(45), '45 min');
   assert.equal(formatDuration(60), '1 hr');
   assert.equal(formatDuration(75), '1 hr 15 min');

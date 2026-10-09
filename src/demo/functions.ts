@@ -638,10 +638,11 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
 
   const hours = new Map<number, number>();
   for (const b of taken) hours.set(local.get(b)!.hour, (hours.get(local.get(b)!.hour) ?? 0) + 1);
-  const barbers = [...new Set(taken.map((b) => b.barber_id))]
-    .map((id) => {
-      const barber = findById('barbers', id)!;
-      const theirs = current.filter((b) => b.barber_id === id);
+  // Every barber working here now, even one with nothing booked, and anyone since marked away who had bookings.
+  const barbers = tables()
+    .barbers.filter((barber) => barber.shop_id === shop.id)
+    .map((barber) => {
+      const theirs = current.filter((b) => b.barber_id === barber.id);
       return {
         barber,
         row: {
@@ -654,6 +655,7 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
         },
       };
     })
+    .filter(({ barber, row }) => barber.is_active || row.bookings > 0)
     .sort(
       (a, b) =>
         b.row.takings - a.row.takings ||

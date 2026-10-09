@@ -156,11 +156,20 @@ export function formatDay(at: string | Date, timeZone = DEFAULT_TIME_ZONE): stri
   }).format(new Date(at));
 }
 
+/** Thousands with commas, as in "1,240". */
+const grouped = (whole: string) => whole.replace(/\B(?=(\d{3})+$)/g, ',');
+
 /** "RM25", "RM25.50" or, for a week's takings, "RM1,240". */
 export function formatPrice(amount: number | string): string {
   const n = Number(amount);
   const [whole, cents] = (Number.isInteger(n) ? String(n) : n.toFixed(2)).split('.');
-  return `RM${whole.replace(/\B(?=(\d{3})+$)/g, ',')}${cents ? `.${cents}` : ''}`;
+  return `RM${grouped(whole)}${cents ? `.${cents}` : ''}`;
+}
+
+/** "1,250" for a month of cuts, so counts read like the money beside them; "12.5" for an average. */
+export function formatCount(n: number): string {
+  const [whole, decimals] = String(n).split('.');
+  return `${grouped(whole)}${decimals ? `.${decimals}` : ''}`;
 }
 
 /** "45 min" or "1 hr 15 min". */

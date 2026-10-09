@@ -1022,12 +1022,18 @@ insert into shops (id, owner_id, name, slug) values
   ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
 insert into barbers (id, shop_id, name) values
   ('00000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-00000000005b', 'Rahman');
+-- Two barbers since marked away.
+insert into barbers (id, shop_id, name, is_active) values
+  ('00000000-0000-0000-0000-0000000000a4', '00000000-0000-0000-0000-00000000005a', 'Faiz', false),
+  ('00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-00000000005a', 'Zul', false);
 do $$
 declare
   tz text := 'Asia/Kuala_Lumpur';
   d date := (now() at time zone 'Asia/Kuala_Lumpur')::date - 20;
   ali uuid := '00000000-0000-0000-0000-0000000000a1';
   danial uuid := '00000000-0000-0000-0000-0000000000a2';
+  faiz uuid := '00000000-0000-0000-0000-0000000000a4';
+  zul uuid := '00000000-0000-0000-0000-0000000000a5';
 begin
   insert into bookings (shop_id, barber_id, guest_name, is_block, service_name, price, starts_at, ends_at, status)
   select coalesce(shop, '00000000-0000-0000-0000-00000000005a'), barber, case when block then null else 'Guest' end,
@@ -1047,6 +1053,9 @@ begin
     -- Not this week: the day after, and another shop.
     (null, ali, d + 7, '00:00', 'Haircut', 99, 'completed', false),
     ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000a9', d + 1, '10:00', 'Haircut', 500, 'completed', false),
+    -- The week after, while Danial is away: Faiz's no-show and Zul's cancelled cut.
+    (null, faiz, d + 9, '10:00', 'Haircut', 25, 'no_show', false),
+    (null, zul, d + 9, '11:00', 'Haircut', 25, 'cancelled', false),
     -- The week before, and one from before that.
     (null, ali, d - 7, '10:00', 'Haircut', 25, 'completed', false),
     (null, ali, d - 3, '10:00', 'Skin fade', 30, 'no_show', false),
@@ -1065,31 +1074,43 @@ declare
 begin
   assert s -> 'totals' = '{"done": 5, "takings": 138, "no_shows": 1, "no_show_value": 25, "cancelled": 1,
                           "to_come": 0, "to_come_value": 0, "unmarked": 1, "unmarked_value": 25}'::jsonb,
-    'totals should count this shop''s bookings at their booked price, without blocked time: ' || (s -> 'totals');
+    'totals should count this shop''s bookings at their booked price, without blocked time: ' || (s -> 'totals')::text;
   assert (s -> 'previous') - 'until' = jsonb_build_object(
       'from', d - 7, 'to', d - 1, 'done', 2, 'takings', 45, 'no_shows', 1, 'no_show_value', 30, 'cancelled', 1),
-    'the week before should be counted the same way: ' || (s -> 'previous');
+    'the week before should be counted the same way: ' || (s -> 'previous')::text;
   assert (s #>> '{previous,until}')::timestamptz = d::timestamp at time zone 'Asia/Kuala_Lumpur',
     'a finished week compares with the whole week before';
   assert jsonb_array_length(s -> 'days') = 7 and s #>> '{days,0,day}' = d::text and s #>> '{days,6,day}' = (d + 6)::text,
     'every day of the period should be there';
   assert (select array_agg((x ->> 'bookings')::int order by i) from jsonb_array_elements(s -> 'days') with ordinality a(x, i))
-         = array[2, 1, 1, 0, 1, 1, 1], 'bookings by day leave out cancellations and blocks: ' || (s -> 'days');
+         = array[2, 1, 1, 0, 1, 1, 1], 'bookings by day leave out cancellations and blocks: ' || (s -> 'days')::text;
   assert s -> 'days' -> 6 = jsonb_build_object('day', d + 6, 'bookings', 1, 'done', 1, 'takings', 40),
     'a late booking on the last day is that day''s, by the shop''s clock';
   assert s -> 'hours' = '[{"hour": 10, "bookings": 4}, {"hour": 11, "bookings": 1}, {"hour": 15, "bookings": 1},
-                         {"hour": 23, "bookings": 1}]'::jsonb, 'by start hour, shop time: ' || (s -> 'hours');
+                         {"hour": 23, "bookings": 1}]'::jsonb, 'by start hour, shop time: ' || (s -> 'hours')::text;
   assert s -> 'barbers' = '[{"barber_id": "00000000-0000-0000-0000-0000000000a1", "name": "Ali", "bookings": 4, "done": 4,
                               "takings": 113, "no_shows": 0},
                              {"barber_id": "00000000-0000-0000-0000-0000000000a2", "name": "Danial", "bookings": 3, "done": 1,
-                              "takings": 25, "no_shows": 1}]'::jsonb, 'by barber, most takings first: ' || (s -> 'barbers');
+                              "takings": 25, "no_shows": 1}]'::jsonb, 'by barber, most takings first: ' || (s -> 'barbers')::text;
   assert s -> 'services' = '[{"name": "Haircut", "done": 4, "takings": 108}, {"name": "Skin fade", "done": 1, "takings": 30}]'::jsonb,
-    'services by how many were done: ' || (s -> 'services');
+    'services by how many were done: ' || (s -> 'services')::text;
 
-  -- A quiet week has nothing in the lists, and zeros elsewhere.
+  -- A barber with nothing booked is still there with nothing, so a week away
+  -- shows. One since marked away shows only for a week they had bookings in.
+  assert shop_summary(d + 7, d + 13) -> 'barbers' = '[
+      {"barber_id": "00000000-0000-0000-0000-0000000000a1", "name": "Ali", "bookings": 1, "done": 1, "takings": 99, "no_shows": 0},
+      {"barber_id": "00000000-0000-0000-0000-0000000000a2", "name": "Danial", "bookings": 0, "done": 0, "takings": 0, "no_shows": 0},
+      {"barber_id": "00000000-0000-0000-0000-0000000000a4", "name": "Faiz", "bookings": 1, "done": 0, "takings": 0, "no_shows": 1}
+    ]'::jsonb, 'every barber working here, and Faiz for his no-show: ' || (shop_summary(d + 7, d + 13) -> 'barbers')::text;
+
+  -- A quiet week has nothing in the lists but the barbers, and zeros elsewhere.
   s := shop_summary(d - 50, d - 44);
-  assert (s #>> '{totals,done}')::int = 0 and s -> 'hours' = '[]' and s -> 'barbers' = '[]' and s -> 'services' = '[]'
+  assert (s #>> '{totals,done}')::int = 0 and s -> 'hours' = '[]' and s -> 'services' = '[]'
      and jsonb_array_length(s -> 'days') = 7, 'an empty week';
+  assert s -> 'barbers' = '[
+      {"barber_id": "00000000-0000-0000-0000-0000000000a1", "name": "Ali", "bookings": 0, "done": 0, "takings": 0, "no_shows": 0},
+      {"barber_id": "00000000-0000-0000-0000-0000000000a2", "name": "Danial", "bookings": 0, "done": 0, "takings": 0, "no_shows": 0}
+    ]'::jsonb, 'the barbers working here, with nothing: ' || (s -> 'barbers')::text;
 
   -- The period before has the same length, except a whole month, which compares with the month before.
   assert shop_summary('2026-01-01', '2026-01-31') #>> '{previous,from}' = '2025-12-01', 'January compares with December';
@@ -1176,7 +1197,7 @@ declare
 begin
   assert s -> 'totals' = '{"done": 1, "takings": 18, "no_shows": 0, "no_show_value": 0, "cancelled": 0,
                           "to_come": 2, "to_come_value": 55, "unmarked": 1, "unmarked_value": 20}'::jsonb,
-    'to come includes the one in the chair; over and unmarked is counted apart: ' || (s -> 'totals');
+    'to come includes the one in the chair; over and unmarked is counted apart: ' || (s -> 'totals')::text;
   assert (s #>> '{previous,until}')::timestamptz = now() - interval '7 days',
     'the week before is counted up to this time last week: ' || (s #>> '{previous,until}');
   assert s #> '{previous,done}' = '1' and s #> '{previous,takings}' = '25', 'only what was done by this time last week';

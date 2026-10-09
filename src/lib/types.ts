@@ -24,6 +24,7 @@ export type Shop = {
   is_published: boolean;
   trial_ends_at: string;
   subscription_status: 'trialing' | 'active' | 'past_due' | 'cancelled';
+  created_at: string;
 };
 
 export type Barber = {

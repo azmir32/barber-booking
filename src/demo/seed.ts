@@ -1,9 +1,10 @@
-// Sample data for the demo: four shops around Kajang, their customers and a
-// few days of bookings either side of today. Everything is placed relative
-// to "now", so the demo always looks lived in.
+// Sample data for the demo: four shops around Kajang, their customers, a
+// few days of bookings either side of today and eight weeks of history at
+// Ali's. Everything is placed relative to "now", so the demo always looks
+// lived in.
 
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { insertRow, now, setSeed, tables, type Row } from './db.ts';
+import { HISTORY_ID, insertRow, now, setSeed, tables, type Row } from './db.ts';
 
 export const DEMO_PASSWORD = 'demo1234';
 export const DEMO_CUSTOMER_EMAIL = 'hakim@demo.potongku.my';
@@ -15,6 +16,9 @@ const DAY = 86_400_000;
 /** Fixed ids, so the sample shops keep their links after a reset. */
 let next = 0;
 const sid = () => `d0000000-0000-4000-8000-${String(++next).padStart(12, '0')}`;
+/** Bookings from before yesterday have their own, so a saved demo can lay them out again on a later day. */
+let nextPast = 0;
+const pastId = () => `${HISTORY_ID}${String(++nextPast).padStart(12, '0')}`;
 
 type Hours = Partial<Record<number, [string, string][]>>;
 const SAT_TO_THU = [0, 1, 2, 3, 4, 6];
@@ -33,7 +37,8 @@ function user(email: string, role: 'customer' | 'barber', fullName: string, phon
     email,
     password: DEMO_PASSWORD,
     user_metadata: { role, full_name: fullName, phone },
-    created_at: new Date(now() - 40 * DAY).toISOString(),
+    // Before the shops and their history.
+    created_at: new Date(now() - 120 * DAY).toISOString(),
   });
 }
 
@@ -78,6 +83,7 @@ type Booked = {
 
 function seed() {
   next = 0;
+  nextPast = 0;
   const today = localDateString(new Date(now()), TZ);
 
   // Each day's midnight is worked out once: the time zone lookup is slow, and there are weeks of bookings.
@@ -104,7 +110,7 @@ function seed() {
     if (!works(b.barber.hours, b.day, b.at, minutes)) return false;
     const starts = startOf(b.day, b.at);
     insertRow('bookings', {
-      id: sid(),
+      id: b.day < -1 ? pastId() : sid(),
       shop_id: shopRow.id,
       barber_id: b.barber.row.id,
       service_id: b.service?.id ?? null,
@@ -148,7 +154,9 @@ function seed() {
       area: 'Sungai Chua',
       phone: '012-345 6789',
       instagram: '@alibarber.kajang',
-      created_at: new Date(now() - 7 * DAY).toISOString(),
+      // On the app since before its eight weeks of history, so Takings
+      // compares every period, and still on a (stretched) free trial to show.
+      created_at: new Date(now() - 90 * DAY).toISOString(),
       trial_ends_at: new Date(now() + 23 * DAY).toISOString(),
     },
     barbers: [

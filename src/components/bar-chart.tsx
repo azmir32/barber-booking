@@ -3,14 +3,16 @@ import { StyleSheet, View } from 'react-native';
 import { T } from '@/components/ui';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { formatCount } from '@/lib/time';
 
 const VALUE_ROOM = 20;
 
 /**
  * A small column chart made of plain Views: one bar per value, rising from
  * a shared baseline, with the ones that matter (the busiest) in the brand
- * colour and the rest in grey. Screen readers get `label`, which should say
- * every value, instead of the bars.
+ * colour and the rest in grey. A null value has no bar at all: not there
+ * yet, rather than none. Screen readers get `label`, which should say every
+ * value, instead of the bars.
  */
 export function BarChart({
   values,
@@ -20,7 +22,7 @@ export function BarChart({
   valuesShown = 'all',
   height = 120,
 }: {
-  values: number[];
+  values: (number | null)[];
   /** Under each bar, e.g. "Mon" or "5". */
   labels: string[];
   /** The bars to pick out, by place. */
@@ -31,7 +33,7 @@ export function BarChart({
   height?: number;
 }) {
   const theme = useTheme();
-  const top = Math.max(1, ...values);
+  const top = Math.max(1, ...values.map((v) => v ?? 0));
   const room = height - VALUE_ROOM;
   return (
     <View accessible role="img" accessibilityLabel={label} style={styles.chart}>
@@ -40,21 +42,23 @@ export function BarChart({
           const peak = highlight.includes(i);
           return (
             <View key={i} style={styles.slot}>
-              {valuesShown === 'all' || peak ? (
+              {value !== null && (valuesShown === 'all' || peak) ? (
                 <T variant="small" style={[styles.value, peak && { color: theme.text, fontWeight: '700' }]}>
-                  {value}
+                  {formatCount(value)}
                 </T>
               ) : null}
-              <View
-                style={[
-                  styles.bar,
-                  {
-                    // An empty day still shows a sliver, so it reads as none rather than missing.
-                    height: value === 0 ? 2 : Math.max(4, Math.round((value / top) * room)),
-                    backgroundColor: peak ? theme.tint : theme.inputBorder,
-                  },
-                ]}
-              />
+              {value !== null ? (
+                <View
+                  style={[
+                    styles.bar,
+                    {
+                      // An empty day still shows a sliver, so it reads as none rather than missing.
+                      height: value === 0 ? 2 : Math.max(4, Math.round((value / top) * room)),
+                      backgroundColor: peak ? theme.tint : theme.inputBorder,
+                    },
+                  ]}
+                />
+              ) : null}
             </View>
           );
         })}

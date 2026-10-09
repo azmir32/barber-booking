@@ -4,8 +4,9 @@ import { beforeEach, test } from 'node:test';
 
 import { createClient } from '@supabase/supabase-js';
 
+import { canCompare, periodDays } from '../lib/summary.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { insertRow, reloadTables, save, setClock, tables } from './db.ts';
+import { insertRow, reloadTables, save, setClock, tables, type Row } from './db.ts';
 import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
@@ -664,7 +665,13 @@ test('opened on a later day, the sample week moves forward with it', async () =>
     resetDemo();
     tables().shop_closures.push({ shop_id: tables().shops[0].id, day: addDays(today(), 5), reason: null });
     save();
-    const before = tables().bookings.map((b) => Date.parse(String(b.starts_at)));
+    // From yesterday on; the weeks before are laid out again (the next test).
+    const yesterday = dayBounds(addDays(today(), -1), TZ).start.getTime();
+    const before = new Map(
+      tables()
+        .bookings.filter((b) => Date.parse(String(b.starts_at)) >= yesterday)
+        .map((b) => [b.id, Date.parse(String(b.starts_at))]),
+    );
     const trialBefore = Date.parse(String(tables().shops[0].trial_ends_at));
     const closedBefore = String(tables().shop_closures[0].day);
 
@@ -672,7 +679,11 @@ test('opened on a later day, the sample week moves forward with it', async () =>
     setClock(() => later);
     reloadTables();
     const after = tables().bookings.map((b) => Date.parse(String(b.starts_at)));
-    assert.deepEqual(after, before.map((t) => t + 3 * 86_400_000));
+    const moved = [...before.keys()].map((id) => tables().bookings.find((b) => b.id === id)?.starts_at);
+    assert.deepEqual(
+      moved.map((at) => Date.parse(String(at))),
+      [...before.values()].map((t) => t + 3 * 86_400_000),
+    );
     assert.equal(Date.parse(String(tables().shops[0].trial_ends_at)), trialBefore + 3 * 86_400_000);
     assert.equal(tables().shop_closures[0].day, addDays(closedBefore, 3));
 
@@ -694,6 +705,52 @@ test('opened on a later day, the sample week moves forward with it', async () =>
     saved.set(key, JSON.stringify(old));
     reloadTables();
     assert.ok(tables().bookings.every((b) => b.reminded_at === null));
+  } finally {
+    setClock(() => Date.now());
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});
+
+test('opened a day later, the weeks before yesterday keep their weekdays', () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  try {
+    resetDemo();
+    save();
+    const later = Date.now() + 86_400_000;
+    setClock(() => later);
+    reloadTables();
+    const day = localDateString(new Date(later), TZ);
+    const yesterday = dayBounds(addDays(day, -1), TZ).start.getTime();
+    const past = tables().bookings.filter((b) => Date.parse(String(b.starts_at)) < yesterday);
+    const dayOf = (b: Row) => localDateString(new Date(String(b.starts_at)), TZ);
+    const minutes = (clock: unknown) => {
+      const [h, m] = String(clock).split(':').map(Number);
+      return h * 60 + m;
+    };
+    // Each inside its barber's hours that weekday: Ali never on a Sunday,
+    // Danial never on a Monday, and nobody during Friday prayers.
+    for (const b of past) {
+      const date = dayOf(b);
+      const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+      const from = (Date.parse(String(b.starts_at)) - dayBounds(date, TZ).start.getTime()) / 60_000;
+      const to = from + (Date.parse(String(b.ends_at)) - Date.parse(String(b.starts_at))) / 60_000;
+      const hours = tables().working_hours.filter((h) => h.barber_id === b.barber_id && h.weekday === weekday);
+      assert.ok(
+        hours.some((h) => minutes(h.opens_at) <= from && to <= minutes(h.closes_at)),
+        `${b.service_name} on ${date} at ${from / 60}h is outside its barber's hours`,
+      );
+    }
+    // Still eight weeks of them, right up to the day before yesterday.
+    const ali = tables().shops.find((s) => s.slug === 'ali-barber')!;
+    const days = new Set(past.filter((b) => b.shop_id === ali.id).map(dayOf));
+    for (let i = 2; i <= 56; i++) assert.ok(days.has(addDays(day, -i)), `nothing ${i} days ago`);
   } finally {
     setClock(() => Date.now());
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
@@ -852,6 +909,12 @@ test('the sample shop has weeks of takings to look back on', async () => {
   const monday = addDays(today(), -((weekday + 6) % 7) - 7);
   const { data, error } = await ali.rpc('shop_summary', { p_from: monday, p_to: addDays(monday, 6) });
   assert.equal(error, null);
+  // On the app since before its history, so last week and this month have a period before to compare with.
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const month = periodDays('month', Date.now(), TZ);
+  const thisMonth = (await ali.rpc('shop_summary', { p_from: month.from, p_to: month.to })).data;
+  assert.ok(canCompare(data.previous.from, shop.created_at, TZ));
+  assert.ok(canCompare(thisMonth.previous.from, shop.created_at, TZ));
   assert.ok(data.totals.done >= 30 && data.totals.takings >= 600, `a busy week: ${JSON.stringify(data.totals)}`);
   assert.ok(data.totals.no_shows > 0 && data.totals.cancelled > 0);
   assert.ok(data.previous.done >= 30, 'and a week before it to compare');
@@ -871,6 +934,9 @@ test('the owner sees a week’s takings and the week before, and nobody else doe
   const kemas = await shopBySlug(rahman, 'kemas-barber-kajang');
   const kemasChair = tables().barbers.find((b) => b.shop_id === kemas.id)!;
   tables().bookings = tables().bookings.filter((b) => b.shop_id !== shop.id);
+  // Two barbers since marked away.
+  const faiz = insertRow('barbers', { shop_id: shop.id, name: 'Faiz', is_active: false, sort_order: 2 });
+  const zul = insertRow('barbers', { shop_id: shop.id, name: 'Zul', is_active: false, sort_order: 3 });
 
   // The same weeks as booking_test.sql: three weeks ago, and the week before it.
   const d = addDays(today(), -20);
@@ -902,6 +968,9 @@ test('the owner sees a week’s takings and the week before, and nobody else doe
   // Not this week: the day after, and another shop.
   add(aliChair.id, addDays(d, 7), '00:00', 'Haircut', 99, 'completed');
   add(kemasChair.id, addDays(d, 1), '10:00', 'Haircut', 500, 'completed');
+  // The week after, while Danial is away: Faiz's no-show and Zul's cancelled cut.
+  add(faiz.id, addDays(d, 9), '10:00', 'Haircut', 25, 'no_show');
+  add(zul.id, addDays(d, 9), '11:00', 'Haircut', 25, 'cancelled');
   // The week before, and one from before that.
   add(aliChair.id, addDays(d, -7), '10:00', 'Haircut', 25, 'completed');
   add(aliChair.id, addDays(d, -3), '10:00', 'Skin fade', 30, 'no_show');
@@ -953,10 +1022,26 @@ test('the owner sees a week’s takings and the week before, and nobody else doe
     { name: 'Skin fade', done: 1, takings: 30 },
   ]);
 
+  // A barber with nothing booked is still there with nothing, so a week away
+  // shows. One since marked away shows only for a week they had bookings in.
+  const after = (await ali.rpc('shop_summary', { p_from: addDays(d, 7), p_to: addDays(d, 13) })).data;
+  assert.deepEqual(after.barbers, [
+    { barber_id: aliChair.id, name: 'Ali', bookings: 1, done: 1, takings: 99, no_shows: 0 },
+    { barber_id: danial.id, name: 'Danial', bookings: 0, done: 0, takings: 0, no_shows: 0 },
+    { barber_id: faiz.id, name: 'Faiz', bookings: 1, done: 0, takings: 0, no_shows: 1 },
+  ]);
+
   // A quiet week; and the period before has the same length, except a whole month.
   const quiet = (await ali.rpc('shop_summary', { p_from: addDays(d, -50), p_to: addDays(d, -44) })).data;
   assert.equal(quiet.totals.done, 0);
-  assert.deepEqual([quiet.hours, quiet.barbers, quiet.services], [[], [], []]);
+  assert.deepEqual([quiet.hours, quiet.services], [[], []]);
+  assert.deepEqual(
+    quiet.barbers.map((b: { name: string; bookings: number; takings: number }) => [b.name, b.bookings, b.takings]),
+    [
+      ['Ali', 0, 0],
+      ['Danial', 0, 0],
+    ],
+  );
   const before = async (from: string, to: string) =>
     (await ali.rpc('shop_summary', { p_from: from, p_to: to })).data.previous as { from: string; to: string };
   assert.equal((await before('2026-01-01', '2026-01-31')).from, '2025-12-01');

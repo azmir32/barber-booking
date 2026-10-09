@@ -305,20 +305,24 @@ test('the owner sees this week’s takings, and last week’s and the month’s'
   const periods = app.getByRole('radiogroup', { name: 'Show takings for' });
   await expect(periods.getByRole('radio', { name: 'This week' })).toBeChecked();
   await expect(app.getByText('Money in', { exact: true })).toBeVisible();
-  // While the week runs, it is compared with the week before up to this time.
+  // While the week runs, it is compared with the week before up to this time,
+  // and the days chart only has the days the week has reached.
   await expect(app.getByText(/this time last week$/)).toHaveCount(2);
   await expect(
-    app.getByRole('img', {
-      name: /^Bookings by day: Monday \d+, Tuesday \d+, Wednesday \d+, Thursday \d+, Friday \d+, Saturday \d+, Sunday \d+$/,
-    }),
+    app.getByRole('img', { name: /^Average bookings a day: Monday: \d+(, [A-Z][a-z]+day: \d+){0,6}$/ }),
   ).toBeVisible();
-  await expect(app.getByRole('img', { name: /^Bookings by hour: \d{1,2}:00 (am|pm) \d+/ })).toBeVisible();
+  await expect(app.getByRole('img', { name: /^Bookings by hour: \d{1,2}:00 (am|pm): \d+/ })).toBeVisible();
   await snap(page, 'demo-13-takings-week');
 
   // Last week is all in the past: money, both barbers and the top services.
   await periods.getByRole('radio', { name: 'Last week' }).click();
   await expect(periods.getByRole('radio', { name: 'Last week' })).toBeChecked();
   await expect(app.getByText(/the week before$/)).toHaveCount(2);
+  await expect(
+    app.getByRole('img', {
+      name: /^Average bookings a day: Monday: \d+, Tuesday: \d+, Wednesday: \d+, Thursday: \d+, Friday: \d+, Saturday: \d+, Sunday: \d+$/,
+    }),
+  ).toBeVisible();
   await expect(app.getByText(/^RM[1-9][\d,]*(\.\d\d)?$/).first()).toBeVisible();
   await expect(app.getByRole('heading', { name: 'Barbers', exact: true })).toBeVisible();
   await expect(app.getByText(/^\d+ cuts?( · \d+ no-shows?)?$/)).toHaveCount(2);

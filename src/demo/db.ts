@@ -367,6 +367,9 @@ export function setSeed(fn: () => void) {
   seedFn = fn;
 }
 
+/** How the ids of the sample bookings from before yesterday start (seed.ts); see moveToToday. */
+export const HISTORY_ID = 'd0000000-0000-4000-9000-';
+
 function storage(): Storage | null {
   try {
     return typeof localStorage === 'undefined' ? null : localStorage;
@@ -391,7 +394,10 @@ function seeded(): Tables {
 /**
  * Moves every date forward by the days since the demo was last opened, so
  * "today" keeps its bookings and the sample trial never runs out. Changes
- * people made move with everything else.
+ * people made move with everything else. The sample weeks before yesterday
+ * are laid out again for the new day instead: moved by a day, Ali would have
+ * worked his Sundays off and Takings would name the wrong busy days. Nobody
+ * can change those bookings in the app any more, so nothing is lost.
  */
 function moveToToday(saved: Tables, savedOn: string) {
   const days = Math.round((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${savedOn}T00:00:00Z`)) / 86_400_000);
@@ -407,6 +413,38 @@ function moveToToday(saved: Tables, savedOn: string) {
         if (row[c] != null) row[c] = addDays(String(row[c]), days);
       }
     }
+  }
+
+  const past = sampleHistory();
+  const kept = saved.bookings.filter((b) => !String(b.id).startsWith(HISTORY_ID));
+  const barbers = new Set((saved.barbers ?? []).map((b) => b.id));
+  const users = new Set((saved.users ?? []).map((u) => u.id));
+  const [[, clash]] = EXCLUDE.bookings!;
+  const end = Math.max(0, ...past.map((b) => ms(b.ends_at)));
+  const earlier = kept.filter((b) => ms(b.starts_at) < end);
+  saved.bookings = [
+    ...kept,
+    // A deleted shop or barber takes its history with it, and a customer who
+    // deleted their account is gone from theirs, as delete_my_account does.
+    ...past
+      .filter((b) => barbers.has(b.barber_id) && !earlier.some((other) => clash(b, other)))
+      .map((b) =>
+        b.customer_id == null || users.has(b.customer_id)
+          ? b
+          : { ...b, customer_id: null, guest_name: 'Deleted account', guest_phone: null, customer_note: null },
+      ),
+  ];
+}
+
+/** The sample bookings from before yesterday, as the seed lays them out for today. */
+function sampleHistory(): Row[] {
+  const kept = current;
+  current = emptyTables();
+  try {
+    seedFn?.();
+    return current.bookings.filter((b) => String(b.id).startsWith(HISTORY_ID));
+  } finally {
+    current = kept;
   }
 }
 
