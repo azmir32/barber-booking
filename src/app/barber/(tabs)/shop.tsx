@@ -1,7 +1,7 @@
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Share } from 'react-native';
+import { Share, type ViewStyle } from 'react-native';
 
 import { AccountPanel } from '@/components/account-panel';
 import { ClosedDaysCard } from '@/components/closed-days-card';
@@ -14,6 +14,9 @@ import { useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay } from '@/lib/time';
 import type { Shop } from '@/lib/types';
+
+// The booking link's buttons go two to a line, so four fit a phone without one left on its own.
+const linkAction: ViewStyle = { flexGrow: 1, flexBasis: '40%' };
 
 function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' | 'danger' } {
   if (shop.subscription_status === 'active') return { label: t('Subscription active'), tone: 'success' };
@@ -130,6 +133,7 @@ export default function MyShop() {
         <Row>
           <Button
             title={t('Share')}
+            style={linkAction}
             onPress={() =>
               // Browsers without a share sheet get the link copied instead.
               Share.share({ message: t('Book your next cut at {shop}: {link}', { shop: shop.name, link }) }).catch(() =>
@@ -137,8 +141,24 @@ export default function MyShop() {
               )
             }
           />
-          <Button title={copied ? t('Copied') : t('Copy')} variant="secondary" onPress={() => copyLink(link)} />
-          <Button title={t('Preview')} variant="ghost" onPress={() => router.push(`/shop/${shop.slug}`)} />
+          <Button
+            title={copied ? t('Copied') : t('Copy')}
+            variant="secondary"
+            style={linkAction}
+            onPress={() => copyLink(link)}
+          />
+          <Button
+            title={t('Print poster')}
+            variant="secondary"
+            style={linkAction}
+            onPress={() => router.push('/barber/poster')}
+          />
+          <Button
+            title={t('Preview')}
+            variant="ghost"
+            style={linkAction}
+            onPress={() => router.push(`/shop/${shop.slug}`)}
+          />
         </Row>
       </Card>
 

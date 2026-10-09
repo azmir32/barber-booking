@@ -526,4 +526,18 @@ export const ms: Record<string, string> = {
   'Free now': 'Ada masa kosong sekarang',
   'Next free: today, {time}': 'Masa kosong seterusnya: hari ini, {time}',
   'Next free: tomorrow, {time}': 'Masa kosong seterusnya: esok, {time}',
+
+  // Barber: the QR poster for the counter (barber/poster.tsx). The poster's
+  // own words are in English and Malay together, in lib/poster.ts.
+  'Print poster': 'Cetak poster',
+  'Shop poster': 'Poster kedai',
+  Print: 'Cetak',
+  'Print it for your counter or mirror. Walk-in customers scan the code with their phone camera to book.':
+    'Cetak dan tampal di kaunter atau cermin. Pelanggan walk-in boleh imbas kod ini dengan kamera telefon untuk menempah.',
+  'Customers can’t book from this poster until you go live on My shop.':
+    'Pelanggan tidak boleh menempah melalui poster ini sehingga anda buka tempahan di Kedai saya.',
+  'QR code for your booking link': 'Kod QR untuk pautan tempahan anda',
+  'Printing didn’t open here. Take a screenshot of the poster above and print or send that instead.':
+    'Tidak dapat mencetak di sini. Ambil tangkapan skrin poster di atas, kemudian cetak atau hantar gambar itu.',
+  'Link copied.': 'Pautan disalin.',
 };

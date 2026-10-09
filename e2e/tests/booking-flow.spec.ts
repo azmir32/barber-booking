@@ -139,6 +139,14 @@ test.describe.serial('booking flow', () => {
     await button(page, 'Go live').click();
     await expect(page.getByText('You are live')).toBeVisible();
     await snap(page, '08-my-shop');
+
+    // A poster for the counter, so walk-ins can scan the QR code and book. Not printed here.
+    await button(page, 'Print poster').click();
+    await expect(page.getByRole('heading', { name: shopName, exact: true })).toBeVisible();
+    await expect(page.getByRole('img', { name: 'QR code for your booking link' })).toBeVisible();
+    await snap(page, '08b-poster');
+    await page.getByLabel('Go back').click();
+    await expect(page.getByText('You are live')).toBeVisible();
     await signOut(page);
   });
 
