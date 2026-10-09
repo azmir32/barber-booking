@@ -130,7 +130,10 @@ test('today\'s hours leave out barbers who are away and follow the shop\'s clock
   assert.equal(off.error, null);
   assert.deepEqual(await listed(), ['09:00:00', '13:00:00']);
 
-  // Kiritimati and Pago Pago are 25 hours apart, so never on the same day.
+  // Kiritimati and Pago Pago are 25 hours apart, so never on the same day. The
+  // second barber's day off is Kajang's today, which in the evening is already
+  // over in Kiritimati, so only the first barber counts from here.
+  await ali.from('barbers').update({ is_active: false }).eq('id', barbers![1].id);
   const weekdayIn = (tz: string) => new Date(`${localDateString(new Date(), tz)}T00:00:00Z`).getUTCDay();
   await ali.rpc('set_barber_hours', {
     p_barber_id: barbers![0].id,

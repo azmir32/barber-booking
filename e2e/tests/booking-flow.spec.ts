@@ -179,6 +179,19 @@ test.describe.serial('booking flow', () => {
 
     await expect(page.getByText('You’re booked!')).toBeVisible();
     await snap(page, '11-booked');
+    // So the phone reminds them: opens Google Calendar's add-event page, answered here to stay offline.
+    await page.context().route('https://calendar.google.com/**', (route) =>
+      route.fulfill({ contentType: 'text/html', body: '<title>Google Calendar</title>' }),
+    );
+    const [calendar] = await Promise.all([page.context().waitForEvent('page'), button(page, 'Add to calendar').click()]);
+    await calendar.waitForLoadState();
+    const added = new URL(calendar.url());
+    await calendar.close();
+    expect(`${added.origin}${added.pathname}`).toBe('https://calendar.google.com/calendar/render');
+    expect(added.searchParams.get('text')).toBe(`Haircut at ${shopName}`);
+    expect(added.searchParams.get('location')).toBe('No. 12, Jalan Reko, Kajang');
+    expect(added.searchParams.get('details')).toContain(`Barber: ${barber.name}\nRM20 · Pay at the shop.`);
+    expect(added.searchParams.get('details')).toContain(`/shop/${shopSlug}`);
     await button(page, 'See my bookings').click();
     await expect(page.getByText('Upcoming')).toBeVisible();
     await expect(page.getByText(`Haircut with ${barber.name} · RM20`)).toBeVisible();
@@ -201,6 +214,18 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Booking moved')).toBeVisible();
     await expect(page.getByText(new RegExp(`^Was .* at ${bookedTime}\\.$`))).toBeVisible();
     await expect(button(page, 'WhatsApp shop')).toBeVisible();
+    // The calendar entry added above is now at the old time: the new time can be added, and the old one deleted.
+    await expect(page.getByText('Added it to your calendar before? Delete the old one there.')).toBeVisible();
+    const [movedCalendar] = await Promise.all([
+      page.context().waitForEvent('page'),
+      button(page, 'Add to calendar').click(),
+    ]);
+    await movedCalendar.waitForLoadState();
+    const movedEntry = new URL(movedCalendar.url());
+    await movedCalendar.close();
+    expect(movedEntry.searchParams.get('text')).toBe(`Haircut at ${shopName}`);
+    expect(movedEntry.searchParams.get('dates')).toMatch(/^\d{8}T\d{6}Z\/\d{8}T\d{6}Z$/);
+    expect(movedEntry.searchParams.get('dates')).not.toBe(added.searchParams.get('dates'));
     bookedTime = movedTo;
     await button(page, 'See my bookings').click();
     await expect(page.getByText(new RegExp(`, ${bookedTime}$`))).toBeVisible();

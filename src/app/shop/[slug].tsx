@@ -4,10 +4,13 @@ import { Linking, View, type LayoutChangeEvent, type ScrollView } from 'react-na
 
 import { DayPicker } from '@/components/day-picker';
 import { Button, Card, Chip, Empty, ErrorText, Field, Loading, Row, Screen, Section, T } from '@/components/ui';
+import { APP_NAME, bookingLink } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
+import { addToCalendar } from '@/lib/add-to-calendar';
 import { useAuth } from '@/lib/auth';
+import { bookingEvent } from '@/lib/calendar';
 import { t } from '@/lib/lang';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -469,6 +472,21 @@ export default function ShopPage() {
               ? t('Was {service} on {day} at {time}.', { service: withBarber(moving), ...when(moving.starts_at) })
               : t('Was {day} at {time}.', when(moving.starts_at))}
           </T>
+          {/* An entry at the old time would remind them at the wrong time. Adding again
+              doesn't move it in Google Calendar, so the old one has to be deleted there. */}
+          <Button
+            title={t('Add to calendar')}
+            variant="secondary"
+            style={{ marginTop: Spacing.sm }}
+            onPress={() =>
+              addToCalendar(
+                bookingEvent({ booking: moved, shop, barber: newBarber, link: bookingLink(shop.slug), app: APP_NAME }),
+              )
+            }
+          />
+          <T variant="small" style={{ textAlign: 'center' }}>
+            {t('Added it to your calendar before? Delete the old one there.')}
+          </T>
         </Empty>
         <Card>
           <T variant="label">{shop.name}</T>
@@ -500,6 +518,14 @@ export default function ShopPage() {
         })
       : undefined;
     const place = encodeURIComponent(`${shop.name}, ${shop.address || shop.area}`);
+    const calendarEvent = () =>
+      bookingEvent({
+        booking: confirmed,
+        shop,
+        barber: barbers.find((x) => x.id === confirmed.barber_id)?.name,
+        link: bookingLink(shop.slug),
+        app: APP_NAME,
+      });
     return (
       // A new key starts the booked page at the top instead of where the picker was scrolled.
       <Screen key="booked" edges={[]}>
@@ -513,6 +539,13 @@ export default function ShopPage() {
               “{confirmed.customer_note}”
             </T>
           ) : null}
+          {/* Right under the time it saves, so the phone reminds them and they don't miss it. */}
+          <Button
+            title={t('Add to calendar')}
+            variant="secondary"
+            style={{ marginTop: Spacing.sm }}
+            onPress={() => addToCalendar(calendarEvent())}
+          />
         </Empty>
         <Card>
           <T variant="label">{shop.name}</T>

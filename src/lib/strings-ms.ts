@@ -572,4 +572,14 @@ export const ms: Record<string, string> = {
   'Mark as reminded': 'Tandakan sudah diingatkan',
   'Mark {name} as reminded': 'Tandakan {name} sudah diingatkan',
   OK: 'OK',
+
+  // Customer: add a booking to the phone's calendar (lib/calendar.ts)
+  'Add to calendar': 'Tambah ke kalendar',
+  '{service} at {shop}': '{service} di {shop}',
+  'Barber: {name}': 'Barber: {name}',
+  'Shop page: {link}': 'Halaman kedai: {link}',
+  'To change or cancel, go to My bookings in {app}.': 'Untuk tukar atau batal, pergi ke Tempahan saya dalam {app}.',
+  'Added it to your calendar before? Delete the old one there.':
+    'Sudah tambah ke kalendar sebelum ini? Padam yang lama di sana.',
+  'Added it to your calendar? Delete it there too.': 'Sudah tambah ke kalendar? Padam di sana juga.',
 };

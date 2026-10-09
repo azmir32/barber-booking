@@ -4,9 +4,12 @@ import { Linking, View } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
+import { APP_NAME, bookingLink } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
+import { addToCalendar } from '@/lib/add-to-calendar';
 import { useAuth } from '@/lib/auth';
+import { bookingEvent } from '@/lib/calendar';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { whatsappUrl } from '@/lib/phone';
@@ -108,13 +111,15 @@ export default function MyBookings() {
 
   async function cancel(b: MyBooking) {
     const tz = b.shops?.time_zone;
+    const what = t('{service} on {day} at {time}', {
+      service: b.service_name,
+      day: formatDay(b.starts_at, tz),
+      time: formatTime(b.starts_at, tz),
+    });
+    // The app can't take it out of their calendar, and its reminder would still go off.
     const ok = await confirmAction(
       t('Cancel booking?'),
-      t('{service} on {day} at {time}', {
-        service: b.service_name,
-        day: formatDay(b.starts_at, tz),
-        time: formatTime(b.starts_at, tz),
-      }),
+      `${what}\n\n${t('Added it to your calendar? Delete it there too.')}`,
       t('Cancel booking'),
     );
     if (!ok) return;
@@ -172,6 +177,23 @@ export default function MyBookings() {
                   ) : null}
                   {shop ? (
                     <Button title={t('Directions')} variant="secondary" onPress={() => Linking.openURL(directionsUrl(shop))} />
+                  ) : null}
+                  {shop ? (
+                    <Button
+                      title={t('Add to calendar')}
+                      variant="secondary"
+                      onPress={() =>
+                        addToCalendar(
+                          bookingEvent({
+                            booking: b,
+                            shop,
+                            barber: b.barbers?.name,
+                            link: bookingLink(shop.slug),
+                            app: APP_NAME,
+                          }),
+                        )
+                      }
+                    />
                   ) : null}
                   {/* Needs the service to find free times, and can't move once the time has started. */}
                   {shop && b.service_id && new Date(b.starts_at).getTime() > now ? (
