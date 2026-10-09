@@ -8,6 +8,7 @@ import { ClosedDaysCard } from '@/components/closed-days-card';
 import { ShopForm } from '@/components/shop-form';
 import { Badge, Button, Card, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
+import { useNow } from '@/hooks/use-now';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
@@ -32,6 +33,7 @@ function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' |
 
 export default function MyShop() {
   const { shop, reload } = useMyShop();
+  const now = useNow();
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +59,9 @@ export default function MyShop() {
   if (!shop) return null;
   const link = bookingLink(shop.slug);
   const billing = billingText(shop);
+  // Published but not paid up (the free month ended): customers can't find or book the shop.
+  const unpaid = shop.is_published && billing.tone === 'danger';
+  const trialOver = new Date(shop.trial_ends_at).getTime() <= now;
   const needsService = !shop.is_published && hasServices === false;
 
   async function togglePublished() {
@@ -96,19 +101,25 @@ export default function MyShop() {
 
       <Card>
         <Row style={{ justifyContent: 'space-between' }}>
-          <T variant="heading">{shop.is_published ? t('You are live') : t('Not live yet')}</T>
+          <T variant="heading">
+            {unpaid ? t('Hidden from customers') : shop.is_published ? t('You are live') : t('Not live yet')}
+          </T>
           <Badge label={billing.label} tone={billing.tone} />
         </Row>
         <T variant="muted">
-          {shop.is_published
-            ? t('Customers can find you and book. Share your link everywhere.')
-            : needsService
-              ? t('Add a service before you go live, so customers have something to book.')
-              : t('Go live when your services and hours are ready.')}
+          {unpaid
+            ? t('Customers can’t find your shop or book until your subscription is active.')
+            : shop.is_published
+              ? t('Customers can find you and book. Share your link everywhere.')
+              : needsService
+                ? t('Add a service before you go live, so customers have something to book.')
+                : t('Go live when your services and hours are ready.')}
         </T>
         {shop.subscription_status === 'trialing' ? (
           <T variant="small">
-            {t('Your free month ends on {day}.', { day: formatDay(shop.trial_ends_at, shop.time_zone) })}
+            {trialOver
+              ? t('Your free month ended on {day}.', { day: formatDay(shop.trial_ends_at, shop.time_zone) })
+              : t('Your free month ends on {day}.', { day: formatDay(shop.trial_ends_at, shop.time_zone) })}
           </T>
         ) : null}
         <ErrorText message={error} />

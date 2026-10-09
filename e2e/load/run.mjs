@@ -79,6 +79,9 @@ const SCENARIOS = {
           .order('sort_order')
           .order('name'),
       ),
+      // Closed days for the day picker and today's hours for "Open now".
+      must(anon.rpc('shop_closed_days', { p_shop_id: shop.data.id, p_from: localDate(0), p_to: localDate(13) })),
+      must(anon.rpc('shop_hours_today', { p_shop_id: shop.data.id })),
     ]);
     return shop;
   },

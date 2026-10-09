@@ -284,10 +284,14 @@ export const ms: Record<string, string> = {
   'Trial ended, customers can no longer book': 'Percubaan tamat, pelanggan tidak boleh menempah',
   'You are live': 'Tempahan dibuka',
   'Not live yet': 'Belum dibuka',
+  'Hidden from customers': 'Tersembunyi daripada pelanggan',
+  'Customers can’t find your shop or book until your subscription is active.':
+    'Pelanggan tidak boleh cari kedai anda atau menempah sehingga langganan anda aktif.',
   'Customers can find you and book. Share your link everywhere.':
     'Pelanggan boleh cari dan tempah anda. Kongsi pautan anda di mana-mana.',
   'Go live when your services and hours are ready.': 'Buka tempahan apabila servis dan waktu kerja anda sudah sedia.',
   'Your free month ends on {day}.': 'Bulan percuma anda tamat pada {day}.',
+  'Your free month ended on {day}.': 'Bulan percuma anda telah tamat pada {day}.',
   'Pause bookings': 'Tutup tempahan sementara',
   'Go live': 'Buka tempahan',
   'Your booking link': 'Pautan tempahan anda',
