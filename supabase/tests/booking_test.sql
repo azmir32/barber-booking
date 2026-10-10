@@ -1698,6 +1698,305 @@ begin
 end $$;
 rollback;
 
+-- Reviews ----------------------------------------------------------------------
+-- Customers rate a cut once the shop has marked it done, for 14 days after
+-- it started. Each shop's count and total follow every change, and the
+-- owner replies. Ben's cuts are with Faiz and Zul, chairs added for this part.
+begin;
+reset role;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug, is_published) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts', true);
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-00000000005a', 'Faiz'),
+  ('00000000-0000-0000-0000-0000000000a7', '00000000-0000-0000-0000-00000000005a', 'Zul'),
+  ('00000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-00000000005b', 'Rahman');
+-- A surname, and spaces typed around the name.
+update profiles set full_name = '  Ben   Lee ' where id = '00000000-0000-0000-0000-0000000000c1';
+insert into bookings (id, shop_id, barber_id, customer_id, guest_name, service_name, price, starts_at, ends_at, status)
+select x.id::uuid, x.shop::uuid, x.barber::uuid, x.customer::uuid, x.guest, 'Haircut', 25, x.at, x.at + interval '30 minutes',
+       x.status::booking_status
+from (values
+  -- Ben: done two hours ago, done just inside 14 days, and just outside.
+  ('00000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', null, now() - interval '2 hours', 'completed'),
+  ('00000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', null, now() - interval '14 days' + interval '1 minute', 'completed'),
+  ('00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a7',
+   '00000000-0000-0000-0000-0000000000c1', null, now() - interval '14 days', 'completed'),
+  -- Past but never marked done, a no-show, and one still to come.
+  ('00000000-0000-0000-0000-0000000000f4', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', null, now() - interval '3 days', 'confirmed'),
+  ('00000000-0000-0000-0000-0000000000f5', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', null, now() - interval '4 days', 'no_show'),
+  ('00000000-0000-0000-0000-0000000000f6', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', null, now() + interval '1 day', 'confirmed'),
+  -- Chong's cut, a walk-in's, Ben's at the other shop, and the owner's own at his.
+  ('00000000-0000-0000-0000-0000000000f7', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c2', null, now() - interval '5 days', 'completed'),
+  ('00000000-0000-0000-0000-0000000000f8', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   null, 'Pak Abu', now() - interval '6 days', 'completed'),
+  ('00000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000a9',
+   '00000000-0000-0000-0000-0000000000c1', null, now() - interval '1 day', 'completed'),
+  ('00000000-0000-0000-0000-0000000000fa', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000b1', null, now() - interval '7 days', 'completed')
+) x(id, shop, barber, customer, guest, at, status);
+
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  ali uuid := '00000000-0000-0000-0000-00000000005a';
+  kemas uuid := '00000000-0000-0000-0000-00000000005b';
+  r reviews;
+  b uuid;
+  n int;
+begin
+  r := rate_booking('00000000-0000-0000-0000-0000000000f1', 5, E'  Great fade, very neat \n');
+  assert r.rating = 5 and r.comment = 'Great fade, very neat' and r.first_name = 'Ben' and r.shop_id = ali
+     and r.barber_id = '00000000-0000-0000-0000-0000000000a6' and r.customer_id = auth.uid()
+     and r.reply is null and r.created_at = now(), 'a rating, with only the first name: ' || row(r.*)::text;
+  assert (select rating_count = 1 and rating_sum = 5 from shops where id = ali), 'the shop counts it';
+
+  -- The name they go by: the word after Muhammad or Mohd, but someone named
+  -- only Muhammad stays Muhammad. Each rating takes the name as it is then.
+  update profiles set full_name = E'\tMohd. Ben bin Hassan' where id = auth.uid();
+  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5)).first_name = 'Ben', 'Mohd is passed over';
+  update profiles set full_name = 'Muhammad' where id = auth.uid();
+  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5)).first_name = 'Muhammad', 'a lone Muhammad stays';
+  update profiles set full_name = '  Ben   Lee ' where id = auth.uid();
+
+  -- Rating again inside the window changes the same review.
+  r := rate_booking('00000000-0000-0000-0000-0000000000f1', 3, '   ');
+  assert r.rating = 3 and r.comment is null, 'rating again changes it, and a blank comment is none';
+  assert (select count(*) from reviews where booking_id = '00000000-0000-0000-0000-0000000000f1') = 1, 'still one review';
+  assert (select rating_count = 1 and rating_sum = 3 from shops where id = ali), 'the total follows the change';
+  r := rate_booking('00000000-0000-0000-0000-0000000000f2', 4);
+  assert (select rating_count = 2 and rating_sum = 7 from shops where id = ali), 'a minute inside 14 days still counts';
+  r := rate_booking('00000000-0000-0000-0000-0000000000f9', 5, 'Kemas!');
+  assert (select rating_count = 1 and rating_sum = 5 from shops where id = kemas)
+     and (select rating_count = 2 from shops where id = ali), 'each shop counts its own';
+
+  -- 280 characters fit; 281 don't, and nothing changes.
+  r := rate_booking('00000000-0000-0000-0000-0000000000f2', 4, repeat('x', 280));
+  assert length(r.comment) = 280, 'a comment of 280 characters';
+  begin
+    perform rate_booking('00000000-0000-0000-0000-0000000000f2', 2, repeat('x', 281));
+    raise exception 'a comment over 280 characters should be refused';
+  exception when sqlstate '22001' then
+    assert sqlerrm = 'Please keep your comment under 280 characters.', 'unexpected message: ' || sqlerrm;
+  end;
+  assert (select rating from reviews where booking_id = '00000000-0000-0000-0000-0000000000f2') = 4, 'the review stays';
+
+  -- Exactly 14 days after, never marked done, a no-show, and still to come.
+  foreach b in array array['00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-0000000000f4',
+                           '00000000-0000-0000-0000-0000000000f5', '00000000-0000-0000-0000-0000000000f6']::uuid[] loop
+    begin
+      perform rate_booking(b, 5);
+      raise exception 'booking % should not be rated', b;
+    exception when sqlstate '42501' then
+      assert sqlerrm = 'You can rate a cut for 14 days, once the shop marks it done.', 'unexpected message: ' || sqlerrm;
+    end;
+  end loop;
+  foreach n in array array[0, 6, null]::int[] loop
+    begin
+      perform rate_booking('00000000-0000-0000-0000-0000000000f1', n);
+      raise exception '% stars should be refused', n;
+    exception when sqlstate '22023' then
+      assert sqlerrm = 'Pick from 1 to 5 stars.', 'unexpected message: ' || sqlerrm;
+    end;
+  end loop;
+  -- Someone else's cut, a walk-in's and one that doesn't exist.
+  foreach b in array array['00000000-0000-0000-0000-0000000000f7', '00000000-0000-0000-0000-0000000000f8',
+                           gen_random_uuid()]::uuid[] loop
+    begin
+      perform rate_booking(b, 5);
+      raise exception 'booking % is not Ben''s to rate', b;
+    exception when sqlstate 'P0002' then
+      assert sqlerrm = 'Booking not found.', 'unexpected message: ' || sqlerrm;
+    end;
+  end loop;
+  assert (select rating_count = 2 and rating_sum = 7 from shops where id = ali), 'refusals change no count';
+
+  -- Reviews are only written through the functions.
+  begin
+    insert into reviews (booking_id, shop_id, barber_id, customer_id, rating, first_name)
+    values ('00000000-0000-0000-0000-0000000000f3', ali, '00000000-0000-0000-0000-0000000000a6', auth.uid(), 5, 'Ben');
+    raise exception 'reviews should not be inserted directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update reviews set rating = 5;
+    raise exception 'reviews should not be changed directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from reviews;
+    raise exception 'reviews should not be deleted directly';
+  exception when insufficient_privilege then null;
+  end;
+
+  -- My bookings has each cut's review, or none.
+  assert (select e #>> '{review,rating}' = '3' and e #> '{review,comment}' = 'null'::jsonb
+          from jsonb_array_elements(my_bookings()) e where e ->> 'id' = '00000000-0000-0000-0000-0000000000f1'),
+    'my_bookings should carry the review';
+  assert (select e -> 'review' = 'null'::jsonb
+          from jsonb_array_elements(my_bookings()) e where e ->> 'id' = '00000000-0000-0000-0000-0000000000f4'),
+    'a cut without a review has none';
+end $$;
+
+-- Chong rates his: 3, 4 and 4 make 3.7 on the shop list.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f7', 4, 'Quick and tidy');
+  assert (select rating_count = 3 and rating_avg = 3.7 from find_shops() where id = '00000000-0000-0000-0000-00000000005a'),
+    'the shop list has the count and the average to one decimal';
+  assert (select rating_count = 1 and rating_avg = 5 from find_shops() where id = '00000000-0000-0000-0000-00000000005b'),
+    'and each shop''s own';
+end $$;
+
+-- Owners reply to their own shop's reviews, can't touch the counts, and
+-- can't rate their own shop.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare r reviews;
+begin
+  begin
+    update shops set rating_count = 100;
+    raise exception 'owners should not change their review count';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update shops set rating_sum = 500;
+    raise exception 'owners should not change their review total';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into shops (owner_id, name, slug, rating_count, rating_sum)
+    values (auth.uid(), 'Five Stars', 'five-stars', 100, 500);
+    raise exception 'a shop should not start with reviews';
+  exception when insufficient_privilege then null;
+  end;
+
+  r := reply_to_review('00000000-0000-0000-0000-0000000000f7', E'  Thanks Chong, see you next month!\n');
+  assert r.reply = 'Thanks Chong, see you next month!' and r.replied_at = now() and r.rating = 4,
+    'the owner replies: ' || row(r.*)::text;
+  assert (select rating_count = 3 and rating_sum = 11 from shops where id = '00000000-0000-0000-0000-00000000005a'),
+    'a reply changes no count';
+  r := reply_to_review('00000000-0000-0000-0000-0000000000f7', 'Thanks Chong!');
+  assert r.reply = 'Thanks Chong!', 'the owner changes the reply';
+  begin
+    perform reply_to_review('00000000-0000-0000-0000-0000000000f7', repeat('x', 281));
+    raise exception 'a reply over 280 characters should be refused';
+  exception when sqlstate '22001' then
+    assert sqlerrm = 'Please keep your reply under 280 characters.', 'unexpected message: ' || sqlerrm;
+  end;
+  r := reply_to_review('00000000-0000-0000-0000-0000000000f1', 'Sorry it wasn''t right, Ben.');
+  r := reply_to_review('00000000-0000-0000-0000-0000000000f1', '  ');
+  assert r.reply is null and r.replied_at is null, 'an empty reply takes it away';
+
+  -- Not another shop's review, nor a cut nobody rated.
+  foreach r.booking_id in array array['00000000-0000-0000-0000-0000000000f9', '00000000-0000-0000-0000-0000000000f8']::uuid[] loop
+    begin
+      perform reply_to_review(r.booking_id, 'Thanks!');
+      raise exception 'the owner should not reply to %', r.booking_id;
+    exception when sqlstate 'P0002' then
+      assert sqlerrm = 'Review not found.', 'unexpected message: ' || sqlerrm;
+    end;
+  end loop;
+  begin
+    perform rate_booking('00000000-0000-0000-0000-0000000000fa', 5, 'Best in town');
+    raise exception 'an owner should not rate their own shop';
+  exception when sqlstate '42501' then
+    assert sqlerrm = 'You can''t rate your own shop.', 'unexpected message: ' || sqlerrm;
+  end;
+end $$;
+
+-- The customer can't reply, nor can a guest rate or reply.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform reply_to_review('00000000-0000-0000-0000-0000000000f1', 'Thanks to me');
+  raise exception 'customers should not reply';
+exception when sqlstate 'P0002' then null;
+end $$;
+-- A guest's request carries no account.
+set request.jwt.claim.sub = '';
+set role anon;
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f1', 5);
+  raise exception 'guests must not call rate_booking';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform reply_to_review('00000000-0000-0000-0000-0000000000f1', 'Hi');
+  raise exception 'guests must not call reply_to_review';
+exception when insufficient_privilege then null;
+end $$;
+
+-- Anyone reads a live shop's reviews, but not whose account wrote them.
+do $$ begin
+  assert (select count(*) from reviews) = 4, 'guests read live shops'' reviews';
+  assert (select array_agg(first_name order by first_name) from reviews where shop_id = '00000000-0000-0000-0000-00000000005a')
+         = array['Ben', 'Ben', 'Chong'], 'with the first name only';
+  assert (select reply from reviews where booking_id = '00000000-0000-0000-0000-0000000000f7') = 'Thanks Chong!',
+    'and the shop''s reply';
+  begin
+    perform customer_id from reviews;
+    raise exception 'guests should not see who wrote a review';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- A paused shop's reviews are hidden, except from its owner and from the
+-- reviewer, who still sees their own.
+reset role;
+update shops set is_published = false where id = '00000000-0000-0000-0000-00000000005b';
+set request.jwt.claim.sub = '';
+set role anon;
+do $$ begin
+  assert (select count(*) from reviews where shop_id = '00000000-0000-0000-0000-00000000005b') = 0, 'hidden from guests';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  assert (select count(*) from reviews) = 3, 'other customers see only the live shop''s';
+  begin
+    perform customer_id from reviews;
+    raise exception 'customers should not see who wrote a review either';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert (select count(*) from reviews where shop_id = '00000000-0000-0000-0000-00000000005b') = 1, 'the reviewer sees their own';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert (select count(*) from reviews where shop_id = '00000000-0000-0000-0000-00000000005b') = 1,
+    'the owner still sees their paused shop''s';
+end $$;
+
+-- A customer who deletes their account takes their reviews with them, and
+-- an owner their shop's.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert (select rating_count = 2 and rating_sum = 7 from shops where id = '00000000-0000-0000-0000-00000000005a'),
+    'a deleted customer''s review no longer counts';
+  assert not exists (select 1 from reviews where booking_id = '00000000-0000-0000-0000-0000000000f7'), 'and is gone';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert not exists (select 1 from reviews where shop_id = '00000000-0000-0000-0000-00000000005b'), 'the shop''s reviews go with it';
+  assert (select count(*) from reviews) = 2, 'and only those';
+end $$;
+rollback;
+
 -- Signed up as a barber by mistake --------------------------------------------
 -- Before making a shop, a barber account can turn into a customer one. An
 -- owner can't, or their shop would be left without anyone to run it.

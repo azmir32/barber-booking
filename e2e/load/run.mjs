@@ -82,6 +82,16 @@ const SCENARIOS = {
       // Closed days for the day picker and today's hours for "Open now".
       must(anon.rpc('shop_closed_days', { p_shop_id: shop.data.id, p_from: localDate(0), p_to: localDate(13) })),
       must(anon.rpc('shop_hours_today', { p_shop_id: shop.data.id })),
+      // The newest reviews, and one more to know whether there are others.
+      must(
+        anon
+          .from('reviews')
+          .select('booking_id, rating, comment, first_name, reply, replied_at, created_at, barbers(name)')
+          .eq('shop_id', shop.data.id)
+          .order('created_at', { ascending: false })
+          .order('booking_id')
+          .range(0, 3),
+      ),
     ]);
     return shop;
   },

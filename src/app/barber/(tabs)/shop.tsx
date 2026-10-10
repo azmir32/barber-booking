@@ -8,6 +8,7 @@ import { AccountPanel } from '@/components/account-panel';
 import { ClosedDaysCard } from '@/components/closed-days-card';
 import { CustomersCard } from '@/components/customers-card';
 import { KeepLiveButton } from '@/components/keep-live-button';
+import { ReviewsCard } from '@/components/reviews-card';
 import { ShopForm } from '@/components/shop-form';
 import { TakingsCard } from '@/components/takings-card';
 import { Badge, Button, Card, ErrorText, Row, Screen, Section, T } from '@/components/ui';
@@ -171,6 +172,8 @@ export default function MyShop() {
       <TakingsCard shop={shop} />
 
       <CustomersCard />
+
+      <ReviewsCard shopId={shop.id} />
 
       <ClosedDaysCard shop={shop} />
 

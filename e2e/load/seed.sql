@@ -71,5 +71,23 @@ from generate_series(1, :shops) i,
 where extract(dow from current_date + d) <> 0
   and (d <= 0 or random() < 0.6);
 
+\echo › reviews
+-- About one in seven finished cuts is rated a few hours later, mostly four
+-- or five stars, half with a comment. The counting trigger is off while
+-- they go in, and each shop's count and total are added up once at the end.
+alter table public.reviews disable trigger reviews_count;
+insert into public.reviews (booking_id, shop_id, barber_id, customer_id, rating, comment, first_name,
+                            created_at, updated_at)
+select b.id, b.shop_id, b.barber_id, b.customer_id,
+       (array[5, 5, 5, 5, 5, 4, 4, 4, 3, 2])[1 + floor(random() * 10)::int],
+       case when random() < 0.5 then 'Kemas dan cepat. Will come again.' end,
+       'Customer', b.ends_at + interval '3 hours', b.ends_at + interval '3 hours'
+from public.bookings b
+where b.status = 'completed' and b.customer_id is not null and random() < 0.15;
+alter table public.reviews enable trigger reviews_count;
+update public.shops s set rating_count = x.n, rating_sum = x.total
+from (select shop_id, count(*)::int as n, sum(rating)::int as total from public.reviews group by shop_id) x
+where x.shop_id = s.id;
+
 analyze;
 \echo › done

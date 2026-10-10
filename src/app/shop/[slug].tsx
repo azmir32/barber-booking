@@ -3,6 +3,8 @@ import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } fro
 import { Linking, View, type LayoutChangeEvent, type ScrollView, type TextInput } from 'react-native';
 
 import { DayPicker } from '@/components/day-picker';
+import { RatingSummary } from '@/components/reviews';
+import { ShopReviews } from '@/components/shop-reviews';
 import { Button, Card, Chip, Empty, ErrorText, Field, Loading, Row, Screen, Section, T } from '@/components/ui';
 import { APP_NAME, bookingLink } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
@@ -16,6 +18,7 @@ import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
+import { ratingAverage } from '@/lib/reviews';
 import {
   formatClockOnly,
   formatDay,
@@ -140,6 +143,7 @@ export default function ShopPage() {
   // Where the steps below the services (or the booking being moved) start, and a step to scroll to once it is laid out.
   const stepY = useRef<Partial<Record<Step, number>>>({});
   const scrollAfterLayout = useRef<Step | null>(null);
+  const reviewsY = useRef<number | null>(null);
 
   useEffect(() => {
     if (waitForAuth) return;
@@ -640,6 +644,15 @@ export default function ShopPage() {
       <View style={{ gap: Spacing.xs }}>
         <T variant="title">{shop.name}</T>
         <T variant="muted">{shop.address || shop.area}</T>
+        {moving ? null : (
+          <RatingSummary
+            average={ratingAverage(shop.rating_sum, shop.rating_count)}
+            count={shop.rating_count}
+            onPress={() => {
+              if (reviewsY.current != null) scrollRef.current?.scrollTo({ y: Math.max(0, reviewsY.current - Spacing.lg) });
+            }}
+          />
+        )}
         {openNow ? (
           <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
             {openNow.label}
@@ -805,6 +818,11 @@ export default function ShopPage() {
             </View>
           ) : null}
         </>
+      )}
+
+      {/* Below the steps, so choosing a time is as quick as ever; a booking being moved needs none of it. */}
+      {moving ? null : (
+        <ShopReviews shop={shop} now={now} onLayout={(e) => (reviewsY.current = e.nativeEvent.layout.y)} />
       )}
 
       {week.some(Boolean) ? (

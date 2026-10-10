@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshControl, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { RatingSummary } from '@/components/reviews';
 import { Button, Card, Chip, Empty, Field, Row, T } from '@/components/ui';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
@@ -22,6 +23,9 @@ type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'abo
   closes_today: string | null;
   /** The earliest free start for the shortest service, today or else tomorrow; null when neither has one. */
   next_free_at: string | null;
+  rating_count: number;
+  /** Average stars to one decimal; null with no reviews. */
+  rating_avg: number | null;
 };
 type Area = { area: string; shops: number };
 
@@ -256,6 +260,7 @@ export default function Explore() {
                 </T>
               ) : null}
               <Row>
+                <RatingSummary average={shop.rating_avg == null ? null : Number(shop.rating_avg)} count={shop.rating_count} />
                 {shop.from_price != null ? (
                   <T variant="label">{t('From {price}', { price: formatPrice(Number(shop.from_price)) })}</T>
                 ) : null}

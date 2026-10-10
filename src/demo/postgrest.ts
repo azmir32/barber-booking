@@ -74,6 +74,11 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
   },
   // No policies: only the closing functions read and write it.
   shop_closures: { select: () => false },
+  // A live shop's reviews are public, its owner sees all of theirs, and
+  // reviewers always see their own.
+  reviews: {
+    select: (r, c) => shopVisible(r.shop_id, c.uid) || (c.uid != null && r.customer_id === c.uid),
+  },
 };
 
 /** Column grants: who may write which columns (everything else is open). */
@@ -85,7 +90,22 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
   },
   bookings: { insert: [], update: [], delete: [] },
   shop_closures: { insert: [], update: [], delete: [] },
+  reviews: { insert: [], update: [], delete: [] },
 };
+
+/**
+ * Tables only some of whose columns may be read. Reviews leave out who
+ * wrote them: an account id would tie one person's reviews together.
+ */
+const READABLE: Partial<Record<TableName, string[]>> = {
+  reviews: Object.keys(COLUMNS.reviews).filter((c) => c !== 'customer_id'),
+};
+
+/** Postgres refuses a query that names a column the caller may not read, select * included. */
+function checkReadable(table: TableName, column: string | null, c: Caller) {
+  const readable = READABLE[table];
+  if (readable && (column == null || !readable.includes(column))) throw denied(c, `permission denied for table ${table}`);
+}
 
 function denied(c: Caller, message: string) {
   return new PgError('42501', message, c.uid ? 403 : 401);
@@ -165,10 +185,11 @@ function parseFilters(params: URLSearchParams): Filter[] {
   return filters;
 }
 
-function matches(table: TableName, row: Row, f: Filter): boolean {
+function matches(table: TableName, row: Row, f: Filter, c: Caller): boolean {
   if (!(f.column in COLUMNS[table])) {
     throw new PgError('42703', `column ${table}.${f.column} does not exist`, 400);
   }
+  checkReadable(table, f.column, c);
   const value = row[f.column];
   let result: boolean;
   if (f.op === 'is') {
@@ -205,9 +226,10 @@ function parseOrder(text: string | null): Order[] {
   });
 }
 
-function sortRows(table: TableName, rows: Row[], order: Order[]) {
+function sortRows(table: TableName, rows: Row[], order: Order[], c: Caller) {
   for (const o of order) {
     if (!(o.column in COLUMNS[table])) throw new PgError('42703', `column ${table}.${o.column} does not exist`, 400);
+    checkReadable(table, o.column, c);
   }
   return [...rows].sort((a, b) => {
     for (const o of order) {
@@ -225,7 +247,13 @@ function sortRows(table: TableName, rows: Row[], order: Order[]) {
 
 // Embedding ------------------------------------------------------------------
 
-type Relation = { table: TableName; one: boolean; matches: (parent: Row, child: Row) => boolean };
+type Relation = {
+  table: TableName;
+  one: boolean;
+  matches: (parent: Row, child: Row) => boolean;
+  /** The foreign key column the join reads. */
+  via: [TableName, string];
+};
 
 function relation(from: TableName, name: string, hints: string[]): Relation {
   const fkHint = hints.find((h) => h !== 'inner' && h !== 'left');
@@ -233,10 +261,10 @@ function relation(from: TableName, name: string, hints: string[]): Relation {
   for (const fk of FOREIGN_KEYS) {
     if (fkHint && fk.name !== fkHint) continue;
     if (fk.table === from && fk.references === name) {
-      found.push({ table: fk.references, one: true, matches: (p, c) => p[fk.column] === c.id });
+      found.push({ table: fk.references, one: true, matches: (p, c) => p[fk.column] === c.id, via: [fk.table, fk.column] });
     } else if (fk.references === from && fk.table === name) {
-      const unique = fk.table === 'shops' && fk.column === 'owner_id';
-      found.push({ table: fk.table, one: unique, matches: (p, c) => c[fk.column] === p.id });
+      const unique = (fk.table === 'shops' && fk.column === 'owner_id') || (fk.table === 'reviews' && fk.column === 'booking_id');
+      found.push({ table: fk.table, one: unique, matches: (p, c) => c[fk.column] === p.id, via: [fk.table, fk.column] });
     }
   }
   if (found.length !== 1 || name === 'users') {
@@ -256,19 +284,25 @@ function shape(table: TableName, row: Row, items: Item[], path: string, q: Query
   const out: Row = {};
   for (const item of items) {
     if (item.kind === 'star') {
+      checkReadable(table, null, q.caller);
       for (const column of Object.keys(COLUMNS[table])) out[column] = row[column];
     } else if (item.kind === 'column') {
       if (!(item.name in COLUMNS[table])) {
         throw new PgError('42703', `column ${table}.${item.name} does not exist`, 400);
       }
+      checkReadable(table, item.name, q.caller);
       out[item.alias] = row[item.name];
     } else {
       const rel = relation(table, item.name, item.hints);
+      checkReadable(...rel.via, q.caller);
       const childPath = path ? `${path}.${item.alias}` : item.alias;
       const ownFilters = q.filters.filter((f) => f.path === childPath || (f.path === (path ? `${path}.${item.name}` : item.name)));
-      let children = tables()[rel.table]
+      let found = tables()[rel.table]
         .filter((child) => rel.matches(row, child) && canSee(rel.table, child, q.caller))
-        .filter((child) => ownFilters.every((f) => matches(rel.table, child, f)))
+        .filter((child) => ownFilters.every((f) => matches(rel.table, child, f, q.caller)));
+      // Sorted before shaping, as the order may be by a column the select leaves out.
+      if (!rel.one) found = sortRows(rel.table, found, parseOrder(q.params.get(`${childPath}.order`)), q.caller);
+      let children = found
         .map((child) => shape(rel.table, child, item.items, childPath, q))
         .filter((child): child is Row => child !== null);
       const inner = item.hints.includes('inner');
@@ -276,7 +310,9 @@ function shape(table: TableName, row: Row, items: Item[], path: string, q: Query
         if (inner && children.length === 0) return null;
         out[item.alias] = children[0] ?? null;
       } else {
-        children = sortRows(rel.table, children, parseOrder(q.params.get(`${childPath}.order`)));
+        const offset = Number(q.params.get(`${childPath}.offset`) ?? 0);
+        const limit = q.params.get(`${childPath}.limit`);
+        children = children.slice(offset, limit == null ? undefined : offset + Number(limit));
         if (inner && children.length === 0) return null;
         out[item.alias] = children;
       }
@@ -301,8 +337,9 @@ function prefers(headers: Headers, what: string) {
 /** The rows a request's top-level filters pick out, as the caller sees them. */
 function pick(table: TableName, q: Query, use?: (r: Row, c: Caller) => boolean): Row[] {
   const top = q.filters.filter((f) => f.path === '');
+  for (const f of top) checkReadable(table, f.column, q.caller);
   return tables()[table].filter(
-    (r) => canSee(table, r, q.caller) && (!use || use(r, q.caller)) && top.every((f) => matches(table, r, f)),
+    (r) => canSee(table, r, q.caller) && (!use || use(r, q.caller)) && top.every((f) => matches(table, r, f, q.caller)),
   );
 }
 
@@ -315,7 +352,7 @@ function respond(
   status: number,
 ): RestResult {
   const items = parseSelect(q.params.get('select') ?? '*');
-  let shaped = sortRows(table, rows, parseOrder(q.params.get('order')))
+  let shaped = sortRows(table, rows, parseOrder(q.params.get('order')), q.caller)
     .map((r) => ({ row: r, out: shape(table, r, items, '', q) }))
     .filter((x): x is { row: Row; out: Row } => x.out !== null)
     .map((x) => x.out);

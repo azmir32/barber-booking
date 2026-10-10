@@ -16,6 +16,8 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
 - See upcoming and past bookings, move one to another time, cancel, WhatsApp the shop, book again
+- Rate a cut from one to five stars, with an optional comment, once the shop has marked it done: My bookings asks "How was your cut?" for 14 days after it, and the rating can be changed in that time. The shop's reply shows under it
+- A shop with three or more reviews shows its average and count (4.8 ★ (23)) in the list and by its name; its page lists the reviews below the booking steps, newest first, each with the customer's first name, the barber, the comment and the shop's reply
 - Add a booking to the phone's calendar, so it reminds them: Safari on iPhone, iPad and Mac gets a calendar file for Apple Calendar (with an alert an hour before); Android, the iOS app and other browsers open Google Calendar's add-event page (with their usual Google reminder)
 
 **Barbers and shop owners**
@@ -28,6 +30,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Customer list from My shop: everyone who has booked or been in, online or added by the shop (walk-ins are matched by phone number however it was typed, including to an online customer with that number), with their number, visits, last cut and next booking. Customers due for a cut (their usual gap between cuts has passed and nothing is booked) come first, with a ready-written WhatsApp invite that includes the booking link, which is also there for anyone away much longer; anyone with a number can be messaged or called. Searchable by name or number
 - Add walk-in, WhatsApp or phone bookings, and block time or a whole day off (or close the whole shop for the day), so online customers can't take those times
 - Takings for this week, last week or this month: money in and cuts done against the same point in the period before (once the shop has been on the app that long), no-shows and cancellations, the busiest days (by the average day) and hours, each barber's share and the top services. My shop shows the week so far in one line
+- Reviews from My shop: the average, how many and the newest comment, then every review with the cut it was for. The owner can reply to each (shown under it on the shop's page), and change or remove the reply
 - Go live / pause, share or copy the booking link; while paused, the link asks customers to WhatsApp the shop, and My shop says the shop is paused (bookings already made still stand) rather than new
 - Close the whole shop for a few days (Hari Raya): days with customers still to come say how many, and those booked on the chosen days are listed to cancel and WhatsApp one by one before it closes
 - One-month free trial on every new shop. From five days before it ends, My shop (and the poster once it has ended) has a button that WhatsApps the PotongKu team, with the shop's name and link written, to subscribe
@@ -41,7 +44,8 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Shops are only visible while published and paid up or inside the free trial
 - Owners can't change their own trial or subscription status, or when their shop first went live (`shops.published_at`, set by the database)
 - A barber account can turn into a customer one (`become_customer`) only while it has no shop
-- Limits against abuse: bookings at most 60 days ahead, at most 4 upcoming bookings per customer per shop, notes up to 280 characters
+- Limits against abuse: bookings at most 60 days ahead, at most 4 upcoming bookings per customer per shop, notes, review comments and replies up to 280 characters
+- Only the customer can rate a cut, one rating per booking, once it is marked done and up to 14 days after it started (`rate_booking`); owners can't rate their own shop. Nobody can read which account wrote a review, only the first name it shows. Owners only reply (`reply_to_review`), and the database keeps each shop's review count and total
 - Barbers with booking history can't be deleted (mark them away instead), so past bookings keep their barber; one added by mistake can be removed
 
 ## Tech
@@ -145,6 +149,7 @@ The name shown in the app comes from `name` in `app.json`. Also update `slug`, `
 - Automatic push reminders the day before, to cut no-shows (for now, barbers send WhatsApp reminders from the app)
 - Online subscription payments for barbers (FPX and cards)
 - Optional deposits at booking
-- Reviews and a photo gallery of cuts
+- A photo gallery of cuts
+- Reporting unfair reviews
 - "Find a barber near me" with a map
 - Walk-in queue mode

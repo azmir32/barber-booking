@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, StyleSheet, View } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
+import { RateForm, ShopReply, Stars } from '@/components/reviews';
 import { Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
 import { APP_NAME, bookingLink } from '@/constants/brand';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
@@ -15,6 +16,7 @@ import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
+import { canRate, rateUntil, starsLabel, type MyReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay, formatPrice, formatTime } from '@/lib/time';
 import type { Booking } from '@/lib/types';
@@ -32,6 +34,8 @@ type MyBooking = Booking & {
     is_live: boolean;
   } | null;
   barbers: { name: string } | null;
+  /** The customer's rating of this cut and the shop's reply; null until they rate it. */
+  review: MyReview | null;
 };
 
 /** The bar after a cancel: it worked, and a tap tells the shop. */
@@ -52,6 +56,11 @@ export default function MyBookings() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
+  // Rated for the first time since the list loaded: kept where they were rated, with the thanks,
+  // instead of jumping down to Earlier.
+  const [justRated, setJustRated] = useState<Set<string>>(new Set());
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!session) return setLoading(false);
@@ -62,6 +71,9 @@ export default function MyBookings() {
     if (error) return setError(errorMessage(error));
     setError(null);
     setBookings((data ?? []) as MyBooking[]);
+    setJustRated(new Set());
+    setSavedId(null);
+    setEditingId(null);
     setLoaded(true);
   }, [session]);
 
@@ -99,6 +111,9 @@ export default function MyBookings() {
     .filter((b) => b.status === 'cancelled' && new Date(b.starts_at).getTime() > now)
     .reverse();
   const past = bookings.filter((b) => !upcoming.includes(b) && !cancelledAhead.includes(b));
+  // Done in the last 14 days and not rated yet: asked about on their own, above the rest.
+  const toRate = past.filter((b) => canRate(b, now) && (!b.review || justRated.has(b.id)));
+  const earlier = past.filter((b) => !toRate.includes(b));
   // The latest booking at each shop the customer isn't already booked at, so a regular cut is one tap.
   // Only real visits count, and only shops still taking online bookings.
   const visits = past.filter((b) => b.status !== 'cancelled' && new Date(b.starts_at).getTime() <= now);
@@ -132,6 +147,28 @@ export default function MyBookings() {
       params: { slug: b.shops!.slug, name: b.shops!.name, move: b.id, service: b.service_id!, barber: b.barber_id },
     });
   }
+
+  function rated(b: MyBooking, review: MyReview) {
+    setBookings((list) => list.map((x) => (x.id === b.id ? { ...x, review } : x)));
+    if (!b.review) setJustRated((ids) => new Set(ids).add(b.id));
+    setSavedId(b.id);
+    setEditingId(null);
+  }
+
+  const rating = (b: MyBooking) => (
+    <YourRating
+      booking={b}
+      now={now}
+      saved={savedId === b.id}
+      editing={editingId === b.id}
+      onEdit={() => {
+        setSavedId(null);
+        setEditingId(b.id);
+      }}
+      onCancel={() => setEditingId(null)}
+      onSaved={(review) => rated(b, review)}
+    />
+  );
 
   function showNotice(next: Notice | null) {
     clearTimeout(noticeTimer.current);
@@ -323,6 +360,23 @@ export default function MyBookings() {
         </Section>
       ) : null}
 
+      {toRate.length ? (
+        <Section title={t('Rate your cut')}>
+          {toRate.map((b) => (
+            <Card key={b.id}>
+              <T variant="heading">{t('How was your cut?')}</T>
+              <View>
+                <T variant="label">{b.shops?.name}</T>
+                <T variant="muted">
+                  {withBarber(b)} · {when(b).day}
+                </T>
+              </View>
+              {rating(b)}
+            </Card>
+          ))}
+        </Section>
+      ) : null}
+
       {lastVisits.length ? (
         <Section title={t('Book again')}>
           {lastVisits.map((b) => (
@@ -341,9 +395,9 @@ export default function MyBookings() {
         </Section>
       ) : null}
 
-      {past.length ? (
+      {earlier.length ? (
         <Section title={t('Earlier')}>
-          {past.map((b) => (
+          {earlier.map((b) => (
             <Card key={b.id}>
               <Row style={{ justifyContent: 'space-between' }}>
                 <T variant="label">{when(b).day}</T>
@@ -354,6 +408,12 @@ export default function MyBookings() {
                 <T>{formatPrice(b.price)}</T>
               </Row>
               <T variant="muted">{b.shops?.name}</T>
+              {b.review ? (
+                <>
+                  <View style={[styles.rule, { backgroundColor: theme.border }]} />
+                  {rating(b)}
+                </>
+              ) : null}
             </Card>
           ))}
         </Section>
@@ -364,7 +424,73 @@ export default function MyBookings() {
   );
 }
 
+/**
+ * A cut's rating: the stars to give while there are none, or the stars given
+ * with the comment, the shop's reply, and Edit while it can still change.
+ */
+function YourRating({
+  booking: b,
+  now,
+  saved,
+  editing,
+  onEdit,
+  onCancel,
+  onSaved,
+}: {
+  booking: MyBooking;
+  now: number;
+  /** Just sent: says so. */
+  saved: boolean;
+  editing: boolean;
+  onEdit: () => void;
+  onCancel: () => void;
+  onSaved: (review: MyReview) => void;
+}) {
+  const theme = useTheme();
+  const review = b.review;
+  const open = canRate(b, now);
+  if (open && (editing || !review)) {
+    return (
+      <RateForm bookingId={b.id} initial={review ?? undefined} onSaved={onSaved} onCancel={review ? onCancel : undefined} />
+    );
+  }
+  if (!review) return null;
+  const tz = b.shops?.time_zone;
+  return (
+    <View style={styles.rating}>
+      {saved ? (
+        <View role="status" accessibilityLiveRegion="polite">
+          <T variant="label" style={{ color: theme.success }}>
+            {t('Thanks! Your rating is saved.')}
+          </T>
+        </View>
+      ) : null}
+      <Row>
+        <T variant="small">{t('Your rating')}</T>
+        <Stars rating={review.rating} label={t('Your rating: {stars}', { stars: starsLabel(review.rating) })} />
+      </Row>
+      {review.comment ? <T variant="muted">“{review.comment}”</T> : null}
+      {review.reply ? <ShopReply text={review.reply} /> : null}
+      {open ? (
+        <Row style={{ flexWrap: 'nowrap' }}>
+          <T variant="small" style={{ flex: 1 }}>
+            {t('You can change it until {day}.', { day: formatDay(rateUntil(b.starts_at), tz) })}
+          </T>
+          <Button
+            title={t('Edit')}
+            variant="ghost"
+            accessibilityLabel={t('Change your rating for {day}', { day: formatDay(b.starts_at, tz) })}
+            onPress={onEdit}
+          />
+        </Row>
+      ) : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  rule: { height: StyleSheet.hairlineWidth, marginVertical: Spacing.xs },
+  rating: { gap: Spacing.xs },
   // Two even columns, so the card stays short and the buttons line up.
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   action: { flexGrow: 1, flexBasis: '40%', paddingHorizontal: Spacing.sm },
