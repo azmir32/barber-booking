@@ -1292,6 +1292,150 @@ exception when insufficient_privilege then null;
 end $$;
 rollback;
 
+-- A returning customer's next cut and their barbers ----------------------------
+-- Find a barber's cards: Ben's soonest booking, and the shops he had cuts at,
+-- most recent first, with what Book again needs. Three more shops for this
+-- part only: one open all day, one paused, and one he left long ago.
+begin;
+reset role;
+delete from bookings;
+update shops set is_published = true, trial_ends_at = now() + interval '30 days'
+where id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}'),
+  ('00000000-0000-0000-0000-0000000000b3', 'owner3@test', '{"role":"barber","full_name":"Mat"}'),
+  ('00000000-0000-0000-0000-0000000000b4', 'owner4@test', '{"role":"barber","full_name":"Irfan"}');
+insert into shops (id, owner_id, name, slug, is_published) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts', true),
+  ('00000000-0000-0000-0000-00000000005c', '00000000-0000-0000-0000-0000000000b3', 'Paused Cuts', 'paused-cuts', false),
+  ('00000000-0000-0000-0000-00000000005d', '00000000-0000-0000-0000-0000000000b4', 'Old Cuts', 'old-cuts', true);
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000005b', 'Rahman'),
+  ('00000000-0000-0000-0000-0000000000a4', '00000000-0000-0000-0000-00000000005c', 'Mat'),
+  ('00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-00000000005d', 'Irfan');
+insert into services (id, shop_id, name, duration_min, price) values
+  ('00000000-0000-0000-0000-0000000000e2', '00000000-0000-0000-0000-00000000005b', 'Fade', 40, 22),
+  ('00000000-0000-0000-0000-0000000000e3', '00000000-0000-0000-0000-00000000005c', 'Haircut', 30, 15),
+  ('00000000-0000-0000-0000-0000000000e4', '00000000-0000-0000-0000-00000000005d', 'Haircut', 30, 15);
+-- Kemas is open all day every day, so it always has a next free time.
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a3', d, '00:00', '23:45' from generate_series(0, 6) d;
+insert into bookings (shop_id, barber_id, service_id, customer_id, service_name, price, starts_at, ends_at, status)
+select f.shop_id::uuid, f.barber_id::uuid, f.service_id::uuid, f.customer_id::uuid, f.service_name, 20,
+       x.at, x.at + interval '30 minutes', f.status::booking_status
+from (values
+  -- Ben at Ali Cuts every three weeks, the last with Danial; a no-show isn't a
+  -- visit, two cuts on one day are one, and one over two years ago is too old.
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000e1',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', -800, '09:00', 'completed'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000e1',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', -70, '09:00', 'completed'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000e1',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', -49, '09:00', 'completed'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', null,
+   '00000000-0000-0000-0000-0000000000c1', 'Beard trim', -49, '09:30', 'completed'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000e1',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', -28, '09:00', 'completed'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000e1',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', -14, '09:00', 'no_show'),
+  -- His latest cut was at Kemas, and he is booked there again tomorrow.
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000e2',
+   '00000000-0000-0000-0000-0000000000c1', 'Fade', -10, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-0000000000e2',
+   '00000000-0000-0000-0000-0000000000c1', 'Fade', 1, '10:00', 'confirmed'),
+  -- And at Ali Cuts later on.
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000e1',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', 3, '09:00', 'confirmed'),
+  -- Not marked done, but its time has passed: a visit, at a shop since paused.
+  ('00000000-0000-0000-0000-00000000005c', '00000000-0000-0000-0000-0000000000a4', '00000000-0000-0000-0000-0000000000e3',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', -40, '10:00', 'confirmed'),
+  -- The fourth shop back is left out, and a cancelled booking isn't one to come.
+  ('00000000-0000-0000-0000-00000000005d', '00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-0000000000e4',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', -100, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-00000000005d', '00000000-0000-0000-0000-0000000000a5', '00000000-0000-0000-0000-0000000000e4',
+   '00000000-0000-0000-0000-0000000000c1', 'Haircut', 2, '10:00', 'cancelled'),
+  -- Chong's cut is his own.
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000e1',
+   '00000000-0000-0000-0000-0000000000c2', 'Haircut', -5, '09:00', 'completed')
+) f(shop_id, barber_id, service_id, customer_id, service_name, days, clock, status),
+lateral (select ((now() at time zone 'Asia/Kuala_Lumpur')::date + f.days + f.clock::time)
+                at time zone 'Asia/Kuala_Lumpur' as at) x;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+set role authenticated;
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  at_ text := 'Asia/Kuala_Lumpur';
+  m jsonb := my_shops();
+  s jsonb;
+  listed record;
+begin
+  assert (select array_agg(x ->> 'name') from jsonb_array_elements(m -> 'shops') x)
+         = array['Kemas Cuts', 'Ali Cuts', 'Paused Cuts'], 'most recent first, at most three: ' || m::text;
+
+  s := m -> 'shops' -> 0;
+  select * into listed from find_shops() where id = '00000000-0000-0000-0000-00000000005b';
+  assert s ->> 'shop_id' = '00000000-0000-0000-0000-00000000005b' and s ->> 'slug' = 'kemas-cuts'
+     and s ->> 'time_zone' = at_ and (s ->> 'is_live')::boolean
+     and s ->> 'service_id' = '00000000-0000-0000-0000-0000000000e2' and s ->> 'service_name' = 'Fade'
+     and s ->> 'barber_id' = '00000000-0000-0000-0000-0000000000a3' and s ->> 'barber_name' = 'Rahman'
+     and (s ->> 'visits')::int = 1 and (s ->> 'usual_gap_days')::int = 28
+     and (s ->> 'last_visit_at')::timestamptz = (today - 10 + time '10:00') at time zone at_,
+    'Kemas: one visit, four weeks, the Fade with Rahman: ' || s::text;
+  assert (s ->> 'next_free_at')::timestamptz = listed.next_free_at and listed.next_free_at is not null
+     and (s ->> 'opens_today')::time = listed.opens_today and (s ->> 'closes_today')::time = listed.closes_today,
+    'today''s hours and next free time as the shop list has them: ' || s::text;
+
+  s := m -> 'shops' -> 1;
+  select * into listed from find_shops() where id = '00000000-0000-0000-0000-00000000005a';
+  assert s ->> 'barber_id' = '00000000-0000-0000-0000-0000000000a2' and s ->> 'barber_name' = 'Danial'
+     and s ->> 'service_name' = 'Haircut' and (s ->> 'visits')::int = 3 and (s ->> 'usual_gap_days')::int = 21
+     and (s ->> 'last_visit_at')::timestamptz = (today - 28 + time '09:00') at time zone at_
+     and (s ->> 'is_live')::boolean and (s ->> 'next_free_at')::timestamptz is not distinct from listed.next_free_at,
+    'Ali Cuts: every three weeks, the last with Danial, not counting the no-show or anything older than two years: '
+      || s::text;
+
+  s := m -> 'shops' -> 2;
+  assert not (s ->> 'is_live')::boolean and s -> 'next_free_at' = 'null'::jsonb and s -> 'opens_today' = 'null'::jsonb
+     and s ->> 'name' = 'Paused Cuts' and s ->> 'barber_name' = 'Mat' and (s ->> 'visits')::int = 1,
+    'a paused shop is still his barber, with no free times: ' || s::text;
+
+  assert (m ->> 'upcoming')::int = 2, 'two bookings to come: ' || m::text;
+  assert m #>> '{next,shop_name}' = 'Kemas Cuts' and m #>> '{next,service_name}' = 'Fade'
+     and m #>> '{next,barber_name}' = 'Rahman' and m #>> '{next,time_zone}' = at_
+     and (m #>> '{next,starts_at}')::timestamptz = (today + 1 + time '10:00') at time zone at_
+     and (m #>> '{next,id}')::uuid = (select id from bookings
+                                      where customer_id = auth.uid() and status = 'confirmed' and starts_at > now()
+                                      order by starts_at limit 1),
+    'the soonest booking: ' || (m -> 'next')::text;
+end $$;
+
+-- Only the caller's own: Chong sees his one cut, someone with none sees
+-- nothing, and guests can't ask.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$
+declare
+  m jsonb := my_shops();
+begin
+  assert m -> 'next' = 'null'::jsonb and (m ->> 'upcoming')::int = 0, 'Chong has nothing booked: ' || m::text;
+  assert jsonb_array_length(m -> 'shops') = 1 and m #>> '{shops,0,name}' = 'Ali Cuts'
+     and (m #>> '{shops,0,visits}')::int = 1 and m #>> '{shops,0,barber_name}' = 'Ali',
+    'only Chong''s own cut: ' || m::text;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert my_shops() = '{"next": null, "upcoming": 0, "shops": []}'::jsonb, 'no bookings, no cards: ' || my_shops()::text;
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform my_shops();
+  raise exception 'guests must not call my_shops';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
+
 -- Limits on what one customer can do ---------------------------------------
 reset role;
 delete from working_hours where barber_id = '00000000-0000-0000-0000-0000000000a2';
