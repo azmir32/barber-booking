@@ -1,0 +1,969 @@
+// The booking rules: line-by-line ports of the SQL functions in
+// supabase/migrations, with the same checks, messages and error codes.
+// Like the originals they run with full access (security definer) and
+// decide for themselves what the caller may do.
+
+import { toWhatsAppNumber } from '../lib/phone.ts';
+import { addDays, dayBounds, localDateString } from '../lib/time.ts';
+import {
+  COLUMNS,
+  deleteRows,
+  findById,
+  insertRow,
+  now,
+  ownsShop,
+  parseTime,
+  PgError,
+  pgTrim,
+  shopIsLive,
+  tables,
+  toColumnValue,
+  updateRows,
+  type Row,
+} from './db.ts';
+import type { Caller } from './postgrest.ts';
+
+const BOOKING_HORIZON_DAYS = 60;
+const MAX_UPCOMING_PER_SHOP = 4;
+const ms = (v: unknown) => Date.parse(String(v));
+
+function parseDate(value: unknown): string {
+  const text = String(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || addDays(text, 0) !== text) {
+    throw new PgError('22007', `invalid input syntax for type date: "${text}"`, 400);
+  }
+  return text;
+}
+
+/** `(day + time) at time zone tz`: the instant a local wall-clock time happens. */
+function localInstant(day: string, time: string, tz: string): number {
+  const [h, m, s] = time.split(':').map(Number);
+  return dayBounds(day, tz).start.getTime() + ((h * 60 + m) * 60 + (s || 0)) * 1000;
+}
+
+const weekdayOf = (day: string) => new Date(`${day}T00:00:00Z`).getUTCDay();
+const trimmed = (v: unknown) => (v == null ? null : pgTrim(String(v)) || null);
+const clash = (bk: Row, barberId: unknown, start: number, end: number) =>
+  bk.barber_id === barberId && bk.status !== 'cancelled' && ms(bk.starts_at) < end && start < ms(bk.ends_at);
+
+const WHOLE_DAY_MS = 24 * 60 * 60_000;
+/** A day off: a block of a whole day or more. */
+const isWholeDayBlock = (b: Row) => b.is_block === true && ms(b.ends_at) - ms(b.starts_at) >= WHOLE_DAY_MS;
+
+/** Runs an insert or update, turning a double booking into the function's own message. */
+function guarded<T>(fn: () => T, overlapMessage: string, checkMessage?: string): T {
+  try {
+    return fn();
+  } catch (e) {
+    if (e instanceof PgError && e.code === '23P01') throw new PgError('P0001', overlapMessage, 400);
+    if (checkMessage && e instanceof PgError && e.code === '23514') throw new PgError('P0001', checkMessage, 400);
+    throw e;
+  }
+}
+
+// Finding a barber ------------------------------------------------------------
+
+const blank = (v: unknown) => v == null || pgTrim(String(v)) === '';
+const sortKey = (v: unknown) => String(v).toLowerCase();
+
+export function findShops(args: Record<string, unknown>) {
+  const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
+  const area = blank(args.p_area) ? null : pgTrim(String(args.p_area)).toLowerCase();
+  const limit = Math.min(Math.max(Number(args.p_limit ?? 20), 1), 50);
+  const offset = Math.max(Number(args.p_offset ?? 0), 0);
+  return tables()
+    .shops.filter(
+      (s) =>
+        shopIsLive(s) &&
+        (area == null || sortKey(s.area) === area) &&
+        (search == null || `${s.name} ${s.area} ${s.address ?? ''}`.toLowerCase().includes(search)),
+    )
+    .sort((a, b) =>
+      sortKey(a.name) !== sortKey(b.name)
+        ? sortKey(a.name) < sortKey(b.name) ? -1 : 1
+        : String(a.id) < String(b.id) ? -1 : 1,
+    )
+    .slice(offset, offset + limit)
+    .map((s) => {
+      const prices = tables()
+        .services.filter((v) => v.shop_id === s.id && v.is_active)
+        .map((v) => Number(v.price));
+      const barbers = tables().barbers.filter((b) => b.shop_id === s.id && b.is_active);
+      return {
+        id: s.id,
+        name: s.name,
+        slug: s.slug,
+        area: s.area,
+        address: s.address,
+        about: s.about,
+        from_price: prices.length ? Math.min(...prices) : null,
+        barber_count: barbers.length,
+        ...hoursToday(s),
+        next_free_at: shopNextFree(s),
+      };
+    });
+}
+
+/**
+ * The earliest free start for the shop's shortest service with any barber,
+ * today by its own clock or else tomorrow; null when neither has one.
+ */
+function shopNextFree(shop: Row): string | null {
+  const [service] = tables()
+    .services.filter((v) => v.shop_id === shop.id && v.is_active)
+    .sort(
+      (a, b) =>
+        Number(a.duration_min) - Number(b.duration_min) ||
+        Number(a.sort_order) - Number(b.sort_order) ||
+        (String(a.id) < String(b.id) ? -1 : 1),
+    );
+  if (!service) return null;
+  const today = localDateString(new Date(now()), String(shop.time_zone));
+  // Only live shops are listed, so it is the same whoever asks.
+  const anyone: Caller = { uid: null };
+  // Tomorrow is only worked out when today has nothing left.
+  for (const day of [today, addDays(today, 1)]) {
+    const [first] = availableSlots(anyone, service.id, day);
+    if (first) return first.starts_at;
+  }
+  return null;
+}
+
+/**
+ * A shop's hours today by its own clock: the first barber in to the last one
+ * out, leaving out barbers with the whole day off. Nulls when nobody is in,
+ * or the shop is closed for the day.
+ */
+function hoursToday(shop: Row): { opens_today: string | null; closes_today: string | null } {
+  const tz = String(shop.time_zone);
+  const date = localDateString(new Date(now()), tz);
+  const { start, end } = dayBounds(date, tz);
+  const closed = tables().shop_closures.some((c) => c.shop_id === shop.id && c.day === date);
+  const dayOff = (barberId: unknown) =>
+    tables().bookings.some(
+      (bk) =>
+        bk.shop_id === shop.id &&
+        bk.barber_id === barberId &&
+        bk.status === 'confirmed' &&
+        isWholeDayBlock(bk) &&
+        ms(bk.starts_at) >= start.getTime() &&
+        ms(bk.starts_at) < end.getTime(),
+    );
+  const weekday = weekdayOf(date);
+  const team = new Set(tables().barbers.filter((b) => b.shop_id === shop.id && b.is_active).map((b) => b.id));
+  const hours = closed
+    ? []
+    : tables().working_hours.filter((wh) => wh.weekday === weekday && team.has(wh.barber_id) && !dayOff(wh.barber_id));
+  return {
+    opens_today: hours.length ? hours.map((wh) => String(wh.opens_at)).sort()[0] : null,
+    closes_today: hours.length ? hours.map((wh) => String(wh.closes_at)).sort().at(-1)! : null,
+  };
+}
+
+export function shopHoursToday(c: Caller, shopId: unknown) {
+  const shop = findById('shops', shopId);
+  const visible = shop != null && (shopIsLive(shop) || (c.uid != null && shop.owner_id === c.uid));
+  return [visible ? hoursToday(shop) : { opens_today: null, closes_today: null }];
+}
+
+/** A booking link's shop even when it is hidden, so the page can say it isn't live. */
+export function shopPublicStatus(slug: unknown) {
+  return tables()
+    .shops.filter((s) => slug != null && s.slug === String(slug))
+    .map((s) => ({ name: s.name, phone: s.phone, is_live: shopIsLive(s) }));
+}
+
+export function shopAreas() {
+  const groups = new Map<string, Map<string, number>>();
+  for (const s of tables().shops.filter(shopIsLive)) {
+    const spellings = groups.get(sortKey(s.area)) ?? new Map<string, number>();
+    spellings.set(String(s.area), (spellings.get(String(s.area)) ?? 0) + 1);
+    groups.set(sortKey(s.area), spellings);
+  }
+  return [...groups.entries()]
+    .map(([key, spellings]) => {
+      // mode(): the most common spelling, the first in order on a tie.
+      const [area] = [...spellings.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0];
+      return { key, area, shops: [...spellings.values()].reduce((n, c) => n + c, 0) };
+    })
+    .sort((a, b) => b.shops - a.shops || (a.key < b.key ? -1 : 1))
+    .map(({ area, shops }) => ({ area, shops }));
+}
+
+// Booking ----------------------------------------------------------------------
+
+const TAKEN = 'Sorry, that time was just taken. Please pick another.';
+
+/** How many bookings a barber has on a local day, so "any barber" shares work across chairs. */
+const busyThatDay = (day: string, tz: string) => {
+  const { start, end } = dayBounds(day, tz);
+  return (barberId: string) =>
+    tables().bookings.filter(
+      (bk) =>
+        bk.barber_id === barberId &&
+        bk.status !== 'cancelled' &&
+        ms(bk.starts_at) < end.getTime() &&
+        start.getTime() < ms(bk.ends_at),
+    ).length;
+};
+
+export function availableSlots(
+  c: Caller,
+  serviceId: unknown,
+  dayArg: unknown,
+  barberId: unknown = null,
+  ignoreBooking: unknown = null,
+) {
+  if (dayArg == null) return [];
+  const day = parseDate(dayArg);
+  const service = findById('services', serviceId);
+  const shop = service && findById('shops', service.shop_id);
+  if (!service || !shop || !service.is_active) return [];
+  if (!(shopIsLive(shop) || (c.uid != null && shop.owner_id === c.uid))) return [];
+  const tz = String(shop.time_zone);
+  if (day > addDays(localDateString(new Date(now()), tz), BOOKING_HORIZON_DAYS)) return [];
+  if (tables().shop_closures.some((cl) => cl.shop_id === shop.id && cl.day === day)) return [];
+  // Only the caller's own booking, or one at their shop, can be left out.
+  const ignored = findById('bookings', ignoreBooking);
+  const ignoredId =
+    ignored && ((c.uid != null && ignored.customer_id === c.uid) || ownsShop(ignored.shop_id, c.uid)) ? ignored.id : null;
+
+  const duration = Number(service.duration_min) * 60_000;
+  const weekday = weekdayOf(day);
+  const seen = new Set<string>();
+  const slots: { barber_id: string; starts_at: string; at: number }[] = [];
+  for (const barber of tables().barbers) {
+    if (barber.shop_id !== shop.id || !barber.is_active) continue;
+    if (barberId != null && barber.id !== barberId) continue;
+    for (const wh of tables().working_hours) {
+      if (wh.barber_id !== barber.id || wh.weekday !== weekday) continue;
+      const last = localInstant(day, String(wh.closes_at), tz) - duration;
+      for (let at = localInstant(day, String(wh.opens_at), tz); at <= last; at += 15 * 60_000) {
+        const key = `${barber.id}@${at}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (at <= now()) continue;
+        if (tables().bookings.some((bk) => bk.id !== ignoredId && clash(bk, barber.id, at, at + duration))) continue;
+        slots.push({ barber_id: String(barber.id), starts_at: new Date(at).toISOString(), at });
+      }
+    }
+  }
+  return slots
+    .sort((a, b) => a.at - b.at || (a.barber_id < b.barber_id ? -1 : a.barber_id > b.barber_id ? 1 : 0))
+    .map(({ barber_id, starts_at }) => ({ barber_id, starts_at }));
+}
+
+export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown, barberId: unknown = null, note: unknown = null) {
+  if (c.uid == null) throw new PgError('28000', 'Please sign in to book.', 403);
+  const service = findById('services', serviceId);
+  if (!service) throw new PgError('P0002', 'This service is no longer available.', 500);
+  if (note != null && [...String(note)].length > 280) {
+    throw new PgError('22001', 'Please keep your note under 280 characters.', 400);
+  }
+  const upcoming = tables().bookings.filter(
+    (b) => b.customer_id === c.uid && b.shop_id === service.shop_id && b.status === 'confirmed' && ms(b.starts_at) > now(),
+  ).length;
+  if (upcoming >= MAX_UPCOMING_PER_SHOP) {
+    throw new PgError(
+      'P0001',
+      `You already have ${MAX_UPCOMING_PER_SHOP} upcoming bookings here. Cancel one to book another.`,
+      400,
+    );
+  }
+  const tz = String(findById('shops', service.shop_id)!.time_zone);
+  if (startsAt == null) throw new PgError('P0001', TAKEN, 400);
+  const at = ms(toColumnValue('bookings', 'starts_at', startsAt));
+  const day = localDateString(new Date(at), tz);
+  const busy = busyThatDay(day, tz);
+  const free = availableSlots(c, serviceId, day, barberId)
+    .filter((s) => ms(s.starts_at) === at)
+    .sort((a, b) => busy(a.barber_id) - busy(b.barber_id) || (a.barber_id < b.barber_id ? -1 : 1));
+  if (free.length === 0) throw new PgError('P0001', TAKEN, 400);
+
+  return guarded(
+    () =>
+      insertRow('bookings', {
+        shop_id: service.shop_id,
+        barber_id: free[0].barber_id,
+        service_id: service.id,
+        customer_id: c.uid,
+        service_name: service.name,
+        price: service.price,
+        starts_at: new Date(at).toISOString(),
+        ends_at: new Date(at + Number(service.duration_min) * 60_000).toISOString(),
+        customer_note: trimmed(note),
+      }),
+    TAKEN,
+  );
+}
+
+export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unknown, barberId: unknown = null) {
+  const booking = findById('bookings', bookingId);
+  if (!booking || booking.is_block) throw new PgError('P0002', 'Booking not found.', 500);
+  // The customer's own, or any of the shop's for its owner.
+  if (c.uid == null || (booking.customer_id !== c.uid && !ownsShop(booking.shop_id, c.uid))) {
+    throw new PgError('P0002', 'Booking not found.', 500);
+  }
+  if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
+    throw new PgError('42501', 'You can only change an upcoming booking.', 403);
+  }
+  const service = findById('services', booking.service_id);
+  if (!service || !service.is_active) throw new PgError('P0002', 'This service is no longer available.', 500);
+
+  const tz = String(findById('shops', booking.shop_id)!.time_zone);
+  if (startsAt == null) throw new PgError('P0001', TAKEN, 400);
+  const at = ms(toColumnValue('bookings', 'starts_at', startsAt));
+  const day = localDateString(new Date(at), tz);
+  const busy = busyThatDay(day, tz);
+  const stays = (id: string) => (id === booking.barber_id ? 0 : 1);
+  const free = availableSlots(c, service.id, day, barberId, booking.id)
+    .filter((s) => ms(s.starts_at) === at)
+    .sort(
+      (a, b) =>
+        stays(a.barber_id) - stays(b.barber_id) ||
+        busy(a.barber_id) - busy(b.barber_id) ||
+        (a.barber_id < b.barber_id ? -1 : 1),
+    );
+  if (free.length === 0) throw new PgError('P0001', TAKEN, 400);
+
+  return guarded(
+    () =>
+      updateRows('bookings', [booking], {
+        barber_id: free[0].barber_id,
+        starts_at: new Date(at).toISOString(),
+        ends_at: new Date(at + Number(service.duration_min) * 60_000).toISOString(),
+        // Any reminder named the old time.
+        reminded_at: null,
+      })[0],
+    TAKEN,
+  );
+}
+
+export function markBookingReminded(c: Caller, bookingId: unknown, startsAt: unknown, reminded: unknown = true) {
+  const named = toColumnValue('bookings', 'starts_at', startsAt);
+  const booking = findById('bookings', bookingId);
+  if (!booking || booking.is_block || !ownsShop(booking.shop_id, c.uid)) {
+    throw new PgError('P0002', 'Booking not found.', 500);
+  }
+  if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
+    throw new PgError('42501', 'You can only remind a customer about an upcoming booking.', 403);
+  }
+  // The message named this time; a booking moved since still needs one for its new time.
+  if (named == null || ms(named) !== ms(booking.starts_at)) {
+    throw new PgError('42501', 'This booking has changed. Check the new time.', 403);
+  }
+  const set = reminded === true || reminded === 'true';
+  return updateRows('bookings', [booking], { reminded_at: set ? new Date(now()).toISOString() : null })[0];
+}
+
+export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown) {
+  const booking = findById('bookings', bookingId);
+  if (!booking) throw new PgError('P0002', 'Booking not found.', 500);
+  const next = toColumnValue('bookings', 'status', status);
+  if (ownsShop(booking.shop_id, c.uid)) {
+    if ((next === 'completed' || next === 'no_show') && ms(booking.starts_at) > now()) {
+      throw new PgError('42501', 'You can mark this once the appointment has started.', 403);
+    }
+  } else if (c.uid != null && booking.customer_id === c.uid) {
+    if (next !== 'cancelled' || booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
+      throw new PgError('42501', 'You can only cancel an upcoming booking.', 403);
+    }
+  } else {
+    throw new PgError('P0002', 'Booking not found.', 500);
+  }
+  return guarded(
+    () => updateRows('bookings', [booking], { status: next })[0],
+    'That time has been booked by someone else since.',
+  );
+}
+
+/**
+ * The caller's own bookings, newest first, each with its shop and barber even
+ * when the shop is hidden (paused, or its trial ended), and whether it is live.
+ */
+export function myBookings(c: Caller, limitArg: unknown = 100) {
+  const limit = Math.min(Math.max(Number(limitArg ?? 100), 1), 200);
+  return tables()
+    .bookings.filter((b) => c.uid != null && b.customer_id === c.uid)
+    .sort((a, b) => ms(b.starts_at) - ms(a.starts_at) || (String(a.id) < String(b.id) ? -1 : 1))
+    .slice(0, limit)
+    .flatMap((b) => {
+      const shop = findById('shops', b.shop_id);
+      const barber = findById('barbers', b.barber_id);
+      if (!shop || !barber) return [];
+      const booking = Object.fromEntries(Object.keys(COLUMNS.bookings).map((k) => [k, b[k]]));
+      const { name, slug, address, area, phone, time_zone } = shop;
+      return [
+        {
+          ...booking,
+          shops: { name, slug, address, area, phone, time_zone, is_live: shopIsLive(shop) },
+          barbers: { name: barber.name },
+        },
+      ];
+    });
+}
+
+export function setBarberHours(c: Caller, barberId: unknown, hours: unknown) {
+  const barber = findById('barbers', barberId);
+  if (!barber || !ownsShop(barber.shop_id, c.uid)) throw new PgError('P0002', 'Barber not found.', 500);
+  if (hours != null && !Array.isArray(hours)) {
+    throw new PgError(
+      '22023',
+      typeof hours === 'object' ? 'cannot extract elements from an object' : 'cannot extract elements from a scalar',
+      400,
+    );
+  }
+
+  deleteRows(
+    'working_hours',
+    tables().working_hours.filter((h) => h.barber_id === barber.id),
+  );
+  const list = Array.isArray(hours) ? (hours as Row[]) : [];
+  for (const h of list) {
+    const value = (key: string) => (h?.[key] == null ? null : h[key]);
+    const weekday = value('weekday') == null ? null : toColumnValue('working_hours', 'weekday', String(value('weekday')));
+    const time = (key: string) => {
+      const v = value(key);
+      if (v == null) return null;
+      if (!parseTime(v)) throw new PgError('22007', `invalid input syntax for type time: "${String(v)}"`, 400);
+      return v;
+    };
+    guarded(
+      () =>
+        insertRow('working_hours', {
+          barber_id: barber.id,
+          weekday,
+          opens_at: time('opens_at'),
+          closes_at: time('closes_at'),
+        }),
+      'Some of those hours overlap on the same day.',
+      'Closing time must be after opening time.',
+    );
+  }
+  return tables()
+    .working_hours.filter((h) => h.barber_id === barber.id)
+    .sort((a, b) => Number(a.weekday) - Number(b.weekday) || String(a.opens_at).localeCompare(String(b.opens_at)));
+}
+
+type ShopBookingArgs = {
+  p_barber_id?: unknown;
+  p_day?: unknown;
+  p_time?: unknown;
+  p_duration_min?: unknown;
+  p_service_id?: unknown;
+  p_guest_name?: unknown;
+  p_guest_phone?: unknown;
+  p_note?: unknown;
+  p_is_block?: unknown;
+};
+
+export function addShopBooking(c: Caller, args: ShopBookingArgs) {
+  const isBlock = args.p_is_block == null ? false : toColumnValue('bookings', 'is_block', args.p_is_block);
+  const barber = findById('barbers', args.p_barber_id);
+  const shop = barber && findById('shops', barber.shop_id);
+  if (!barber || !shop || c.uid == null || shop.owner_id !== c.uid) {
+    throw new PgError('P0002', 'Barber not found.', 500);
+  }
+  let service: Row | undefined;
+  if (args.p_service_id != null) {
+    service = tables().services.find((s) => s.id === args.p_service_id && s.shop_id === shop.id);
+    if (!service) throw new PgError('P0002', 'Service not found.', 500);
+  }
+  const minutes =
+    args.p_duration_min != null
+      ? (toColumnValue('services', 'duration_min', args.p_duration_min) as number)
+      : ((service?.duration_min as number | undefined) ?? null);
+  if (minutes == null || minutes < 5 || minutes > (isBlock ? 1440 : 720)) {
+    throw new PgError(
+      '22023',
+      'Pick a service, or a length between 5 minutes and 12 hours (a whole day for blocks).',
+      400,
+    );
+  }
+  if (!isBlock && trimmed(args.p_guest_name) == null) {
+    throw new PgError('22023', 'Add the customer\'s name.', 400);
+  }
+  const day = parseDate(args.p_day);
+  const time = parseTime(args.p_time);
+  if (!time) throw new PgError('22007', `invalid input syntax for type time: "${String(args.p_time)}"`, 400);
+  const starts = localInstant(day, time, String(shop.time_zone));
+  const note = trimmed(args.p_note);
+
+  return guarded(
+    () =>
+      insertRow('bookings', {
+        shop_id: shop.id,
+        barber_id: barber.id,
+        service_id: service?.id ?? null,
+        guest_name: isBlock ? null : trimmed(args.p_guest_name),
+        guest_phone: isBlock ? null : trimmed(args.p_guest_phone),
+        is_block: isBlock,
+        service_name: isBlock ? (note == null ? 'Blocked' : [...note].slice(0, 80).join('')) : (service?.name ?? 'Appointment'),
+        price: isBlock ? 0 : (service?.price ?? 0),
+        starts_at: new Date(starts).toISOString(),
+        ends_at: new Date(starts + minutes * 60_000).toISOString(),
+        customer_note: isBlock ? null : note,
+      }),
+    'That barber already has a booking at that time.',
+  );
+}
+
+// Closing the shop for a few days ---------------------------------------------
+
+function myShop(c: Caller): Row {
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  if (!shop) throw new PgError('P0002', 'Set up your shop first.', 500);
+  return shop;
+}
+
+export function closeShopDays(c: Caller, fromArg: unknown, daysArg: unknown, reasonArg: unknown = null) {
+  const shop = myShop(c);
+  const days = daysArg == null ? null : Number(daysArg);
+  if (days == null || !Number.isInteger(days) || days < 1 || days > 31) {
+    throw new PgError('22023', 'Pick between 1 and 31 days.', 400);
+  }
+  const tz = String(shop.time_zone);
+  const today = localDateString(new Date(now()), tz);
+  const from = fromArg == null ? null : parseDate(fromArg);
+  if (from == null || from < today || addDays(from, days - 1) > addDays(today, BOOKING_HORIZON_DAYS)) {
+    throw new PgError('22023', 'Pick days from today up to 60 days ahead.', 400);
+  }
+  const start = dayBounds(from, tz).start.getTime();
+  const end = dayBounds(addDays(from, days), tz).start.getTime();
+  // Customers already served today don't count, only those still to come.
+  const toCome = tables().bookings.filter(
+    (b) =>
+      b.shop_id === shop.id &&
+      !b.is_block &&
+      b.status === 'confirmed' &&
+      ms(b.ends_at) > now() &&
+      ms(b.starts_at) < end &&
+      start < ms(b.ends_at),
+  );
+  if (toCome.length > 0) {
+    // How many and the first day (on the shop's clock), which the app puts in its own words.
+    const first = Math.max(start, Math.min(...toCome.map((b) => ms(b.starts_at))));
+    throw new PgError(
+      'P0001',
+      `There are bookings on those days (${toCome.length}, the first on ${localDateString(new Date(first), tz)}). Cancel them first (and let the customers know), then close the shop.`,
+      400,
+    );
+  }
+  const reasonText = trimmed(reasonArg);
+  const reason = reasonText == null ? null : [...reasonText].slice(0, 80).join('');
+  for (let i = 0; i < days; i++) {
+    const day = addDays(from, i);
+    const existing = tables().shop_closures.find((cl) => cl.shop_id === shop.id && cl.day === day);
+    if (existing) updateRows('shop_closures', [existing], { reason });
+    else insertRow('shop_closures', { shop_id: shop.id, day, reason });
+  }
+  return days;
+}
+
+export function reopenShopDays(c: Caller, fromArg: unknown, daysArg: unknown) {
+  const shop = myShop(c);
+  if (fromArg == null) return 0;
+  const from = parseDate(fromArg);
+  const until = addDays(from, Math.max(daysArg == null ? 0 : Number(daysArg) || 0, 0));
+  const open = tables().shop_closures.filter(
+    (cl) => cl.shop_id === shop.id && String(cl.day) >= from && String(cl.day) < until,
+  );
+  deleteRows('shop_closures', open);
+  return open.length;
+}
+
+export function shopClosedDays(c: Caller, shopId: unknown, fromArg: unknown, toArg: unknown) {
+  const shop = findById('shops', shopId);
+  const mine = shop != null && c.uid != null && shop.owner_id === c.uid;
+  if (!shop || !(shopIsLive(shop) || mine) || fromArg == null) return [];
+  const tz = String(shop.time_zone);
+  const from = parseDate(fromArg);
+  const to = toArg == null ? null : parseDate(toArg);
+  const last = to != null && to < addDays(from, 90) ? to : addDays(from, 90);
+  const closures = tables()
+    .shop_closures.filter((cl) => cl.shop_id === shop.id && String(cl.day) >= from && String(cl.day) <= last)
+    .map((cl) => ({ day: String(cl.day), reason: mine ? (cl.reason as string | null) : null, is_closure: true }));
+  const closed = new Set(tables().shop_closures.filter((cl) => cl.shop_id === shop.id).map((cl) => cl.day));
+
+  // Days every barber has the whole day off.
+  const team = new Set(tables().barbers.filter((b) => b.shop_id === shop.id && b.is_active).map((b) => b.id));
+  const start = dayBounds(from, tz).start.getTime();
+  const end = dayBounds(addDays(last, 1), tz).start.getTime();
+  const byDay = new Map<string, { barbers: Set<unknown>; reasons: string[] }>();
+  for (const b of tables().bookings) {
+    if (b.shop_id !== shop.id || b.status !== 'confirmed' || !isWholeDayBlock(b) || !team.has(b.barber_id)) continue;
+    if (ms(b.starts_at) < start || ms(b.starts_at) >= end) continue;
+    const day = localDateString(new Date(ms(b.starts_at)), tz);
+    const entry = byDay.get(day) ?? { barbers: new Set(), reasons: [] };
+    entry.barbers.add(b.barber_id);
+    entry.reasons.push(String(b.service_name));
+    byDay.set(day, entry);
+  }
+  const allOff = [...byDay.entries()]
+    .filter(([day, e]) => team.size > 0 && e.barbers.size === team.size && !closed.has(day))
+    .map(([day, e]) => ({ day, reason: mine ? e.reasons.sort()[0] : null, is_closure: false }));
+  return [...closures, ...allOff].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+}
+
+// Takings --------------------------------------------------------------------
+
+const money = (n: number) => Math.round(n * 100) / 100;
+const daysBetween = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
+
+/** shop_summary: the owner's takings for p_from to p_to on the shop's clock, and the period before. */
+export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
+  const shop = myShop(c);
+  const from = fromArg == null ? null : parseDate(fromArg);
+  const to = toArg == null ? null : parseDate(toArg);
+  const days = from == null || to == null ? null : daysBetween(from, to) + 1;
+  if (from == null || to == null || days == null || days < 1 || days > 93) {
+    throw new PgError('22023', 'Pick a period of up to 93 days.', 400);
+  }
+  const tz = String(shop.time_zone);
+  // A whole month compares with the whole month before; anything else with the same number of days.
+  const [y, m] = from.split('-').map(Number);
+  const firstOf = (month: number) => new Date(Date.UTC(y, month, 1)).toISOString().slice(0, 10);
+  const wholeMonth = from === firstOf(m - 1) && addDays(to, 1) === firstOf(m);
+  const prevFrom = wholeMonth ? firstOf(m - 2) : addDays(from, -days);
+  const start = dayBounds(from, tz).start.getTime();
+  const end = dayBounds(addDays(to, 1), tz).start.getTime();
+  const prevStart = dayBounds(prevFrom, tz).start.getTime();
+  // As far into the period before as now is into this one, by the shop's clock.
+  const today = localDateString(new Date(now()), tz);
+  const sinceMidnight = now() - dayBounds(today, tz).start.getTime();
+  const prevUntil = Math.min(start, dayBounds(addDays(prevFrom, daysBetween(from, today)), tz).start.getTime() + sinceMidnight);
+
+  const rows = tables().bookings.filter((b) => {
+    const at = ms(b.starts_at);
+    return b.shop_id === shop.id && !b.is_block && at >= prevStart && at < end && (at >= start || at < prevUntil);
+  });
+  const current = rows.filter((b) => ms(b.starts_at) >= start);
+  const before = rows.filter((b) => ms(b.starts_at) < start);
+  const count = (list: Row[], status: string) => list.filter((b) => b.status === status).length;
+  const sum = (list: Row[], keep: (b: Row) => boolean = () => true) =>
+    money(list.filter(keep).reduce((n, b) => n + Number(b.price), 0));
+  const is = (status: string) => (b: Row) => b.status === status;
+  const toCome = (b: Row) => b.status === 'confirmed' && ms(b.ends_at) > now();
+  const unmarked = (b: Row) => b.status === 'confirmed' && ms(b.ends_at) <= now();
+  const taken = current.filter((b) => b.status !== 'cancelled');
+  // Each booking's day and start hour by the shop's clock, with one formatter: a new one per booking is slow.
+  const clock = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+  });
+  const local = new Map(
+    current.map((b) => {
+      const p = Object.fromEntries(clock.formatToParts(new Date(ms(b.starts_at))).map((x) => [x.type, x.value]));
+      return [b, { day: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) }];
+    }),
+  );
+  const totals = (list: Row[]) => ({
+    done: count(list, 'completed'),
+    takings: sum(list, is('completed')),
+    no_shows: count(list, 'no_show'),
+    no_show_value: sum(list, is('no_show')),
+    cancelled: count(list, 'cancelled'),
+  });
+
+  const hours = new Map<number, number>();
+  for (const b of taken) hours.set(local.get(b)!.hour, (hours.get(local.get(b)!.hour) ?? 0) + 1);
+  // Every barber working here now, even one with nothing booked, and anyone since marked away who had bookings.
+  const barbers = tables()
+    .barbers.filter((barber) => barber.shop_id === shop.id)
+    .map((barber) => {
+      const theirs = current.filter((b) => b.barber_id === barber.id);
+      return {
+        barber,
+        row: {
+          barber_id: barber.id,
+          name: barber.name,
+          bookings: theirs.filter((b) => b.status !== 'cancelled').length,
+          done: count(theirs, 'completed'),
+          takings: sum(theirs, is('completed')),
+          no_shows: count(theirs, 'no_show'),
+        },
+      };
+    })
+    .filter(({ barber, row }) => barber.is_active || row.bookings > 0)
+    .sort(
+      (a, b) =>
+        b.row.takings - a.row.takings ||
+        b.row.done - a.row.done ||
+        Number(a.barber.sort_order) - Number(b.barber.sort_order) ||
+        ms(a.barber.created_at) - ms(b.barber.created_at) ||
+        (String(a.barber.id) < String(b.barber.id) ? -1 : 1),
+    )
+    .map(({ row }) => row);
+  const services = new Map<string, { name: string; done: number; takings: number }>();
+  for (const b of current.filter(is('completed'))) {
+    const s = services.get(String(b.service_name)) ?? { name: String(b.service_name), done: 0, takings: 0 };
+    services.set(s.name, { ...s, done: s.done + 1, takings: money(s.takings + Number(b.price)) });
+  }
+
+  return {
+    from,
+    to,
+    totals: {
+      ...totals(current),
+      // Still to come, or in the chair now; and over, but nobody marked them.
+      to_come: current.filter(toCome).length,
+      to_come_value: sum(current, toCome),
+      unmarked: current.filter(unmarked).length,
+      unmarked_value: sum(current, unmarked),
+    },
+    previous: { from: prevFrom, to: addDays(from, -1), until: new Date(prevUntil).toISOString(), ...totals(before) },
+    days: Array.from({ length: days }, (_, i) => {
+      const day = addDays(from, i);
+      const that = current.filter((b) => local.get(b)!.day === day);
+      return {
+        day,
+        bookings: that.filter((b) => b.status !== 'cancelled').length,
+        done: count(that, 'completed'),
+        takings: sum(that, is('completed')),
+      };
+    }),
+    hours: [...hours.entries()].sort((a, b) => a[0] - b[0]).map(([hour, bookings]) => ({ hour, bookings })),
+    barbers,
+    // The five most done, by the name they were booked under.
+    services: [...services.values()]
+      .sort((a, b) => b.done - a.done || b.takings - a.takings || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .slice(0, 5),
+  };
+}
+
+// The shop's customers --------------------------------------------------------
+
+/** Digits only, with a leading 0 written as 60, as WhatsApp wants it. */
+const phoneKey = (phone: unknown) => toWhatsAppNumber(String(phone ?? ''));
+/** `now() + interval 'n years'`. */
+const yearsFromNow = (years: number) => {
+  const at = new Date(now());
+  at.setUTCFullYear(at.getUTCFullYear() + years);
+  return at.getTime();
+};
+/** What barber/new-booking.tsx saves for a walk-in added without a name. */
+const isUnnamed = (b: Row) => b.customer_id == null && pgTrim(String(b.guest_name ?? '')).toLowerCase() === 'walk-in';
+const descNullsLast = (a: number | null, b: number | null) => (a === b ? 0 : a == null ? 1 : b == null ? -1 : b - a);
+const ascNullsLast = (a: string | null, b: string | null) =>
+  a === b ? 0 : a == null ? 1 : b == null ? -1 : a < b ? -1 : 1;
+
+export function shopCustomers(c: Caller, args: Record<string, unknown>) {
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  if (!shop) return [];
+  const tz = String(shop.time_zone);
+  const today = localDateString(new Date(now()), tz);
+  const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
+  // Only something typed like a number looks at phone numbers, so "Ali 2"
+  // doesn't find everyone with a 2 in theirs.
+  const digits = search != null && /^[0-9 +()-]+$/.test(search) ? search.replace(/\D/g, '') || null : null;
+
+  // Each person's bookings in date order: online customers by account,
+  // guests by phone number, or by name when there is none.
+  const from = yearsFromNow(-2);
+  const until = yearsFromNow(1);
+  const people = new Map<string, Row[]>();
+  const booked = tables()
+    .bookings.filter(
+      (b) =>
+        b.shop_id === shop.id &&
+        ms(b.starts_at) >= from &&
+        ms(b.starts_at) < until &&
+        !b.is_block &&
+        b.status !== 'cancelled' &&
+        // What delete_my_account leaves behind: history, but nobody to contact.
+        (b.customer_id != null || b.guest_name !== 'Deleted account') &&
+        // With no name and no number, every such walk-in would add up to one
+        // made-up regular.
+        !(isUnnamed(b) && !phoneKey(b.guest_phone)),
+    )
+    .sort((a, b) => ms(a.starts_at) - ms(b.starts_at));
+  // A guest added under the number on one of the shop's online customers'
+  // profiles is that customer, unless two of them share the number.
+  const owners = new Map<string, string | null>();
+  for (const id of new Set(booked.flatMap((b) => (b.customer_id == null ? [] : [String(b.customer_id)])))) {
+    const number = phoneKey(findById('profiles', id)?.phone);
+    if (number) owners.set(number, owners.has(number) ? null : id);
+  }
+  for (const b of booked) {
+    const account = b.customer_id ?? (phoneKey(b.guest_phone) ? owners.get(phoneKey(b.guest_phone)) : null);
+    const key =
+      account != null
+        ? `c:${account}`
+        : phoneKey(b.guest_phone)
+          ? `p:${phoneKey(b.guest_phone)}`
+          : `n:${pgTrim(String(b.guest_name)).replace(/\s+/g, ' ').toLowerCase()}`;
+    people.set(key, [...(people.get(key) ?? []), b]);
+  }
+
+  const found = [...people.entries()].flatMap(([key, bookings]) => {
+    const visited = bookings.filter((b) => b.status === 'completed' || (b.status === 'confirmed' && ms(b.starts_at) <= now()));
+    // A visit is a day they had a cut, however many bookings it took.
+    const days = [...new Set(visited.map((b) => localDateString(new Date(ms(b.starts_at)), tz)))];
+    const gaps = days
+      .slice(1)
+      .map((day, i) => daysBetween(days[i], day))
+      .sort((a, b) => a - b);
+    const mid = gaps.length >> 1;
+    const median = gaps.length % 2 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
+    const gap = days.length >= 2 ? Math.max(Math.round(median), 7) : 28;
+    const upcoming = bookings.filter((b) => b.status === 'confirmed' && ms(b.starts_at) > now());
+
+    // The name a guest last gave (not 'Walk-in') and their number as last typed.
+    const customerId = key.startsWith('c:') ? key.slice(2) : null;
+    const profile = customerId == null ? undefined : findById('profiles', customerId);
+    const named = bookings.filter((b) => b.customer_id == null && !isUnnamed(b)).at(-1);
+    const name = trimmed(profile?.full_name) ?? (named ? String(named.guest_name) : null);
+    const phone =
+      customerId == null
+        ? key.startsWith('p:')
+          ? String(bookings.at(-1)!.guest_phone)
+          : null
+        : ((profile?.phone as string | null | undefined) ?? null);
+    const matches =
+      search == null || name?.toLowerCase().includes(search) || (digits != null && phoneKey(phone).includes(digits));
+    if (!matches) return [];
+
+    const since = days.length ? daysBetween(days.at(-1)!, today) : null;
+    const due = since != null && upcoming.length === 0 && since >= gap && since < Math.max(3 * gap, 90);
+    return [
+      {
+        row: {
+          customer_key: key,
+          customer_id: customerId,
+          name,
+          phone,
+          visits: days.length,
+          no_shows: bookings.filter((b) => b.status === 'no_show').length,
+          last_visit_at: visited.length ? String(visited.at(-1)!.starts_at) : null,
+          next_booking_at: upcoming.length ? String(upcoming[0].starts_at) : null,
+          usual_gap_days: gap,
+          is_due: due,
+        },
+        overdue: due ? since! - gap : null,
+        lastVisit: visited.length ? ms(visited.at(-1)!.starts_at) : null,
+      },
+    ];
+  });
+
+  // Due first, longest overdue first, then everyone by their last visit.
+  found.sort(
+    (a, b) =>
+      Number(b.row.is_due) - Number(a.row.is_due) ||
+      descNullsLast(a.overdue, b.overdue) ||
+      descNullsLast(a.lastVisit, b.lastVisit) ||
+      ascNullsLast(a.row.name?.toLowerCase() ?? null, b.row.name?.toLowerCase() ?? null) ||
+      ascNullsLast(a.row.customer_key, b.row.customer_key),
+  );
+  const limit = Math.min(Math.max(Number(args.p_limit ?? 30), 1), 50);
+  const offset = Math.max(Number(args.p_offset ?? 0), 0);
+  const dueCount = found.filter((f) => f.row.is_due).length;
+  return found
+    .slice(offset, offset + limit)
+    .map(({ row }) => ({ ...row, total_count: found.length, due_count: dueCount }));
+}
+
+export function deleteMyAccount(c: Caller) {
+  if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
+  const mine = tables().bookings.filter((b) => b.customer_id === c.uid);
+  for (const b of mine) {
+    updateRows('bookings', [b], {
+      status: b.status === 'confirmed' && ms(b.starts_at) > now() ? 'cancelled' : b.status,
+      customer_id: null,
+      guest_name: 'Deleted account',
+      guest_phone: null,
+      customer_note: null,
+    });
+  }
+  const user = tables().users.find((u) => u.id === c.uid);
+  if (user) deleteRows('users', [user]);
+}
+
+/** A barber account with no shop yet turns into a customer one (signed up as a barber by mistake). */
+export function becomeCustomer(c: Caller) {
+  if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
+  if (tables().shops.some((s) => s.owner_id === c.uid)) {
+    throw new PgError('P0001', 'You have a shop, so this account stays a barber account.', 400);
+  }
+  const profile = findById('profiles', c.uid);
+  if (profile) updateRows('profiles', [profile], { role: 'customer' });
+}
+
+/** Who may call what: the migration revokes these from anonymous callers. */
+const SIGNED_IN_ONLY = new Set([
+  'book_appointment',
+  'set_booking_status',
+  'mark_booking_reminded',
+  'reschedule_booking',
+  'set_barber_hours',
+  'add_shop_booking',
+  'delete_my_account',
+  'become_customer',
+  'close_shop_days',
+  'reopen_shop_days',
+  'shop_summary',
+  'shop_customers',
+  'my_bookings',
+]);
+
+export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
+  if (SIGNED_IN_ONLY.has(name) && c.uid == null) {
+    throw new PgError('42501', `permission denied for function ${name}`, 401);
+  }
+  switch (name) {
+    case 'find_shops':
+      return { status: 200, body: findShops(args) };
+    case 'shop_hours_today':
+      return { status: 200, body: shopHoursToday(c, args.p_shop_id) };
+    case 'shop_areas':
+      return { status: 200, body: shopAreas() };
+    case 'shop_public_status':
+      return { status: 200, body: shopPublicStatus(args.p_slug) };
+    case 'available_slots':
+      return {
+        status: 200,
+        body: availableSlots(c, args.p_service_id, args.p_day, args.p_barber_id ?? null, args.p_ignore_booking ?? null),
+      };
+    case 'book_appointment':
+      return {
+        status: 200,
+        body: bookAppointment(c, args.p_service_id, args.p_starts_at, args.p_barber_id ?? null, args.p_note ?? null),
+      };
+    case 'set_booking_status':
+      return { status: 200, body: setBookingStatus(c, args.p_booking_id, args.p_status) };
+    case 'mark_booking_reminded':
+      return { status: 200, body: markBookingReminded(c, args.p_booking_id, args.p_starts_at, args.p_reminded) };
+    case 'reschedule_booking':
+      return {
+        status: 200,
+        body: rescheduleBooking(c, args.p_booking_id, args.p_starts_at, args.p_barber_id ?? null),
+      };
+    case 'set_barber_hours':
+      return { status: 200, body: setBarberHours(c, args.p_barber_id, args.p_hours) };
+    case 'add_shop_booking':
+      return { status: 200, body: addShopBooking(c, args) };
+    case 'close_shop_days':
+      return { status: 200, body: closeShopDays(c, args.p_from, args.p_days, args.p_reason ?? null) };
+    case 'reopen_shop_days':
+      return { status: 200, body: reopenShopDays(c, args.p_from, args.p_days) };
+    case 'shop_closed_days':
+      return { status: 200, body: shopClosedDays(c, args.p_shop_id, args.p_from, args.p_to) };
+    case 'shop_summary':
+      return { status: 200, body: shopSummary(c, args.p_from, args.p_to) };
+    case 'shop_customers':
+      return { status: 200, body: shopCustomers(c, args) };
+    case 'my_bookings':
+      return { status: 200, body: myBookings(c, args.p_limit) };
+    case 'delete_my_account':
+      deleteMyAccount(c);
+      return { status: 204 };
+    case 'become_customer':
+      becomeCustomer(c);
+      return { status: 204 };
+    default:
+      throw new PgError('PGRST202', `Could not find the function public.${name} in the schema cache`, 404);
+  }
+}
