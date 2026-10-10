@@ -285,6 +285,9 @@ function seed() {
   const [rahmanChair, hafiz] = k.barbers;
   book(k.shop, { barber: rahmanChair, day: -12, at: '10:00', service: k.services[0], customer: hakim, status: 'completed' }) ||
     book(k.shop, { barber: rahmanChair, day: -11, at: '10:00', service: k.services[0], customer: hakim, status: 'completed' });
+  // And a skin fade a couple of months back, so Find a barber lists three of his barbers.
+  const fadeRoomCut = { barber: f.barbers[0], at: '15:00', service: f.services[0], customer: hakim, status: 'completed' };
+  book(f.shop, { ...fadeRoomCut, day: -61 }) || book(f.shop, { ...fadeRoomCut, day: -60 });
 
   // Other shops are busy too, so not every time is free.
   book(k.shop, { barber: rahmanChair, day: 0, at: '10:00', service: k.services[0], guest: ['Encik Zul'] });
