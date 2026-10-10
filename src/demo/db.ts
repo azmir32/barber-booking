@@ -147,6 +147,8 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     status: req('text', () => 'confirmed', ['confirmed', 'cancelled', 'completed', 'no_show']),
     customer_note: opt('text'),
     reminded_at: opt('timestamptz'),
+    customer_changed_at: opt('timestamptz'),
+    customer_change: opt('text'),
     created_at: createdAt,
   },
   shop_closures: {
@@ -203,6 +205,11 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['bookings_customer_note_check', (r) => atMost(r.customer_note, 280)],
     ['bookings_check', (r) => Date.parse(String(r.ends_at)) > Date.parse(String(r.starts_at))],
     ['bookings_check1', (r) => Boolean(r.is_block) || r.customer_id != null || r.guest_name != null],
+    [
+      'bookings_customer_change_check',
+      (r) => r.customer_change == null || ['booked', 'moved', 'cancelled'].includes(String(r.customer_change)),
+    ],
+    ['bookings_customer_change_pair', (r) => (r.customer_changed_at == null) === (r.customer_change == null)],
   ],
   shop_closures: [['shop_closures_reason_check', (r) => atMost(r.reason, 80)]],
 };

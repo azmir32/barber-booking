@@ -12,7 +12,8 @@ export const DEMO_CUSTOMER_EMAIL = 'hakim@demo.potongku.my';
 export const DEMO_BARBER_EMAIL = 'ali@demo.potongku.my';
 
 const TZ = 'Asia/Kuala_Lumpur';
-const DAY = 86_400_000;
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 
 /** Fixed ids, so the sample shops keep their links after a reset. */
 let next = 0;
@@ -80,6 +81,8 @@ type Booked = {
   note?: string;
   /** Someone in the shop already sent a WhatsApp reminder. */
   reminded?: boolean;
+  /** The customer booked, moved or cancelled it themselves this many hours ago. */
+  changed?: { change: 'booked' | 'moved' | 'cancelled'; hoursAgo: number };
 };
 
 function seed() {
@@ -110,6 +113,9 @@ function seed() {
     const minutes = b.block ? b.block[1] : (b.service!.duration_min as number);
     if (!works(b.barber.hours, b.day, b.at, minutes)) return false;
     const starts = startOf(b.day, b.at);
+    const created = new Date(Math.min(now(), starts) - 2 * DAY).toISOString();
+    // Online bookings say when the customer last changed them, as the booking functions stamp it.
+    const changedAt = b.changed ? new Date(now() - b.changed.hoursAgo * HOUR).toISOString() : created;
     insertRow('bookings', {
       id: b.day < -1 ? pastId() : sid(),
       shop_id: shopRow.id,
@@ -125,8 +131,10 @@ function seed() {
       ends_at: new Date(starts + minutes * 60_000).toISOString(),
       status: b.status ?? 'confirmed',
       customer_note: b.note ?? null,
-      reminded_at: b.reminded ? new Date(now() - 2 * 3_600_000).toISOString() : null,
-      created_at: new Date(Math.min(now(), starts) - 2 * DAY).toISOString(),
+      reminded_at: b.reminded ? new Date(now() - 2 * HOUR).toISOString() : null,
+      customer_changed_at: b.customer ? changedAt : null,
+      customer_change: b.customer ? (b.changed?.change ?? 'booked') : null,
+      created_at: b.changed?.change === 'booked' ? changedAt : created,
     });
     return true;
   };
@@ -375,6 +383,51 @@ function seed() {
       }
     }
   }
+
+  // What customers changed in the last few hours, for the "Since you last
+  // looked" card and the badge on Ali's Bookings tab: a booking made an hour
+  // and a half ago for later in the week, a cancellation that freed a chair
+  // later today (or tomorrow, late in the evening) and a booking moved this
+  // morning. Added last, each at the first of its times that is free and
+  // still an hour off, so the bookings above stay as they are.
+  const firstFree = (options: Booked[]) =>
+    options.some((b) => {
+      const start = startOf(b.day, b.at);
+      const end = start + (b.service!.duration_min as number) * 60_000;
+      const taken = tables().bookings.some(
+        (x) =>
+          x.barber_id === b.barber.row.id &&
+          x.status !== 'cancelled' &&
+          Date.parse(String(x.starts_at)) < end &&
+          start < Date.parse(String(x.ends_at)),
+      );
+      return start > now() + HOUR && !taken && book(sa, b);
+    });
+  const anyChair = (days: number[], times: string[], plan: Omit<Booked, 'barber' | 'day' | 'at'>) =>
+    days.flatMap((day) => times.flatMap((at) => [danial, aliChair].map((barber) => ({ barber, day, at, ...plan }))));
+  firstFree(
+    anyChair([3, 4, 5, 2], ['17:30', '12:15', '19:30', '10:30'], {
+      service: haircutBeard,
+      customer: aiman,
+      changed: { change: 'booked', hoursAgo: 1.5 },
+    }),
+  );
+  firstFree(
+    anyChair([0, 1], ['18:30', '17:00', '19:30', '14:30', '12:15'], {
+      service: haircut,
+      customer: jason,
+      status: 'cancelled',
+      changed: { change: 'cancelled', hoursAgo: 3 },
+    }),
+  );
+  firstFree(
+    anyChair([4, 5, 6, 3], ['19:30', '11:30', '12:30', '18:30'], {
+      service: fade,
+      customer: ravi,
+      note: 'Low fade, keep the top long',
+      changed: { change: 'moved', hoursAgo: 5 },
+    }),
+  );
 }
 
 setSeed(seed);

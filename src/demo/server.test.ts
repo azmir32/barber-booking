@@ -641,6 +641,196 @@ test('the shop records who it reminded on WhatsApp, for the time it named, and a
   assert.ok(fresh.data.reminded_at);
 });
 
+type ShopChanges = { since: string; count: number; latest: string | null; changes: Row[] };
+
+test('the shop hears what customers booked, moved or cancelled since it last looked, and nothing else', async () => {
+  const mat = await signedIn('mat@demo.potongku.my');
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const ravi = await signedIn('ravi@demo.potongku.my');
+  const changes = async (c = mat, args: Record<string, unknown> = {}) => {
+    const { data, error } = await c.rpc('shop_changes', { p_since: null, p_limit: 5, ...args });
+    assert.equal(error, null);
+    return data as ShopChanges;
+  };
+  // Pak Mat's sample bookings were all added by the shop.
+  const quiet = await changes();
+  assert.deepEqual([quiet.count, quiet.latest, quiet.changes], [0, null, []]);
+  assert.ok(Math.abs(Date.parse(quiet.since) - (Date.now() - 86_400_000)) < 5000, 'a phone that never looked gets the last day');
+
+  const shop = await shopBySlug(hakim, 'gunting-pak-mat');
+  const { data: services } = await hakim.from('services').select('*').eq('shop_id', shop.id).order('sort_order');
+  const cut = services![0]; // 20 minutes
+  const { data: barbers } = await hakim.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const [pakMat, faizal] = barbers!;
+  // A day Pak Mat has no Friday prayers break.
+  let day = addDays(today(), 3);
+  if (new Date(`${day}T00:00:00Z`).getUTCDay() === 5) day = addDays(day, 1);
+  const at = (clock: string, date = day) => {
+    const [h, m] = clock.split(':').map(Number);
+    return new Date(dayBounds(date, TZ).start.getTime() + (h * 60 + m) * 60_000).toISOString();
+  };
+  // A minute between each step, so every change has its own time.
+  let clock = Date.now();
+  setClock(() => clock);
+  const tick = () => (clock += 60_000);
+  try {
+    const book = async (c: ReturnType<typeof client>, time: string) => {
+      tick();
+      const { data, error } = await c.rpc('book_appointment', { p_service_id: cut.id, p_starts_at: at(time), p_barber_id: pakMat.id });
+      assert.equal(error, null);
+      return data as Row;
+    };
+    const booked = await book(hakim, '09:00');
+    assert.equal(booked.customer_change, 'booked');
+    assert.equal(Date.parse(String(booked.customer_changed_at)), clock);
+    const toMove = await book(hakim, '10:00');
+    tick();
+    const moved = (await hakim.rpc('reschedule_booking', { p_booking_id: toMove.id, p_starts_at: at('11:00') })).data as Row;
+    assert.deepEqual([moved.customer_change, Date.parse(String(moved.customer_changed_at))], ['moved', clock]);
+    const toCancel = await book(ravi, '12:00');
+    tick();
+    const cancelled = (await ravi.rpc('set_booking_status', { p_booking_id: toCancel.id, p_status: 'cancelled' })).data as Row;
+    assert.equal(cancelled.customer_change, 'cancelled');
+
+    // The shop's own changes leave them as they were.
+    const shopCancels = await book(ravi, '13:00');
+    tick();
+    const byShop = (await mat.rpc('set_booking_status', { p_booking_id: shopCancels.id, p_status: 'cancelled' })).data as Row;
+    assert.deepEqual([byShop.customer_change, byShop.customer_changed_at], ['booked', shopCancels.customer_changed_at]);
+    const shopMoved = (await mat.rpc('reschedule_booking', { p_booking_id: moved.id, p_starts_at: at('11:30') })).data as Row;
+    assert.deepEqual([shopMoved.customer_change, shopMoved.customer_changed_at], ['moved', moved.customer_changed_at]);
+    // Ravi cancelled one, and the shop took it back: it stands, so it is no news.
+    const takenBack = await book(ravi, '14:00');
+    await ravi.rpc('set_booking_status', { p_booking_id: takenBack.id, p_status: 'cancelled' });
+    const restored = (await mat.rpc('set_booking_status', { p_booking_id: takenBack.id, p_status: 'confirmed' })).data as Row;
+    assert.deepEqual([restored.status, restored.customer_change], ['confirmed', 'cancelled']);
+    const walkIn = await mat.rpc('add_shop_booking', {
+      p_barber_id: pakMat.id,
+      p_day: day,
+      p_time: '15:00',
+      p_service_id: cut.id,
+      p_guest_name: 'Pak Abu',
+    });
+    assert.deepEqual([walkIn.data.customer_change, walkIn.data.customer_changed_at], [null, null]);
+    const direct = await mat.from('bookings').update({ customer_change: null, customer_changed_at: null }).eq('id', walkIn.data.id);
+    assert.equal(direct.error?.code, '42501');
+
+    // Newest first, each saying who, what, with whom and when it is now.
+    const news = await changes();
+    assert.equal(news.count, 3);
+    assert.deepEqual(
+      news.changes.map((c) => [c.change, c.customer_name, c.chair_free]),
+      [
+        ['cancelled', 'Ravi', true],
+        ['moved', 'Hakim', false],
+        ['booked', 'Hakim', false],
+      ],
+    );
+    assert.deepEqual(news.changes[1], {
+      booking_id: moved.id,
+      barber_id: pakMat.id,
+      barber_name: 'Pak Mat',
+      customer_name: 'Hakim',
+      service_name: 'Potong biasa',
+      starts_at: shopMoved.starts_at,
+      change: 'moved',
+      changed_at: moved.customer_changed_at,
+      chair_free: false,
+    });
+    assert.equal(news.latest, cancelled.customer_changed_at);
+    // Once the shop puts a walk-in in Ravi's cancelled time, that chair is no longer free.
+    await mat.rpc('add_shop_booking', {
+      p_barber_id: pakMat.id,
+      p_day: day,
+      p_time: '12:00',
+      p_service_id: cut.id,
+      p_guest_name: 'Pak Long',
+    });
+    assert.equal((await changes()).changes[0].chair_free, false);
+
+    // Once a phone has seen up to the newest, nothing is new; from an earlier change, what came after.
+    assert.equal((await changes(mat, { p_since: news.latest })).count, 0);
+    assert.equal((await changes(mat, { p_since: booked.customer_changed_at })).count, 2);
+    // Never more than a week back, and a few at a time with the count for all.
+    const month = await changes(mat, { p_since: new Date(clock - 30 * 86_400_000).toISOString() });
+    assert.deepEqual([Date.parse(month.since), month.count], [clock - 7 * 86_400_000, 3]);
+    const one = await changes(mat, { p_limit: 1 });
+    assert.deepEqual([one.count, one.changes.length], [3, 1]);
+    assert.deepEqual((await changes(mat, { p_limit: 0 })).changes, []);
+
+    // Only bookings that end today or later: this morning's first minutes count whenever this runs, last night's don't.
+    const faizalAt = (date: string, time: string, ago: number, extra: Row = {}) =>
+      insertRow('bookings', {
+        shop_id: shop.id,
+        barber_id: faizal.id,
+        customer_id: tables().users.find((u) => u.email === 'jason@demo.potongku.my')!.id,
+        service_name: 'Potong biasa',
+        price: 12,
+        starts_at: at(time, date),
+        ends_at: new Date(Date.parse(at(time, date)) + 20 * 60_000).toISOString(),
+        customer_changed_at: new Date(clock - ago).toISOString(),
+        customer_change: 'booked',
+        ...extra,
+      });
+    faizalAt(today(), '00:00', 2 * 3_600_000);
+    faizalAt(addDays(today(), -1), '23:30', 3_600_000);
+    faizalAt(addDays(today(), 7), '09:00', 8 * 86_400_000);
+    assert.equal((await changes()).count, 4);
+    // A page is at most 20.
+    for (let k = 1; k <= 25; k++) faizalAt(addDays(day, 2), `${8 + Math.floor(k / 3)}:${(k % 3) * 20}`, k * 60_000);
+    const page = await changes(mat, { p_limit: 1000 });
+    assert.deepEqual([page.count, page.changes.length], [29, 20]);
+
+    // Nobody else hears about them: another shop's owner, a customer, or a guest.
+    assert.equal((await changes(await signedIn('rahman@demo.potongku.my'))).count, 0);
+    assert.deepEqual((await changes(hakim)).changes, []);
+    assert.equal((await client().rpc('shop_changes', { p_since: null })).error?.code, '42501');
+
+    // A customer who deletes their account cancels what they had booked, and the shop hears it.
+    tick();
+    assert.equal((await hakim.rpc('delete_my_account')).error, null);
+    const gone = (await changes(mat, { p_limit: 2 })).changes;
+    assert.deepEqual(
+      gone.map((c) => [c.change, c.customer_name, c.booking_id]).sort(),
+      [
+        ['cancelled', 'Deleted account', booked.id],
+        ['cancelled', 'Deleted account', moved.id],
+      ].sort(),
+    );
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
+test('Ali’s sample shop has a booking, a cancellation and a move from the last few hours, whatever the day and hour', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  try {
+    // Every hour of the day, each on a different weekday in turn.
+    for (let hour = 0; hour < 24; hour++) {
+      const date = addDays(today(), hour % 7);
+      const at = dayBounds(date, TZ).start.getTime() + (hour * 60 + 7) * 60_000;
+      const when = `on ${date} at ${hour}:07`;
+      setClock(() => at);
+      resetDemo();
+      const { data, error } = await ali.rpc('shop_changes', { p_since: null, p_limit: 5 });
+      assert.equal(error, null);
+      const { count, changes } = data as ShopChanges;
+      assert.deepEqual(
+        [count, ...changes.map((c) => `${c.change} ${c.customer_name}`)],
+        [3, 'booked Aiman', 'cancelled Jason', 'moved Ravi'],
+        when,
+      );
+      const [booked, cancelled] = changes;
+      // Booked for later in the week; the cancelled time is still to come, so a walk-in can have it.
+      assert.ok(localDateString(new Date(String(booked.starts_at)), TZ) >= addDays(date, 2), when);
+      assert.ok(Date.parse(String(cancelled.starts_at)) > at && cancelled.chair_free === true, when);
+      for (const c of changes) assert.ok(at - Date.parse(String(c.changed_at)) < 6 * 3_600_000, when);
+    }
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
 test('a new barber signs up, sets up a shop and goes live', async () => {
   const c = client();
   const signUp = await c.auth.signUp({

@@ -292,6 +292,8 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
         starts_at: new Date(at).toISOString(),
         ends_at: new Date(at + Number(service.duration_min) * 60_000).toISOString(),
         customer_note: trimmed(note),
+        customer_changed_at: new Date(now()).toISOString(),
+        customer_change: 'booked',
       }),
     TAKEN,
   );
@@ -304,6 +306,8 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
   if (c.uid == null || (booking.customer_id !== c.uid && !ownsShop(booking.shop_id, c.uid))) {
     throw new PgError('P0002', 'Booking not found.', 500);
   }
+  // As in setBookingStatus, the owner counts as the shop.
+  const byCustomer = !ownsShop(booking.shop_id, c.uid);
   if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
     throw new PgError('42501', 'You can only change an upcoming booking.', 403);
   }
@@ -334,6 +338,7 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
         ends_at: new Date(at + Number(service.duration_min) * 60_000).toISOString(),
         // Any reminder named the old time.
         reminded_at: null,
+        ...(byCustomer ? { customer_changed_at: new Date(now()).toISOString(), customer_change: 'moved' } : {}),
       })[0],
     TAKEN,
   );
@@ -360,6 +365,7 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
   const booking = findById('bookings', bookingId);
   if (!booking) throw new PgError('P0002', 'Booking not found.', 500);
   const next = toColumnValue('bookings', 'status', status);
+  let byCustomer = false;
   if (ownsShop(booking.shop_id, c.uid)) {
     if ((next === 'completed' || next === 'no_show') && ms(booking.starts_at) > now()) {
       throw new PgError('42501', 'You can mark this once the appointment has started.', 403);
@@ -368,11 +374,16 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
     if (next !== 'cancelled' || booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
       throw new PgError('42501', 'You can only cancel an upcoming booking.', 403);
     }
+    byCustomer = true;
   } else {
     throw new PgError('P0002', 'Booking not found.', 500);
   }
   return guarded(
-    () => updateRows('bookings', [booking], { status: next })[0],
+    () =>
+      updateRows('bookings', [booking], {
+        status: next,
+        ...(byCustomer ? { customer_changed_at: new Date(now()).toISOString(), customer_change: 'cancelled' } : {}),
+      })[0],
     'That time has been booked by someone else since.',
   );
 }
@@ -866,12 +877,67 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
     .map(({ row }) => ({ ...row, total_count: found.length, due_count: dueCount }));
 }
 
+// What customers changed ------------------------------------------------------
+
+const HOUR = 3_600_000;
+
+/**
+ * shop_changes: what customers booked, moved or cancelled at the caller's
+ * shop since p_since (the last day for a phone that never looked, a week at
+ * most), for bookings that end today or later on the shop's clock. A booking
+ * the shop has since cancelled, or taken back after the customer cancelled,
+ * is left out.
+ */
+export function shopChanges(c: Caller, sinceArg: unknown = null, limitArg: unknown = 5) {
+  const asked = sinceArg == null ? now() - 24 * HOUR : ms(toColumnValue('bookings', 'customer_changed_at', sinceArg));
+  const since = Math.max(asked, now() - 7 * 24 * HOUR);
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  const sinceIso = new Date(since).toISOString();
+  if (!shop) return { since: sinceIso, count: 0, latest: null, changes: [] };
+  const tz = String(shop.time_zone);
+  const today = dayBounds(localDateString(new Date(now()), tz), tz).start.getTime();
+  const changed = tables()
+    .bookings.filter(
+      (b) =>
+        b.shop_id === shop.id &&
+        b.customer_changed_at != null &&
+        ms(b.customer_changed_at) > since &&
+        ms(b.ends_at) > today &&
+        (b.status === 'cancelled') === (b.customer_change === 'cancelled'),
+    )
+    .sort((a, b) => ms(b.customer_changed_at) - ms(a.customer_changed_at) || (String(a.id) < String(b.id) ? -1 : 1));
+  const limit = Math.min(Math.max(limitArg == null ? 5 : Number(limitArg), 0), 20);
+  return {
+    since: sinceIso,
+    count: changed.length,
+    latest: changed.length ? changed[0].customer_changed_at : null,
+    changes: changed.slice(0, limit).map((b) => ({
+      booking_id: b.id,
+      barber_id: b.barber_id,
+      barber_name: findById('barbers', b.barber_id)?.name ?? null,
+      // A deleted account's name is gone; deleteMyAccount leaves 'Deleted account'.
+      customer_name: (b.customer_id == null ? null : findById('profiles', b.customer_id)?.full_name) ?? b.guest_name,
+      service_name: b.service_name,
+      starts_at: b.starts_at,
+      change: b.customer_change,
+      changed_at: b.customer_changed_at,
+      chair_free:
+        b.customer_change === 'cancelled' &&
+        ms(b.starts_at) > now() &&
+        !tables().bookings.some((x) => clash(x, b.barber_id, ms(b.starts_at), ms(b.ends_at))),
+    })),
+  };
+}
+
 export function deleteMyAccount(c: Caller) {
   if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
   const mine = tables().bookings.filter((b) => b.customer_id === c.uid);
   for (const b of mine) {
+    // Cancelling the upcoming ones is the customer's change, so their shops see it.
+    const cancels = b.status === 'confirmed' && ms(b.starts_at) > now();
     updateRows('bookings', [b], {
-      status: b.status === 'confirmed' && ms(b.starts_at) > now() ? 'cancelled' : b.status,
+      status: cancels ? 'cancelled' : b.status,
+      ...(cancels ? { customer_changed_at: new Date(now()).toISOString(), customer_change: 'cancelled' } : {}),
       customer_id: null,
       guest_name: 'Deleted account',
       guest_phone: null,
@@ -906,6 +972,7 @@ const SIGNED_IN_ONLY = new Set([
   'reopen_shop_days',
   'shop_summary',
   'shop_customers',
+  'shop_changes',
   'my_bookings',
 ]);
 
@@ -955,6 +1022,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: shopSummary(c, args.p_from, args.p_to) };
     case 'shop_customers':
       return { status: 200, body: shopCustomers(c, args) };
+    case 'shop_changes':
+      return { status: 200, body: shopChanges(c, args.p_since ?? null, args.p_limit ?? 5) };
     case 'my_bookings':
       return { status: 200, body: myBookings(c, args.p_limit) };
     case 'delete_my_account':
