@@ -519,6 +519,64 @@ test('the owner sees this week’s takings, and last week’s and the month’s'
   await snap(page, 'demo-15-takings-month-dark');
 });
 
+test('a customer rates their cut, it shows on the shop’s page, and the owner replies', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+
+  // A shop with a few reviews shows its stars in the list.
+  const stars = app.getByRole('link', { name: /Kemas Barber Kajang/ }).getByRole('img', { name: /^Rated / });
+  await expect(stars).toBeVisible();
+  const before = /^Rated \d\.\d out of 5 from (\d+) reviews$/.exec((await stars.getAttribute('aria-label')) ?? '');
+  expect(before).not.toBeNull();
+  const count = Number(before![1]);
+
+  // Hakim's cut at Kemas is done and not rated yet, so My bookings asks about it.
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(app.getByRole('heading', { name: 'Rate your cut', exact: true })).toBeVisible();
+  await expect(app.getByText('How was your cut?')).toBeVisible();
+  const picker = app.getByRole('radiogroup', { name: 'Your rating' });
+  await expect(picker.getByRole('radio')).toHaveCount(5);
+  await picker.getByRole('radio', { name: '5 stars', exact: true }).click();
+  await expect(picker.getByRole('radio', { name: '5 stars', exact: true })).toBeChecked();
+  await app.getByLabel('Comment (optional)', { exact: true }).fill('Clean fade, and no wait at all.');
+  await snap(page, 'demo-18-rate-cut');
+  await button(app, 'Send').click();
+  await expect(app.getByText('Thanks! Your rating is saved.')).toBeVisible();
+  await expect(app.getByText('“Clean fade, and no wait at all.”')).toBeVisible();
+  // It can still be changed for a while.
+  await expect(button(app, /^Change your rating for /)).toBeVisible();
+
+  // On the shop's page it is the newest review, with his first name.
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+  await app.getByRole('link', { name: /^Kemas Barber Kajang/ }).click();
+  const summary = app.getByRole('link', { name: new RegExp(`^Rated \\d\\.\\d out of 5 from ${count + 1} reviews\\. See reviews$`) });
+  await expect(summary).toBeVisible();
+  await summary.click();
+  await expect(app.getByRole('heading', { name: 'Reviews', exact: true })).toBeVisible();
+  await expect(app.getByText('Clean fade, and no wait at all.', { exact: true })).toBeVisible();
+  await expect(app.getByText('Hakim', { exact: true })).toBeVisible();
+  await snap(page, 'demo-19-shop-reviews');
+
+  // Ali finds his shop's reviews on My shop, and answers one.
+  await page.reload();
+  await page.frameLocator('#app').getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  const card = app.getByRole('link', { name: /^Reviews: Rated \d\.\d out of 5 from \d+ reviews\. \S+: “.+”$/ });
+  await expect(card).toBeVisible();
+  await card.click();
+  const reply = button(app, /^Reply to /).first();
+  await expect(reply).toBeVisible();
+  const name = ((await reply.getAttribute('aria-label')) ?? '').replace('Reply to ', '');
+  await reply.click();
+  await app.getByLabel('Your reply', { exact: true }).fill(`Thanks ${name}, see you next time!`);
+  await button(app, 'Save reply').click();
+  await expect(app.getByText('Reply saved.')).toBeVisible();
+  await expect(app.getByText(`Thanks ${name}, see you next time!`, { exact: true })).toBeVisible();
+  await expect(button(app, `Edit your reply to ${name}`)).toBeVisible();
+  await snap(page, 'demo-20-owner-reviews');
+});
+
 test.describe('on an iPhone', () => {
   // Chromium, telling the app it is Safari on an iPhone.
   test.use({ userAgent: devices['iPhone 13'].userAgent });
