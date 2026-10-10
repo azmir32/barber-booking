@@ -62,23 +62,18 @@ export function lastCutLine(shop: Pick<MyShop, 'service_name' | 'barber_name' | 
 }
 
 /**
- * Whether to say "Due for a cut" at this shop: their usual gap there has
- * passed since their last cut anywhere (`lastCutAt`), and nothing is booked
- * anywhere. Hair grows wherever it was cut, so a cut elsewhere since, or one
- * already booked, means it isn't due. As on the shop's own customer list,
- * someone away from the shop for three gaps (and at least 90 days) has most
- * likely moved on, so it stops saying so.
+ * Whether to say "Due for a cut" on the card of the shop they went to last
+ * (only that one: they have had a cut since visiting the others): their
+ * usual gap between cuts there has passed, and nothing is booked anywhere.
+ * As on the shop's own customer list, someone away three gaps (and at least
+ * 90 days) has most likely found another barber, so it stops saying so.
  */
 export function isDue(
   shop: Pick<MyShop, 'last_visit_at' | 'usual_gap_days' | 'time_zone'>,
-  lastCutAt: string,
   booked: boolean,
   now: number,
 ): boolean {
   if (booked) return false;
-  const gap = shop.usual_gap_days;
-  return (
-    daysSince(lastCutAt, now, shop.time_zone) >= gap &&
-    daysSince(shop.last_visit_at, now, shop.time_zone) < Math.max(3 * gap, 90)
-  );
+  const days = daysSince(shop.last_visit_at, now, shop.time_zone);
+  return days >= shop.usual_gap_days && days < Math.max(3 * shop.usual_gap_days, 90);
 }

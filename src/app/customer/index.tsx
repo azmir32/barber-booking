@@ -79,12 +79,15 @@ export default function Explore() {
 
   const loadMine = useCallback(async () => {
     const request = ++latestMine.current;
-    if (!uid) return setMine(null);
+    // Asked of the client rather than taken from the screen's state, so the
+    // session arriving after the first load doesn't send the list again.
+    const who = (await supabase.auth.getSession()).data.session?.user.id;
+    if (!who) return setMine(null);
     const { data, error } = await supabase.rpc('my_shops');
     // Nothing to say on failure: the list below is what matters, and the cards come back on the next load.
     if (request !== latestMine.current || error || !data) return;
-    setMine({ ...(data as MyShops), uid });
-  }, [uid]);
+    setMine({ ...(data as MyShops), uid: who });
+  }, []);
 
   const load = useCallback(async () => {
     const request = ++latest.current;

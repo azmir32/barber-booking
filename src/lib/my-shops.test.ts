@@ -40,24 +40,20 @@ test('the last cut names the service, the barber and how long ago', () => {
   assert.equal(lastCutLine({ ...shop(0), last_visit_at: '2026-10-05T23:00:00+08:00' }, now), 'Fade with Danial, yesterday');
 });
 
-test('due for a cut once the usual gap has passed since the last cut anywhere, with nothing booked', () => {
-  const shop = (lastHere: number, gap: number) => ({ last_visit_at: daysAgo(lastHere), usual_gap_days: gap, time_zone: TZ });
-  const due = (lastHere: number, gap: number, lastAnywhere = lastHere, booked = false) =>
-    isDue(shop(lastHere, gap), daysAgo(lastAnywhere), booked, now);
+test('due for a cut once the usual gap has passed, with nothing booked', () => {
+  const due = (days: number, gap: number, booked = false) =>
+    isDue({ last_visit_at: daysAgo(days), usual_gap_days: gap, time_zone: TZ }, booked, now);
   // Four weeks after a single visit, or their own usual gap.
   assert.equal(due(27, 28), false);
   assert.equal(due(28, 28), true);
   assert.equal(due(21, 21), true);
   assert.equal(due(20, 21), false);
   // Counted in days on the shop's clock, so a cut late at night is a whole day ago next morning.
-  const weekly = (at: string) => isDue({ last_visit_at: at, usual_gap_days: 7, time_zone: TZ }, at, false, now);
+  const weekly = (at: string) => isDue({ last_visit_at: at, usual_gap_days: 7, time_zone: TZ }, false, now);
   assert.equal(weekly('2026-09-29T23:00:00+08:00'), true);
   assert.equal(weekly('2026-09-30T08:00:00+08:00'), false);
   // Nothing is due while a cut is booked, anywhere.
-  assert.equal(due(40, 28, 40, true), false);
-  // A cut at another shop since means it isn't due here either.
-  assert.equal(due(40, 28, 10), false);
-  assert.equal(due(40, 28, 30), true);
+  assert.equal(due(40, 28, true), false);
   // Away three gaps, and at least 90 days, they have most likely moved on.
   assert.equal(due(89, 28), true);
   assert.equal(due(90, 28), false);

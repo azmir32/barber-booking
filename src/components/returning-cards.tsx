@@ -29,12 +29,12 @@ export function ReturningCards({ mine, now }: { mine: MyShops; now: number }) {
       ) : null}
       {mine.shops.length ? (
         <Section title={t('Your barbers')}>
-          {mine.shops.map((shop) => (
+          {mine.shops.map((shop, i) => (
             <BarberCard
               key={shop.shop_id}
               shop={shop}
-              // Latest first, so the first shop has their last cut anywhere.
-              due={isDue(shop, mine.shops[0].last_visit_at, mine.upcoming > 0, now)}
+              // Latest first: the first shop is where they had their last cut.
+              due={i === 0 && isDue(shop, mine.upcoming > 0, now)}
               now={now}
             />
           ))}
