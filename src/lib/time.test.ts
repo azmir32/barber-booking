@@ -17,6 +17,7 @@ import {
   noBreak,
   normalizeTime,
   slugify,
+  suggestSlug,
   upcomingDays,
 } from './time.ts';
 import { setCurrentLang } from './lang.ts';
@@ -136,6 +137,17 @@ test('localClock gives the shop-local 24-hour time, rounded down', () => {
 test('slugify', () => {
   assert.equal(slugify("Ali's Cuts!"), 'alis-cuts');
   assert.equal(slugify('  Kemas  Barber Kajang '), 'kemas-barber-kajang');
+});
+
+test('suggestSlug offers a link to try when one is taken', () => {
+  assert.equal(suggestSlug('ali-barber', 'Kajang'), 'ali-barber-kajang');
+  assert.equal(suggestSlug('ali-barber', 'Sungai Chua, Kajang'), 'ali-barber-sungai-chua-kajang');
+  assert.equal(suggestSlug('ali-barber-kajang', 'Kajang'), 'ali-barber-kajang-2');
+  assert.equal(suggestSlug('ali-barber-kajang-2', 'Kajang'), 'ali-barber-kajang-3');
+  assert.equal(suggestSlug('ali-barber', ''), 'ali-barber-2');
+  const long = 'a'.repeat(36) + '-cut';
+  assert.equal(suggestSlug(long, 'Kajang'), `${'a'.repeat(33)}-kajang`);
+  assert.ok(suggestSlug(long, 'Kajang').length <= 40);
 });
 
 test('groupByPartOfDay uses shop-local hours', () => {

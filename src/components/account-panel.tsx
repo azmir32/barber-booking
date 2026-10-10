@@ -38,7 +38,8 @@ export function AccountPanel() {
   );
 }
 
-function LanguagePicker() {
+/** English or Malay, for the whole app. Also on the shop set-up screen. */
+export function LanguagePicker() {
   const { lang, setLang } = useLanguage();
   return (
     <Card>
@@ -62,7 +63,8 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
   // Field errors show once Save is pressed, then clear as soon as the field is fixed.
   const [checked, setChecked] = useState(false);
 
-  const changed = fullName.trim() !== profile.full_name || (phone.trim() || null) !== (profile.phone ?? null);
+  const fields = { full_name: fullName.trim(), phone: phone.trim() || null };
+  const changed = fields.full_name !== profile.full_name || fields.phone !== (profile.phone ?? null);
   // The barber recognises and reaches a customer by these; a barber's shop has its own number.
   const nameError = checked && !fullName.trim() ? t('Enter your name') : null;
   const phoneError =
@@ -80,11 +82,7 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
     setChecked(true);
     if (!fullName.trim() || (profile.role === 'customer' && !phone.trim())) return;
     setBusy(true);
-    setSaved(false);
-    const { error } = await supabase
-      .from('profiles')
-      .update({ full_name: fullName.trim(), phone: phone.trim() || null })
-      .eq('id', profile.id);
+    const { error } = await supabase.from('profiles').update(fields).eq('id', profile.id);
     setBusy(false);
     if (error) return setError(errorMessage(error));
     setError(null);
@@ -132,7 +130,11 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
         error={phoneError}
       />
       <ErrorText message={error} />
-      {saved ? <T variant="small">{t('Saved.')}</T> : null}
+      {saved ? (
+        <T variant="small" role="status" accessibilityLiveRegion="polite">
+          {t('Saved.')}
+        </T>
+      ) : null}
       {/* Nothing to save until something has changed. */}
       <Button title={t('Save')} variant="secondary" onPress={save} loading={busy} disabled={!changed} />
       <Button

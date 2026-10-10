@@ -280,12 +280,9 @@ export const ms: Record<string, string> = {
   'Subscription active': 'Langganan aktif',
   'Free trial: 1 day left': 'Percubaan percuma: tinggal 1 hari',
   'Free trial: {count} days left': 'Percubaan percuma: tinggal {count} hari',
-  'Trial ended, customers can no longer book': 'Percubaan tamat, pelanggan tidak boleh menempah',
   'You are live': 'Tempahan dibuka',
   'Not live yet': 'Belum dibuka',
   'Hidden from customers': 'Tersembunyi daripada pelanggan',
-  'Customers can’t find your shop or book until your subscription is active.':
-    'Pelanggan tidak boleh cari kedai anda atau menempah sehingga langganan anda aktif.',
   'Customers can find you and book. Share your link everywhere.':
     'Pelanggan boleh cari dan tempah anda. Kongsi pautan anda di mana-mana.',
   'Go live when your services and hours are ready.': 'Buka tempahan apabila servis dan waktu kerja anda sudah sedia.',
@@ -475,16 +472,12 @@ export const ms: Record<string, string> = {
   'How many days': 'Berapa hari',
   '1 day': '1 hari',
   '{count} days': '{count} hari',
-  'Closed {days}': 'Tutup {days}',
   'Close for 1 day': 'Tutup 1 hari',
   'Close for {count} days': 'Tutup {count} hari',
   'Only you see the reason.': 'Hanya anda yang nampak sebab ini.',
-  'Pick the first day.': 'Pilih hari pertama.',
   'Set up your shop first.': 'Sediakan kedai anda dahulu.',
   'Pick between 1 and 31 days.': 'Pilih antara 1 hingga 31 hari.',
   'Pick days from today up to 60 days ahead.': 'Pilih hari dari hari ini hingga 60 hari ke depan.',
-  'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.':
-    'Ada tempahan pada hari tersebut. Batalkan dahulu (dan maklumkan kepada pelanggan), kemudian tutup kedai.',
   'Add a service before you go live, so customers have something to book.':
     'Tambah servis dahulu sebelum buka tempahan, supaya pelanggan ada sesuatu untuk ditempah.',
   'Change your booking link?': 'Tukar pautan tempahan anda?',
@@ -584,8 +577,8 @@ export const ms: Record<string, string> = {
   // Barber: takings summary (barber/summary.tsx, components/takings-card.tsx, lib/summary.ts)
   Takings: 'Kutipan',
   'See your takings, busiest days and top services.': 'Lihat kutipan, hari paling sibuk dan servis paling laris.',
-  'This week: {money} from {count} cuts': 'Minggu ini: {money} daripada {count} pelanggan',
-  'This week: {money} from 1 cut': 'Minggu ini: {money} daripada 1 pelanggan',
+  'This week: {money} from {count} cuts': 'Minggu ini: {money} daripada {count} potongan',
+  'This week: {money} from 1 cut': 'Minggu ini: {money} daripada 1 potongan',
   'This week: no cuts marked done yet': 'Minggu ini: belum ada yang ditanda selesai',
   'Show takings for': 'Tunjuk kutipan untuk',
   'This week': 'Minggu ini',
@@ -598,9 +591,9 @@ export const ms: Record<string, string> = {
   'No bookings this month yet': 'Belum ada tempahan bulan ini',
   'Mark cuts as Done on the Bookings tab and your takings add up here.':
     'Tandakan Selesai di tab Tempahan dan kutipan anda akan dikira di sini.',
-  'Cuts marked Done show up here.': 'Pelanggan yang ditanda Selesai akan muncul di sini.',
+  'Cuts marked Done show up here.': 'Potongan yang ditanda Selesai akan muncul di sini.',
   'Money in': 'Pendapatan',
-  'Cuts done': 'Pelanggan dilayan',
+  'Cuts done': 'Potongan selesai',
   'this time last week': 'masa yang sama minggu lepas',
   'the week before': 'minggu sebelumnya',
   'this time last month': 'masa yang sama bulan lepas',
@@ -630,8 +623,8 @@ export const ms: Record<string, string> = {
   '{from} to {to}': '{from} hingga {to}',
   'Bookings by hour: {list}': 'Tempahan mengikut jam: {list}',
   'Bookings by the hour they start.': 'Tempahan mengikut jam ia bermula.',
-  '1 cut': '1 pelanggan',
-  '{count} cuts': '{count} pelanggan',
+  '1 cut': '1 potongan',
+  '{count} cuts': '{count} potongan',
   'Top services': 'Servis paling laris',
   '{count} done': '{count} selesai',
   Appointment: 'Temujanji',
@@ -672,7 +665,6 @@ export const ms: Record<string, string> = {
   'Booked {day} at {time}': 'Ada tempahan {day} jam {time}',
   'No phone number': 'Tiada nombor telefon',
   'Call {name}': 'Telefon {name}',
-  'Invite to book': 'Ajak tempah',
   'Invite again': 'Ajak sekali lagi',
   'Invite {name} to book on WhatsApp': 'Ajak {name} tempah melalui WhatsApp',
   'Invited today': 'Sudah diajak hari ini',
@@ -748,4 +740,61 @@ export const ms: Record<string, string> = {
   'Check {day}’s hours, marked in red.': 'Semak waktu kerja {day}, yang bertanda merah.',
   'Shows the whole note': 'Tunjukkan nota penuh',
   'Remove {name}': 'Buang {name}',
+
+  // Round 7, barber's business and onboarding: subscribing when the free
+  // month runs out, paused shops, the set-up screen's way out, closing over
+  // bookings, taken links and invites (barber/(tabs)/shop.tsx, barber/_layout.tsx,
+  // barber/close-days.tsx, barber/poster.tsx, barber/customers.tsx,
+  // components/shop-form.tsx, components/keep-live-button.tsx)
+  'Trial ended': 'Percubaan tamat',
+  'Subscription not active': 'Langganan tidak aktif',
+  'Bookings paused': 'Tempahan ditutup sementara',
+  'Customers can’t find your shop or book from your link until you subscribe.':
+    'Pelanggan tidak boleh cari kedai anda atau menempah melalui pautan anda sehingga anda melanggan.',
+  'Customers can’t find you or book from your link. Bookings already made still stand.':
+    'Pelanggan tidak boleh cari anda atau menempah melalui pautan anda. Tempahan yang sudah dibuat kekal.',
+  'We’ll reply on WhatsApp with the monthly price and how to pay.':
+    'Kami akan balas di WhatsApp dengan harga bulanan dan cara membayar.',
+  'Turn bookings back on': 'Buka semula tempahan',
+  'Customers can’t book from this link until you subscribe.':
+    'Pelanggan tidak boleh menempah melalui pautan ini sehingga anda melanggan.',
+  'Customers can’t book from this link until you go live.':
+    'Pelanggan tidak boleh menempah melalui pautan ini sehingga anda buka tempahan.',
+  'Keep my shop live': 'Kekalkan kedai saya dibuka',
+  'Hi {app}, I’d like to subscribe so {shop} stays live: {link}':
+    'Hai {app}, saya nak melanggan supaya {shop} kekal dibuka: {link}',
+  'Go to My shop': 'Pergi ke Kedai saya',
+  'Use the app as a customer?': 'Guna aplikasi sebagai pelanggan?',
+  'You’ll find barbers and book cuts. To set up a shop later, sign up again with another email.':
+    'Anda boleh cari barber dan tempah potongan rambut. Untuk buka kedai kemudian, daftar semula dengan e-mel lain.',
+  'Yes, I’m a customer': 'Ya, saya pelanggan',
+  'Keep setting up': 'Teruskan sediakan kedai',
+  'Signed in as {email}': 'Log masuk sebagai {email}',
+  'I’m a customer, not a barber': 'Saya pelanggan, bukan barber',
+  'There is a booking on {day}. Cancel it first, then close the shop.':
+    'Ada tempahan pada {day}. Batalkan dahulu, kemudian tutup kedai.',
+  'There are {count} bookings on those days, the first on {day}. Cancel them first, then close the shop.':
+    'Ada {count} tempahan pada hari tersebut, yang pertama pada {day}. Batalkan dahulu, kemudian tutup kedai.',
+  '1 booked': '1 tempahan',
+  '{count} booked': '{count} tempahan',
+  '{who} · {service} on {day} at {time}. Let them know on WhatsApp.':
+    '{who} · {service} pada {day} jam {time}. Maklumkan melalui WhatsApp.',
+  '{who} · {service} on {day} at {time}.': '{who} · {service} pada {day} jam {time}.',
+  'Cancel the booking on these days first.': 'Batalkan dahulu tempahan pada hari tersebut.',
+  'Cancel the {count} bookings on these days first.': 'Batalkan dahulu {count} tempahan pada hari tersebut.',
+  'You’ll be closed {days}': 'Kedai akan tutup {days}',
+  'Pick the first day': 'Pilih hari pertama',
+  'Bookings cancelled': 'Tempahan dibatalkan',
+  '1 booking on these days': '1 tempahan pada hari tersebut',
+  '{count} bookings on these days': '{count} tempahan pada hari tersebut',
+  'Cancel them and let each customer know on WhatsApp, then close the shop.':
+    'Batalkan dan maklumkan setiap pelanggan melalui WhatsApp, kemudian tutup kedai.',
+  'Let each customer know on WhatsApp if you haven’t yet.': 'Maklumkan setiap pelanggan melalui WhatsApp jika belum.',
+  'Cancel {name}’s booking on {day}': 'Batalkan tempahan {name} pada {day}',
+  'Let them know': 'Maklumkan',
+  'Invite on WhatsApp': 'Ajak melalui WhatsApp',
+  'Undo the invite to {name}': 'Batalkan tanda ajakan untuk {name}',
+  '“{link}” is taken by another shop. Try another link.': '“{link}” sudah digunakan oleh kedai lain. Cuba pautan lain.',
+  'Use {link}': 'Guna {link}',
+  'Street, taman and postcode': 'Jalan, taman dan poskod',
 };

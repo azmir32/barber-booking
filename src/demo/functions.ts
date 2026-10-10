@@ -531,7 +531,7 @@ export function closeShopDays(c: Caller, fromArg: unknown, daysArg: unknown, rea
   const start = dayBounds(from, tz).start.getTime();
   const end = dayBounds(addDays(from, days), tz).start.getTime();
   // Customers already served today don't count, only those still to come.
-  const toCome = tables().bookings.some(
+  const toCome = tables().bookings.filter(
     (b) =>
       b.shop_id === shop.id &&
       !b.is_block &&
@@ -540,10 +540,12 @@ export function closeShopDays(c: Caller, fromArg: unknown, daysArg: unknown, rea
       ms(b.starts_at) < end &&
       start < ms(b.ends_at),
   );
-  if (toCome) {
+  if (toCome.length > 0) {
+    // How many and the first day (on the shop's clock), which the app puts in its own words.
+    const first = Math.max(start, Math.min(...toCome.map((b) => ms(b.starts_at))));
     throw new PgError(
       'P0001',
-      'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.',
+      `There are bookings on those days (${toCome.length}, the first on ${localDateString(new Date(first), tz)}). Cancel them first (and let the customers know), then close the shop.`,
       400,
     );
   }
@@ -880,6 +882,16 @@ export function deleteMyAccount(c: Caller) {
   if (user) deleteRows('users', [user]);
 }
 
+/** A barber account with no shop yet turns into a customer one (signed up as a barber by mistake). */
+export function becomeCustomer(c: Caller) {
+  if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
+  if (tables().shops.some((s) => s.owner_id === c.uid)) {
+    throw new PgError('P0001', 'You have a shop, so this account stays a barber account.', 400);
+  }
+  const profile = findById('profiles', c.uid);
+  if (profile) updateRows('profiles', [profile], { role: 'customer' });
+}
+
 /** Who may call what: the migration revokes these from anonymous callers. */
 const SIGNED_IN_ONLY = new Set([
   'book_appointment',
@@ -889,6 +901,7 @@ const SIGNED_IN_ONLY = new Set([
   'set_barber_hours',
   'add_shop_booking',
   'delete_my_account',
+  'become_customer',
   'close_shop_days',
   'reopen_shop_days',
   'shop_summary',
@@ -946,6 +959,9 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: myBookings(c, args.p_limit) };
     case 'delete_my_account':
       deleteMyAccount(c);
+      return { status: 204 };
+    case 'become_customer':
+      becomeCustomer(c);
       return { status: 204 };
     default:
       throw new PgError('PGRST202', `Could not find the function public.${name} in the schema cache`, 404);
