@@ -519,6 +519,72 @@ test('the owner sees this week’s takings, and last week’s and the month’s'
   await snap(page, 'demo-15-takings-month-dark');
 });
 
+test('the barber sees what customers changed since they last looked, and clears it with Got it', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 760 });
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+
+  // The sample shop's last few hours, newest first: a booking, a cancellation and a move.
+  const card = app.getByRole('heading', { name: 'Since you last looked' });
+  await expect(card).toBeVisible();
+  const tab = app.getByRole('tab', { name: 'Bookings, 3 changes since you last looked', exact: true });
+  await expect(tab).toContainText('3');
+  const lines = app.getByRole('button', { name: /^\S+ (booked|cancelled|moved) / });
+  await expect(lines).toHaveCount(3);
+  await expect(lines.nth(0)).toHaveAccessibleName(
+    /^Aiman booked Haircut \+ beard for \w{3},\s\d{1,2}\s\w{3}\sat\s\d{1,2}:\d\d\s[ap]m with (Ali|Danial)\. 1\shr\sago$/,
+  );
+  await expect(lines.nth(1)).toHaveAccessibleName(
+    /^Jason cancelled (today|tomorrow) at \d{1,2}:\d\d\s[ap]m with (Ali|Danial), so that chair is free\. 3\shr\sago$/,
+  );
+  await expect(lines.nth(2)).toHaveAccessibleName(/^Ravi moved to .+ with (Ali|Danial)\. 5\shr\sago$/);
+  await snap(page, 'demo-18-since-you-last-looked');
+
+  // A line opens its day with the booking in view, and the booking says it is new.
+  const [, weekday, date] = /for (\w{3}),\s(\d{1,2}\s\w{3})\sat/.exec((await lines.nth(0).getAttribute('aria-label')) ?? '')!;
+  const day = `${weekday}, ${date.replace(/\s/, ' ')}`;
+  await lines.nth(0).click();
+  await expect(app.getByRole('heading', { name: day, exact: true })).toBeVisible();
+  const isNew = app.getByText('New', { exact: true });
+  await expect(isNew).toBeInViewport();
+  await expect(app.getByText('Aiman', { exact: true })).toBeInViewport();
+  await snap(page, 'demo-19-new-booking');
+  // A cancellation opens the folded list at the bottom of its day.
+  await lines.nth(1).click();
+  await expect(app.getByRole('radio', { name: /^(Today|Tomorrow)/, checked: true })).toBeVisible();
+  await expect(app.getByText('Cancelled', { exact: true })).toBeInViewport();
+  await snap(page, 'demo-20-cancelled-chair');
+
+  // Got it clears the card, the tab's number and the New on the booking.
+  await button(app, 'Got it').click();
+  await expect(card).toHaveCount(0);
+  await expect(tab).toHaveCount(0);
+  const plainTab = app.getByRole('tab', { name: /Bookings$/ });
+  await expect(plainTab).toBeVisible();
+  await expect(plainTab).not.toContainText(/\d/);
+  await app.getByRole('radio', { name: new RegExp(`^${weekday}\\s*${date.replace(/\s/, ' ')}$`) }).click();
+  await expect(app.getByRole('heading', { name: day, exact: true })).toBeVisible();
+  await expect(app.getByText('Aiman', { exact: true })).toBeVisible();
+  await expect(isNew).toHaveCount(0);
+
+  // Hakim books: this phone counts from the newest change it saw, which it keeps.
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await expect(app.getByText('Kemas Barber Kajang')).toBeVisible();
+  await app.getByText('Ali Barber Sungai Chua').click();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first().click();
+  await button(app, 'Confirm booking').click();
+  await expect(app.getByText('You’re booked!')).toBeVisible();
+  await button(app, 'See my bookings').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await expect(app.getByRole('tab', { name: 'Bookings, 1 change since you last looked', exact: true })).toBeVisible();
+  await expect(lines).toHaveCount(1);
+  await expect(lines.first()).toHaveAccessibleName(/^Hakim booked Haircut for tomorrow at .+ with (Ali|Danial)\. Just\snow$/);
+});
+
 test.describe('on an iPhone', () => {
   // Chromium, telling the app it is Safari on an iPhone.
   test.use({ userAgent: devices['iPhone 13'].userAgent });

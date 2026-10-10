@@ -1043,7 +1043,8 @@ function NewsCard({
             <Ionicons name={look[c.change].icon} size={22} color={look[c.change].color} />
             <T style={styles.newsText}>
               {text}
-              <Text style={{ color: theme.textSecondary }}>{` · ${noBreak(when)}`}</Text>
+              {/* Kept together and with the word before, so the dot never starts or ends a line. */}
+              <Text style={{ color: theme.textSecondary }}>{noBreak(` · ${when}`)}</Text>
             </T>
             <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
           </Pressable>
