@@ -7,7 +7,7 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { nextFreeLine, openStatus } from '@/lib/hours';
 import { t } from '@/lib/lang';
-import { isDue, lastCutLine, whenLabel, type MyShop, type MyShops } from '@/lib/my-shops';
+import { isDue, lastCutLine, whenParts, type MyShop, type MyShops } from '@/lib/my-shops';
 import { noBreak } from '@/lib/time';
 
 /**
@@ -16,7 +16,7 @@ import { noBreak } from '@/lib/time';
  * Book again set to the same service and barber. Nothing for someone new,
  * so they see the list as it always was.
  */
-export function ReturningCards({ mine, now }: { mine: MyShops; now: number }) {
+export function ReturningCards({ mine, now, listTitle }: { mine: MyShops; now: number; listTitle: string }) {
   // Hidden once its time comes, until the next refresh brings the one after.
   const next = mine.next && Date.parse(mine.next.starts_at) > now ? mine.next : null;
   if (!next && mine.shops.length === 0) return null;
@@ -40,14 +40,15 @@ export function ReturningCards({ mine, now }: { mine: MyShops; now: number }) {
           ))}
         </Section>
       ) : null}
-      <T variant="heading">{t('All barbers')}</T>
+      <T variant="heading">{listTitle}</T>
     </>
   );
 }
 
 function NextCutCard({ next, more, now }: { next: NonNullable<MyShops['next']>; more: number; now: number }) {
   const theme = useTheme();
-  const when = whenLabel(next.starts_at, now, next.time_zone);
+  const { day, time } = whenParts(next.starts_at, now, next.time_zone);
+  const when = `${day}, ${time}`;
   const what = next.barber_name
     ? t('{service} with {barber}', { service: next.service_name, barber: next.barber_name })
     : next.service_name;
@@ -61,7 +62,8 @@ function NextCutCard({ next, more, now }: { next: NonNullable<MyShops['next']>; 
       <View style={styles.linkRow}>
         <Ionicons name="calendar-outline" size={24} color={theme.tint} />
         <View style={styles.info}>
-          <T style={styles.strong}>{noBreak(when)}</T>
+          {/* The time stays whole; a long Malay day and time wrap after the date. */}
+          <T style={styles.strong}>{`${day}, ${noBreak(time)}`}</T>
           <T variant="muted">{what}</T>
           <T variant="small">{next.shop_name}</T>
           {andMore ? (

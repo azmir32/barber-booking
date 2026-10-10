@@ -824,4 +824,5 @@ export const ms: Record<string, string> = {
   '{service} with {barber}, {time} ago': '{service} bersama {barber}, {time} lalu',
   'Book again at {shop}': 'Tempah lagi di {shop}',
   'Not taking online bookings right now': 'Tidak menerima tempahan dalam talian buat masa ini',
+  'Barbers in {area}': 'Barber di {area}',
 };

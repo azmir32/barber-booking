@@ -44,12 +44,21 @@ export type MyShops = {
   shops: MyShop[];
 };
 
-/** "Today, 4:30 pm", "Tomorrow, 4:30 pm" or "Sat, 17 Oct, 4:30 pm", on the shop's clock. */
-export function whenLabel(at: string, now: number, timeZone: string): string {
+/**
+ * "Tomorrow" and "4:30 pm" on the shop's clock, apart, so a narrow line can
+ * keep the time whole and wrap after the day ("Jum, 16 Okt, / 12.30 tengah hari").
+ */
+export function whenParts(at: string, now: number, timeZone: string): { day: string; time: string } {
   const today = localDateString(new Date(now), timeZone);
   const day = localDateString(new Date(at), timeZone);
   const name = day === today ? t('Today') : day === addDays(today, 1) ? t('Tomorrow') : formatDay(at, timeZone);
-  return `${name}, ${formatTime(at, timeZone)}`;
+  return { day: name, time: formatTime(at, timeZone) };
+}
+
+/** "Today, 4:30 pm", "Tomorrow, 4:30 pm" or "Sat, 17 Oct, 4:30 pm", on the shop's clock. */
+export function whenLabel(at: string, now: number, timeZone: string): string {
+  const { day, time } = whenParts(at, now, timeZone);
+  return `${day}, ${time}`;
 }
 
 /** "Fade with Danial, 4 weeks ago": the cut Book again repeats. */
@@ -67,13 +76,14 @@ export function lastCutLine(shop: Pick<MyShop, 'service_name' | 'barber_name' | 
  * usual gap between cuts there has passed, and nothing is booked anywhere.
  * As on the shop's own customer list, someone away three gaps (and at least
  * 90 days) has most likely found another barber, so it stops saying so.
+ * Not while the shop takes no bookings: there would be nothing to tap.
  */
 export function isDue(
-  shop: Pick<MyShop, 'last_visit_at' | 'usual_gap_days' | 'time_zone'>,
+  shop: Pick<MyShop, 'last_visit_at' | 'usual_gap_days' | 'time_zone' | 'is_live'>,
   booked: boolean,
   now: number,
 ): boolean {
-  if (booked) return false;
+  if (booked || !shop.is_live) return false;
   const days = daysSince(shop.last_visit_at, now, shop.time_zone);
   return days >= shop.usual_gap_days && days < Math.max(3 * shop.usual_gap_days, 90);
 }

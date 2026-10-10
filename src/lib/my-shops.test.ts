@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { setCurrentLang } from './lang.ts';
-import { isDue, lastCutLine, whenLabel } from './my-shops.ts';
+import { isDue, lastCutLine, whenLabel, whenParts } from './my-shops.ts';
 
 const TZ = 'Asia/Kuala_Lumpur';
 // Tue 6 Oct, 9 am in Kajang.
@@ -42,18 +42,23 @@ test('the last cut names the service, the barber and how long ago', () => {
 
 test('due for a cut once the usual gap has passed, with nothing booked', () => {
   const due = (days: number, gap: number, booked = false) =>
-    isDue({ last_visit_at: daysAgo(days), usual_gap_days: gap, time_zone: TZ }, booked, now);
+    isDue({ last_visit_at: daysAgo(days), usual_gap_days: gap, time_zone: TZ, is_live: true }, booked, now);
   // Four weeks after a single visit, or their own usual gap.
   assert.equal(due(27, 28), false);
   assert.equal(due(28, 28), true);
   assert.equal(due(21, 21), true);
   assert.equal(due(20, 21), false);
   // Counted in days on the shop's clock, so a cut late at night is a whole day ago next morning.
-  const weekly = (at: string) => isDue({ last_visit_at: at, usual_gap_days: 7, time_zone: TZ }, false, now);
+  const weekly = (at: string) =>
+    isDue({ last_visit_at: at, usual_gap_days: 7, time_zone: TZ, is_live: true }, false, now);
   assert.equal(weekly('2026-09-29T23:00:00+08:00'), true);
   assert.equal(weekly('2026-09-30T08:00:00+08:00'), false);
   // Nothing is due while a cut is booked, anywhere.
   assert.equal(due(40, 28, true), false);
+  // Nor at a shop that isn't taking bookings, where there is no Book again to tap.
+  const paused = { last_visit_at: daysAgo(40), usual_gap_days: 28, time_zone: TZ, is_live: false };
+  assert.equal(isDue(paused, false, now), false);
+  assert.equal(isDue({ ...paused, is_live: true }, false, now), true);
   // Away three gaps, and at least 90 days, they have most likely moved on.
   assert.equal(due(89, 28), true);
   assert.equal(due(90, 28), false);
@@ -67,6 +72,12 @@ test('in Malay too', () => {
     assert.equal(whenLabel('2026-10-07T16:30:00+08:00', now, TZ), 'Esok, 4.30 petang');
     assert.equal(whenLabel('2026-10-06T12:15:00+08:00', now, TZ), 'Hari ini, 12.15 tengah hari');
     assert.equal(whenLabel('2026-10-10T10:00:00+08:00', now, TZ), 'Sab, 10 Okt, 10.00 pagi');
+    // The day and the time apart, so a narrow card wraps after the date, never inside "tengah hari".
+    assert.deepEqual(whenParts('2026-10-16T12:30:00+08:00', now, TZ), {
+      day: 'Jum, 16 Okt',
+      time: '12.30 tengah hari',
+    });
+    assert.deepEqual(whenParts('2026-10-07T12:30:00+08:00', now, TZ), { day: 'Esok', time: '12.30 tengah hari' });
     const shop = { service_name: 'Fade', barber_name: 'Danial', last_visit_at: daysAgo(26), time_zone: TZ };
     assert.equal(lastCutLine(shop, now), 'Fade bersama Danial, 4 minggu lalu');
     assert.equal(lastCutLine({ ...shop, last_visit_at: daysAgo(1) }, now), 'Fade bersama Danial, semalam');

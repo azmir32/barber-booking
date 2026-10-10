@@ -43,6 +43,8 @@ export default function Explore() {
   const [areas, setAreas] = useState<Area[]>([]);
   const [area, setArea] = useState<string | null>(null);
   const [areaRestored, setAreaRestored] = useState(false);
+  // An area picked on this visit, rather than the one remembered from the last.
+  const [areaPicked, setAreaPicked] = useState(false);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -95,7 +97,7 @@ export default function Explore() {
     // then() sends the list's request now, so the cards' one goes alongside it, never ahead.
     const page = fetchPage(0).then((res) => res);
     // Searching or picking an area hides the cards, so they wait until both are cleared.
-    if (!query.trim() && !area) loadMine();
+    if (!query.trim() && !areaPicked) loadMine();
     const { data, error } = await page;
     if (request !== latest.current) return;
     setLoading(false);
@@ -105,7 +107,7 @@ export default function Explore() {
     setShops(rows.slice(0, PAGE));
     setHasMore(rows.length > PAGE);
     setListedOn(localDateString(new Date()));
-  }, [fetchPage, loadMine, query, area]);
+  }, [fetchPage, loadMine, query, areaPicked]);
 
   async function loadMore() {
     const request = latest.current;
@@ -147,6 +149,7 @@ export default function Explore() {
 
   function pickArea(next: string | null) {
     setArea(next);
+    setAreaPicked(next !== null);
     (next ? AsyncStorage.setItem(AREA_KEY, next) : AsyncStorage.removeItem(AREA_KEY)).catch(() => {});
   }
 
@@ -158,7 +161,8 @@ export default function Explore() {
 
   const searching = query.trim() !== '';
   // Only the signed-in customer's own, and out of the way while they look for something else.
-  const returning = !searching && !area && mine && mine.uid === uid ? mine : null;
+  // The area remembered from last time still filters the list, but they came back for their barber.
+  const returning = !searching && !areaPicked && mine && mine.uid === uid ? mine : null;
   // The saved area may have no live shops any more; keep its chip so it can be cleared.
   const areaChips =
     area && areas.length && !areas.some((a) => a.area.toLowerCase() === area.toLowerCase())
@@ -237,7 +241,13 @@ export default function Explore() {
             <Button title={t('Show all')} variant="ghost" onPress={showAllAreas} />
           </Row>
         ) : null}
-        {returning ? <ReturningCards mine={returning} now={now} /> : null}
+        {returning ? (
+          <ReturningCards
+            mine={returning}
+            now={now}
+            listTitle={area ? t('Barbers in {area}', { area }) : t('All barbers')}
+          />
+        ) : null}
         {error ? (
           <Empty title={t('Couldn’t load barbers')} body={t('Check your connection and try again.')}>
             <Button title={t('Try again')} variant="secondary" onPress={load} />

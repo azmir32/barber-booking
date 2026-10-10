@@ -406,8 +406,17 @@ test('a returning customer sees their next cut and their barbers, and books the 
   await app.getByRole('radio', { name: 'Kajang town', exact: true }).click();
   await expect(app.getByText('Showing barbers in Kajang town')).toBeVisible();
   await expect(app.getByRole('heading', { name: 'Your barbers' })).toHaveCount(0);
-  await button(app, 'Show all').click();
+  // Opening the app again, the area he picked still filters the list, with his own cut and barbers on top.
+  await page.reload();
+  await expect(app.getByText('Showing barbers in Kajang town')).toBeVisible();
+  await expect(next).toBeVisible();
   await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Barbers in Kajang town' })).toBeVisible();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toHaveCount(0);
+  await button(app, 'Show all').click();
+  await expect(app.getByRole('heading', { name: 'All barbers' })).toBeVisible();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
 
   // The next cut opens My bookings.
   await next.click();
