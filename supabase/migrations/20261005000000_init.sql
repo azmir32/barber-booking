@@ -200,9 +200,18 @@ create table public.bookings (
   -- When the shop last WhatsApped the customer a reminder, so every phone in
   -- the shop knows. Cleared when the booking moves.
   reminded_at timestamptz,
+  -- When the customer last booked, moved or cancelled it themselves, and
+  -- which, so the shop's phones can show what changed since they last
+  -- looked. The shop's own changes don't count: it made them. Stamped with
+  -- clock_timestamp() under the shop's diary lock, so the times follow the
+  -- order changes are saved in, and a phone that has seen up to one time
+  -- can't miss a change saved after it with an earlier time.
+  customer_changed_at timestamptz,
+  customer_change text check (customer_change in ('booked', 'moved', 'cancelled')),
   created_at timestamptz not null default now(),
   check (ends_at > starts_at),
   check (is_block or customer_id is not null or guest_name is not null),
+  constraint bookings_customer_change_pair check ((customer_changed_at is null) = (customer_change is null)),
   -- A barber can never be double-booked.
   constraint bookings_no_overlap exclude using gist (
     barber_id with =,
@@ -214,6 +223,10 @@ create index bookings_shop_starts_idx on public.bookings (shop_id, starts_at);
 -- check on each customer's name stays one index lookup however long the
 -- shop's history grows.
 create index bookings_customer_idx on public.bookings (customer_id, shop_id, starts_at);
+-- A shop's latest customer changes (shop_changes), asked for every minute by
+-- every barber's phone. Only online bookings have one.
+create index bookings_shop_changes_idx on public.bookings (shop_id, customer_changed_at)
+  where customer_changed_at is not null;
 
 -- Days the whole shop is shut, like Hari Raya. Kept apart from the barbers'
 -- own blocks so reopening never touches them, and so a barber who joins
@@ -693,11 +706,11 @@ begin
   begin
     insert into bookings (
       shop_id, barber_id, service_id, customer_id, service_name, price,
-      starts_at, ends_at, customer_note
+      starts_at, ends_at, customer_note, customer_changed_at, customer_change
     ) values (
       v_service.shop_id, v_barber, v_service.id, v_uid, v_service.name, v_service.price,
       p_starts_at, p_starts_at + make_interval(mins => v_service.duration_min),
-      nullif(trim(p_note), '')
+      nullif(trim(p_note), ''), clock_timestamp(), 'booked'
     )
     returning * into v_booking;
   exception when exclusion_violation then
@@ -722,6 +735,7 @@ set search_path = public
 as $$
 declare
   v_booking bookings;
+  v_by_customer boolean := false;
 begin
   select * into v_booking from bookings where id = p_booking_id;
   if not found then
@@ -736,13 +750,19 @@ begin
     if p_status <> 'cancelled' or v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
       raise exception 'You can only cancel an upcoming booking.' using errcode = '42501';
     end if;
+    v_by_customer := true;
   else
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
 
   perform public.lock_shop_diary(v_booking.shop_id);
   begin
-    update bookings set status = p_status where id = p_booking_id returning * into v_booking;
+    update bookings set
+      status = p_status,
+      customer_changed_at = case when v_by_customer then clock_timestamp() else customer_changed_at end,
+      customer_change = case when v_by_customer then 'cancelled' else customer_change end
+    where id = p_booking_id
+    returning * into v_booking;
   exception when exclusion_violation then
     raise exception 'That time has been booked by someone else since.' using errcode = 'P0001';
   end;
@@ -813,6 +833,7 @@ declare
   v_tz text;
   v_day date;
   v_barber uuid;
+  v_by_customer boolean;
 begin
   -- Lock before reading, so nobody cancels or moves it in between.
   perform public.lock_shop_diary(shop_id) from bookings where id = p_booking_id;
@@ -824,6 +845,8 @@ begin
   if v_booking.customer_id is distinct from auth.uid() and not public.owns_shop(v_booking.shop_id) then
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
+  -- As in set_booking_status, the owner counts as the shop.
+  v_by_customer := not public.owns_shop(v_booking.shop_id);
   if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
     raise exception 'You can only change an upcoming booking.' using errcode = '42501';
   end if;
@@ -861,7 +884,9 @@ begin
       starts_at = p_starts_at,
       ends_at = p_starts_at + make_interval(mins => v_service.duration_min),
       -- Any reminder named the old time.
-      reminded_at = null
+      reminded_at = null,
+      customer_changed_at = case when v_by_customer then clock_timestamp() else customer_changed_at end,
+      customer_change = case when v_by_customer then 'moved' else customer_change end
     where id = v_booking.id
     returning * into v_booking;
   exception when exclusion_violation then
@@ -1455,6 +1480,82 @@ begin
 end;
 $$;
 
+-- What customers booked, moved or cancelled at the owner's shop since a phone
+-- last looked, for the badge on the Bookings tab and the card at its top:
+-- how many, the newest change's time (the phone keeps it as when it last
+-- looked, so its own clock never matters) and the latest few, newest first.
+-- Only bookings that end today or later on the shop's clock; older ones are
+-- history. A phone that has never looked (p_since null) gets the last 24
+-- hours, and none goes back more than a week. A booking the shop has since
+-- cancelled, or taken back after the customer cancelled, is no news to the
+-- shop. chair_free says a cancelled time is still to come and nobody has
+-- taken it since, so a walk-in can have it. Every barber's phone asks once a
+-- minute, so it is one walk of bookings_shop_changes_idx over the shop's
+-- last few days.
+create function public.shop_changes(p_since timestamptz default null, p_limit int default 5)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_since timestamptz := greatest(coalesce(p_since, now() - interval '24 hours'), now() - interval '7 days');
+  v_today timestamptz;
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    return jsonb_build_object('since', v_since, 'count', 0, 'latest', null, 'changes', '[]'::jsonb);
+  end if;
+  v_today := (now() at time zone v_shop.time_zone)::date::timestamp at time zone v_shop.time_zone;
+
+  return (
+    with changed as materialized (
+      select b.id, b.barber_id, b.customer_id, b.guest_name, b.service_name, b.starts_at, b.ends_at,
+             b.customer_change, b.customer_changed_at
+      from bookings b
+      where b.shop_id = v_shop.id
+        and b.customer_changed_at > v_since
+        and b.ends_at > v_today
+        and (b.status = 'cancelled') = (b.customer_change = 'cancelled')
+    ),
+    latest as (
+      select * from changed
+      order by customer_changed_at desc, id
+      limit least(greatest(coalesce(p_limit, 5), 0), 20)
+    )
+    select jsonb_build_object(
+      'since', v_since,
+      'count', (select count(*) from changed),
+      'latest', (select max(customer_changed_at) from changed),
+      'changes', coalesce((
+        -- A deleted account's name is gone; delete_my_account leaves 'Deleted account'.
+        select jsonb_agg(jsonb_build_object(
+                 'booking_id', l.id,
+                 'barber_id', l.barber_id,
+                 'barber_name', br.name,
+                 'customer_name', coalesce(p.full_name, l.guest_name),
+                 'service_name', l.service_name,
+                 'starts_at', l.starts_at,
+                 'change', l.customer_change,
+                 'changed_at', l.customer_changed_at,
+                 'chair_free', l.customer_change = 'cancelled' and l.starts_at > now() and not exists (
+                   select 1 from bookings x
+                   where x.barber_id = l.barber_id
+                     and x.status <> 'cancelled'
+                     and tstzrange(x.starts_at, x.ends_at) && tstzrange(l.starts_at, l.ends_at)
+                 )
+               ) order by l.customer_changed_at desc, l.id)
+        from latest l
+        join barbers br on br.id = l.barber_id
+        left join profiles p on p.id = l.customer_id
+      ), '[]'::jsonb)
+    )
+  );
+end;
+$$;
+
 -- A customer's own bookings, newest first, each with its shop and barber.
 -- Customers can only read live shops (and their barbers), so a plain select
 -- of bookings with shops(...) lost the shop's name, address and phone the
@@ -1495,14 +1596,33 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_shop uuid;
 begin
   if auth.uid() is null then
     raise exception 'Not signed in.' using errcode = '42501';
   end if;
 
+  -- Cancelling the upcoming ones is the customer's change, so their shops see
+  -- it. Under each shop's diary lock, like every other change to its bookings,
+  -- so the times stamped follow the order they are saved in (see
+  -- bookings.customer_changed_at). Always in the same order, so two of these
+  -- can't wait on each other.
+  for v_shop in
+    select distinct shop_id from bookings
+    where customer_id = auth.uid() and status = 'confirmed' and starts_at > now()
+    order by shop_id
+  loop
+    perform public.lock_shop_diary(v_shop);
+  end loop;
+
   update bookings set
     status = case when status = 'confirmed' and starts_at > now()
                   then 'cancelled'::booking_status else status end,
+    customer_changed_at = case when status = 'confirmed' and starts_at > now()
+                               then clock_timestamp() else customer_changed_at end,
+    customer_change = case when status = 'confirmed' and starts_at > now()
+                           then 'cancelled' else customer_change end,
     customer_id = null,
     guest_name = 'Deleted account',
     guest_phone = null,
@@ -1559,5 +1679,7 @@ revoke execute on function public.shop_summary(date, date) from public, anon;
 grant execute on function public.shop_summary(date, date) to authenticated;
 revoke execute on function public.shop_customers(text, int, int) from public, anon;
 grant execute on function public.shop_customers(text, int, int) to authenticated;
+revoke execute on function public.shop_changes(timestamptz, int) from public, anon;
+grant execute on function public.shop_changes(timestamptz, int) to authenticated;
 -- Booking links are opened by guests too.
 grant execute on function public.shop_public_status(text) to anon, authenticated;

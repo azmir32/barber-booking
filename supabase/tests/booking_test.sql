@@ -1328,6 +1328,178 @@ begin
   end;
 end $$;
 
+-- What customers changed since the shop last looked --------------------------
+-- Customers' own bookings, moves and cancellations show to the shop's owner;
+-- the shop's own changes never do. Ali works 08:00-22:00 every day by now, and
+-- everything is tomorrow or later, so it reads the same at any hour.
+begin;
+reset role;
+delete from bookings;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
+set role authenticated;
+
+-- Ben books 09:00 and 11:00 tomorrow, then moves the second to 12:00; Chong books 10:00 and cancels it.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 1;
+  b bookings;
+begin
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (d + time '09:00') at time zone 'Asia/Kuala_Lumpur');
+  assert b.customer_change = 'booked' and b.customer_changed_at >= now(), 'booking online is the customer''s change';
+  perform set_config('test.booked', b.id::text, false);
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (d + time '11:00') at time zone 'Asia/Kuala_Lumpur');
+  perform set_config('test.moved_from', b.customer_changed_at::text, false);
+  b := reschedule_booking(b.id, (d + time '12:00') at time zone 'Asia/Kuala_Lumpur');
+  assert b.customer_change = 'moved' and b.customer_changed_at > current_setting('test.moved_from')::timestamptz,
+    'a customer''s move is their change';
+  perform set_config('test.moved', b.id::text, false);
+  -- Two more: one the shop cancels below, and one Ben cancels that the shop takes back.
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (d + time '14:00') at time zone 'Asia/Kuala_Lumpur');
+  perform set_config('test.shop_cancels', b.id::text, false);
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (d + time '16:00') at time zone 'Asia/Kuala_Lumpur');
+  b := set_booking_status(b.id, 'cancelled');
+  perform set_config('test.taken_back', b.id::text, false);
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$
+declare
+  b bookings;
+begin
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1',
+    ((now() at time zone 'Asia/Kuala_Lumpur')::date + 1 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  b := set_booking_status(b.id, 'cancelled');
+  assert b.customer_change = 'cancelled', 'a customer''s cancel is their change';
+  perform set_config('test.cancelled', b.id::text, false);
+end $$;
+
+-- The shop's own changes leave them as they were.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 1;
+  before bookings;
+  b bookings;
+begin
+  select * into before from bookings where id = current_setting('test.moved')::uuid;
+  b := reschedule_booking(before.id, (d + time '12:30') at time zone 'Asia/Kuala_Lumpur');
+  assert b.customer_change = 'moved' and b.customer_changed_at = before.customer_changed_at,
+    'the shop moving a booking is not the customer''s change';
+  b := set_booking_status(current_setting('test.shop_cancels')::uuid, 'cancelled');
+  assert b.customer_change = 'booked', 'the shop cancelling is not the customer''s change';
+  -- Ben cancelled one, and the shop took it back: it stands, so it is no news.
+  b := set_booking_status(current_setting('test.taken_back')::uuid, 'confirmed');
+  assert b.customer_change = 'cancelled' and b.status = 'confirmed', 'taking a cancel back is the shop''s change';
+  b := add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '15:00', null,
+    '00000000-0000-0000-0000-0000000000e1', 'Pak Abu');
+  assert b.customer_change is null and b.customer_changed_at is null, 'a walk-in is the shop''s own';
+  begin
+    update bookings set customer_changed_at = null, customer_change = null where id = b.id;
+    raise exception 'owners should not write the change columns';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Older news, written straight in: today's first half hour (it ends today,
+-- so it counts whenever this runs), yesterday's last, and next week's
+-- booked eight days ago.
+reset role;
+insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at, status,
+                      customer_changed_at, customer_change)
+select '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+       '00000000-0000-0000-0000-0000000000c1', 'Haircut', 25, x.at, x.at + interval '30 minutes', 'confirmed',
+       now() - f.ago, 'booked'
+from (values (0, '00:00', interval '2 hours'), (-1, '23:00', interval '1 hour'), (7, '09:00', interval '8 days'))
+       f(days, clock, ago),
+     lateral (select ((now() at time zone 'Asia/Kuala_Lumpur')::date + f.days + f.clock::time)
+                     at time zone 'Asia/Kuala_Lumpur' as at) x;
+set role authenticated;
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 1;
+  r jsonb := shop_changes();
+  c jsonb;
+begin
+  -- Chong's cancel came last, then Ben's move, his booking, and this morning's from two hours ago.
+  assert (r ->> 'count')::int = 4, 'Ben''s booking and move, Chong''s cancel and this morning''s: ' || r::text;
+  assert (r ->> 'since')::timestamptz = now() - interval '24 hours', 'a phone that never looked gets the last day';
+  assert (select array_agg(e ->> 'change' order by i) from jsonb_array_elements(r -> 'changes') with ordinality a(e, i))
+         = array['cancelled', 'moved', 'booked', 'booked'], 'newest first: ' || (r -> 'changes')::text;
+  assert r -> 'changes' -> 0 ->> 'customer_name' = 'Chong'
+     and r -> 'changes' -> 0 ->> 'booking_id' = current_setting('test.cancelled'), 'Chong''s cancel';
+  assert (r ->> 'latest')::timestamptz = (r -> 'changes' -> 0 ->> 'changed_at')::timestamptz, 'latest is the newest change';
+  c := r -> 'changes' -> 1;
+  assert c ->> 'booking_id' = current_setting('test.moved') and c ->> 'customer_name' = 'Ben'
+     and c ->> 'barber_name' = 'Ali' and c ->> 'barber_id' = '00000000-0000-0000-0000-0000000000a1'
+     and c ->> 'service_name' = 'Haircut'
+     and (c ->> 'starts_at')::timestamptz = (d + time '12:30') at time zone 'Asia/Kuala_Lumpur',
+    'each change says who, what, with whom and when it is now: ' || c::text;
+  assert r -> 'changes' -> 2 ->> 'booking_id' = current_setting('test.booked'), 'Ben''s booking';
+  -- Chong's time is still free, so a walk-in can have it; nothing else freed a chair.
+  assert (r -> 'changes' -> 0 ->> 'chair_free')::boolean, 'a cancelled time nobody has taken is free: ' || r::text;
+  assert (select bool_and(not (e ->> 'chair_free')::boolean)
+          from jsonb_array_elements(r -> 'changes') with ordinality a(e, i) where i > 1),
+    'only a cancel frees a chair: ' || r::text;
+
+  -- Once a phone has seen up to the newest, nothing is new; from an earlier change, what came after.
+  r := shop_changes((r ->> 'latest')::timestamptz);
+  assert (r ->> 'count')::int = 0 and r -> 'changes' = '[]' and r -> 'latest' = 'null', 'nothing new: ' || r::text;
+  r := shop_changes((select customer_changed_at from bookings where id = current_setting('test.booked')::uuid));
+  assert (r ->> 'count')::int = 2, 'what came after a change: ' || r::text;
+
+  -- Never more than a week back, and a few at a time with the count for all.
+  r := shop_changes(now() - interval '30 days');
+  assert (r ->> 'since')::timestamptz = now() - interval '7 days' and (r ->> 'count')::int = 4,
+    'a week at most: ' || r::text;
+  r := shop_changes(null, 1);
+  assert jsonb_array_length(r -> 'changes') = 1 and (r ->> 'count')::int = 4, 'one line, and the count for all';
+  assert jsonb_array_length(shop_changes(null, 0) -> 'changes') = 0, 'just the count';
+
+  -- Once the shop puts a walk-in in Chong's time, the chair is no longer free.
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '10:00', null,
+    '00000000-0000-0000-0000-0000000000e1', 'Pak Long');
+  r := shop_changes();
+  assert (r ->> 'count')::int = 4 and r -> 'changes' -> 0 ->> 'change' = 'cancelled'
+     and not (r -> 'changes' -> 0 ->> 'chair_free')::boolean, 'a taken time is not free: ' || r::text;
+end $$;
+
+-- A page is at most 20.
+reset role;
+insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at,
+                      customer_changed_at, customer_change)
+select '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+       '00000000-0000-0000-0000-0000000000c2', 'Haircut', 25, x.at, x.at + interval '30 minutes',
+       now() - k * interval '1 minute', 'booked'
+from generate_series(1, 25) k,
+     lateral (select ((now() at time zone 'Asia/Kuala_Lumpur')::date + 2 + time '08:00' + k * interval '30 minutes')
+                     at time zone 'Asia/Kuala_Lumpur' as at) x;
+set role authenticated;
+do $$ begin
+  assert jsonb_array_length(shop_changes(null, 1000) -> 'changes') = 20, 'capped at 20';
+  assert (shop_changes(null, 1000) ->> 'count')::int = 29, 'the count is for all';
+end $$;
+
+-- Nobody else hears about them: another shop's owner, a customer, or a guest.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert (shop_changes() ->> 'count')::int = 0 and shop_changes() -> 'changes' = '[]', 'another shop''s owner gets nothing';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert (shop_changes() ->> 'count')::int = 0 and shop_changes() -> 'changes' = '[]', 'customers get nothing';
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform shop_changes();
+  raise exception 'guests must not call shop_changes';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
+
 -- Takings summary ----------------------------------------------------------
 -- A finished week three weeks ago, the week before it, and a second shop
 -- whose bookings must not show up.
@@ -1584,6 +1756,15 @@ do $$ begin
   assert exists (select 1 from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'),
     'other customers'' bookings are untouched';
 end $$;
+-- Their shop hears about those cancellations, with no name to show.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$ begin
+  assert (select count(*) from jsonb_array_elements(shop_changes(null, 20) -> 'changes') e
+          where e ->> 'customer_name' = 'Deleted account' and e ->> 'change' = 'cancelled') = 4,
+    'a deleted account''s upcoming bookings show as cancelled: ' || shop_changes(null, 20)::text;
+end $$;
+reset role;
 
 -- The owner deletes their account: the shop and everything in it goes.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
