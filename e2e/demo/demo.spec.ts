@@ -39,6 +39,8 @@ async function snap(page: Page, name: string) {
 
 const button = (app: FrameLocator | Page, name: string | RegExp) =>
   app.getByRole('button', { name, exact: typeof name === 'string' });
+/** A shop in Find a barber's list, by the name heading its card; Hakim's own barbers above it say the names too. */
+const listed = (app: FrameLocator | Page, name: string) => app.getByRole('heading', { name, exact: true });
 
 async function open(page: Page) {
   await page.goto('/host');
@@ -65,10 +67,10 @@ test('a customer books a cut, it survives a reload, then cancels it', async ({ p
   await snap(page, 'demo-01-welcome');
   await button(app, 'Try as a customer').click();
 
-  await expect(app.getByText('Ali Barber Sungai Chua')).toBeVisible();
-  await expect(app.getByText('Kemas Barber Kajang')).toBeVisible();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
   await snap(page, 'demo-02-explore');
-  await app.getByText('Ali Barber Sungai Chua').click();
+  await listed(app, 'Ali Barber Sungai Chua').click();
 
   await app.getByRole('radio', { name: /^Haircut RM/ }).click();
   await app.getByRole('radio', { name: /^Tomorrow/ }).click();
@@ -368,6 +370,58 @@ test('closing over bookings shows who is booked, and the barber cancels and tell
   await expect(app.getByText('Kenduri', { exact: true })).toBeVisible();
 });
 
+test('a returning customer sees their next cut and their barbers, and books the same again in one tap', async ({
+  page,
+}) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+
+  // His skin fade tomorrow comes first.
+  const next = app.getByRole('link', {
+    name: /^Your next cut: Tomorrow, 4:30 pm, Skin fade with (Ali|Danial) at Ali Barber Sungai Chua$/,
+  });
+  await expect(next).toBeVisible();
+  // Then his barbers, latest first, each with the cut he had there.
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
+  const lastCuts = app.getByText(/^(Haircut|Skin fade) with \w+, (\d+ days|\d+ weeks|\d+ months) ago$/);
+  await expect(lastCuts).toHaveText([
+    /^Haircut with Rahman, 1[12] days ago$/,
+    /^Haircut with (Ali|Danial), 4 weeks ago$/,
+    'Skin fade with Irfan, 2 months ago',
+  ]);
+  await expect(button(app, /^Book again at /)).toHaveCount(3);
+  // His cut is booked, so none of them says he is due.
+  await expect(app.getByText('Due for a cut')).toHaveCount(0);
+  await expect(app.getByRole('heading', { name: 'All barbers' })).toBeVisible();
+  await snap(page, 'demo-02b-returning');
+
+  // Searching, or picking an area, is looking for something else: the list alone.
+  await app.getByLabel('Search', { exact: true }).fill('fade');
+  await expect(listed(app, 'The Fade Room')).toBeVisible();
+  await expect(next).toHaveCount(0);
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toHaveCount(0);
+  await app.getByLabel('Search', { exact: true }).fill('');
+  await expect(next).toBeVisible();
+  await app.getByRole('radio', { name: 'Kajang town', exact: true }).click();
+  await expect(app.getByText('Showing barbers in Kajang town')).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toHaveCount(0);
+  await button(app, 'Show all').click();
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
+
+  // The next cut opens My bookings.
+  await next.click();
+  await expect(app.getByText(/^Skin fade with (Ali|Danial) · RM25$/)).toBeVisible();
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+
+  // Book again opens the shop on the same service and barber, ready to pick a time.
+  await button(app, 'Book again at Kemas Barber Kajang').click();
+  await expect(app.getByRole('radio', { name: /^Haircut RM18/ })).toBeChecked();
+  await expect(app.getByRole('radio', { name: 'Rahman', exact: true })).toBeChecked();
+  await expect(app.getByRole('radio', { name: 'Any barber', exact: true })).not.toBeChecked();
+  await expect(app.getByRole('heading', { name: '3. Pick a time' })).toBeVisible();
+  await snap(page, 'demo-02c-book-again');
+});
+
 test('a customer moves their cut, and can put the new time in their calendar', async ({ page }) => {
   const app = await open(page);
   await button(app, 'Try as a customer').click();
@@ -444,8 +498,12 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   await expect(app.getByText('Bookings paused')).toBeVisible();
   await expect(button(app, 'Turn bookings back on')).toBeVisible();
   await button(app, 'See the customer side').click();
-  await expect(app.getByText('Kemas Barber Kajang')).toBeVisible();
-  await expect(app.getByText('Ali Barber Sungai Chua')).toHaveCount(0);
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toHaveCount(0);
+  // Still one of Hakim's barbers, saying it isn't taking bookings instead of offering Book again.
+  await expect(app.getByText('Not taking online bookings right now')).toBeVisible();
+  await expect(button(app, 'Book again at Ali Barber Sungai Chua')).toHaveCount(0);
+  await expect(button(app, 'Book again at Kemas Barber Kajang')).toBeVisible();
   // Hakim's booking there still stands: he still sees where to go and how to reach them,
   // but can't move it online.
   await app.getByRole('tab', { name: /My bookings/ }).click();
@@ -464,7 +522,7 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   await button(app, 'Start the demo again').click();
   await app.getByRole('alertdialog').getByRole('button', { name: 'Start again', exact: true }).click();
   await button(app, 'Try as a customer').click();
-  await expect(app.getByText('Ali Barber Sungai Chua')).toBeVisible();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
 });
 
 test('the owner sees this week’s takings, and last week’s and the month’s', async ({ page }) => {
@@ -528,7 +586,7 @@ test.describe('on an iPhone', () => {
     await page.goto('/artifact/demo-page/index.html');
     await expect(page.getByText('Try it with sample shops in Kajang')).toBeVisible();
     await button(page, 'Try as a customer').click();
-    await expect(page.getByText('Ali Barber Sungai Chua')).toBeVisible();
+    await expect(listed(page, 'Ali Barber Sungai Chua')).toBeVisible();
     await page.getByRole('tab', { name: /My bookings/ }).click();
     await expect(page.getByText(/^Skin fade with (Ali|Danial) · RM25$/)).toBeVisible();
 

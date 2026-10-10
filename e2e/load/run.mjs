@@ -58,11 +58,15 @@ async function must(promise) {
 
 /** The data each screen loads, the way the app asks for it. */
 const SCENARIOS = {
-  'Find a barber': async () =>
-    Promise.all([
-      must(anon.rpc('find_shops', { p_search: null, p_area: null, p_limit: 20, p_offset: 0 })),
-      must(anon.rpc('shop_areas')),
-    ]),
+  // Signed in, so their next cut and their barbers come alongside the list.
+  'Find a barber': async () => {
+    const c = customer();
+    return Promise.all([
+      must(c.rpc('find_shops', { p_search: null, p_area: null, p_limit: 20, p_offset: 0 })),
+      must(c.rpc('shop_areas')),
+      must(c.rpc('my_shops')),
+    ]);
+  },
   'Search for a barber': async () =>
     must(anon.rpc('find_shops', { p_search: AREAS[pick(AREAS.length) - 1], p_area: null, p_limit: 20, p_offset: 0 })),
   'Shop page': async () => {
