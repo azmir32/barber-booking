@@ -2,11 +2,13 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { View } from 'react-native';
 
-import { Button, Card, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
+import { Badge, Button, Card, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
+import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
+import { ms } from '@/lib/strings-ms';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDuration, formatPrice } from '@/lib/time';
 import type { Service } from '@/lib/types';
@@ -17,6 +19,25 @@ const SUGGESTIONS = [
   { name: 'Beard trim', duration_min: 15, price: 10 },
   { name: 'Kids cut', duration_min: 20, price: 15 },
 ];
+
+/**
+ * Quick add is for starting a menu: once it has as many services as there are
+ * suggestions, the menu is the shop's own and suggestions are only noise.
+ */
+const QUICK_ADD_UNTIL = SUGGESTIONS.length;
+
+/** Words only, lower case and space-separated: "Kids cut (under 12)" -> "kids cut under 12". */
+const words = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * Whether the menu already has the suggestion, under its English or its Malay
+ * name, alone or with more words: "Kids cut (under 12)" has Kids cut, and
+ * "Haircut" is Potong rambut.
+ */
+function onMenu(suggestion: string, menu: Service[]): boolean {
+  const names = [suggestion, ms[suggestion] ?? suggestion].map(words);
+  return menu.some((s) => names.some((n) => ` ${words(s.name)} `.includes(` ${n} `)));
+}
 
 /** Name, minutes and price of `service`, or of a new service when there is none. */
 function ServiceForm({
@@ -83,8 +104,12 @@ export default function Services() {
   const theme = useTheme();
   const { shop } = useMyShop();
   const [services, setServices] = useState<Service[]>([]);
+  // Until the menu has loaded once, nothing is offered: an empty list might just be a bad signal.
+  const [loaded, setLoaded] = useState(false);
   // The service being edited, in its own card, so the form opens where the barber tapped.
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The last quick add, which one tap takes back.
+  const [added, setAdded] = useState<Service | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -98,6 +123,7 @@ export default function Services() {
     if (error) return setError(errorMessage(error));
     setError(null);
     setServices((data ?? []) as Service[]);
+    setLoaded(true);
   }, [shop]);
 
   useFocusEffect(
@@ -108,20 +134,32 @@ export default function Services() {
 
   async function addSuggestion(s: (typeof SUGGESTIONS)[number]) {
     if (!shop) return;
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('services')
-      .insert({ ...s, name: t(s.name), shop_id: shop.id, sort_order: services.length });
+      .insert({ ...s, name: t(s.name), shop_id: shop.id, sort_order: services.length })
+      .select()
+      .single();
+    if (error) return setError(errorMessage(error));
+    setAdded(data as Service);
+    load();
+  }
+
+  async function undoAdd(s: Service) {
+    setAdded(null);
+    const { error } = await supabase.from('services').delete().eq('id', s.id);
     if (error) return setError(errorMessage(error));
     load();
   }
 
   async function toggle(s: Service) {
+    setAdded(null);
     const { error } = await supabase.from('services').update({ is_active: !s.is_active }).eq('id', s.id);
     if (error) return setError(errorMessage(error));
     load();
   }
 
   async function remove(s: Service) {
+    setAdded(null);
     const ok = await confirmAction(
       t('Delete {name}?', { name: s.name }),
       t('Customers will no longer see it. Past bookings keep their details. To bring it back later, use Hide instead.'),
@@ -134,14 +172,22 @@ export default function Services() {
   }
 
   if (!shop) return null;
-  const missing = SUGGESTIONS.filter((s) => !services.some((x) => x.name.toLowerCase() === t(s.name).toLowerCase()));
+  const missing =
+    loaded && services.length < QUICK_ADD_UNTIL ? SUGGESTIONS.filter((s) => !onMenu(s.name, services)) : [];
 
   return (
     <Screen>
       <T variant="title">{t('Services')}</T>
 
       <Section title={t('Your menu')}>
-        {services.length === 0 ? (
+        {!loaded ? (
+          error ? (
+            <>
+              <ErrorText message={`${t('Couldn’t load your menu.')} ${error}`} />
+              <Button title={t('Try again')} variant="secondary" onPress={load} />
+            </>
+          ) : null
+        ) : services.length === 0 ? (
           <Empty title={t('No services yet')} body={t('Add what you offer so customers can book it.')} />
         ) : null}
         {services.map((s) =>
@@ -160,9 +206,12 @@ export default function Services() {
               />
             </Card>
           ) : (
-            <Card key={s.id} style={s.is_active ? undefined : { opacity: 0.6 }}>
-              <Row style={{ justifyContent: 'space-between' }}>
-                <T variant="label">{s.name}</T>
+            <Card key={s.id}>
+              <Row style={{ justifyContent: 'space-between', flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+                <View style={{ flex: 1, gap: Spacing.xs }}>
+                  <T variant="label">{s.name}</T>
+                  {s.is_active ? null : <Badge label={t('Hidden')} tone="warning" />}
+                </View>
                 <T variant="label">{formatPrice(s.price)}</T>
               </Row>
               <T variant="small">
@@ -170,14 +219,39 @@ export default function Services() {
                 {s.is_active ? '' : ` · ${t('hidden from customers')}`}
               </T>
               <Row>
-                <Button title={t('Edit')} variant="secondary" onPress={() => setEditingId(s.id)} />
-                <Button title={s.is_active ? t('Hide') : t('Show')} variant="ghost" onPress={() => toggle(s)} />
+                <Button
+                  title={t('Edit')}
+                  variant="secondary"
+                  onPress={() => {
+                    setAdded(null);
+                    setEditingId(s.id);
+                  }}
+                />
+                {/* Showing it again is the next step for a hidden service, so it stands out. */}
+                <Button
+                  title={s.is_active ? t('Hide') : t('Show')}
+                  variant={s.is_active ? 'ghost' : 'secondary'}
+                  onPress={() => toggle(s)}
+                />
                 <Button title={t('Delete')} variant="ghost" onPress={() => remove(s)} />
               </Row>
             </Card>
           ),
         )}
-        <ErrorText message={error} />
+        {added && services.some((s) => s.id === added.id) ? (
+          <Row style={{ flexWrap: 'nowrap' }}>
+            <T variant="muted" style={{ flex: 1 }}>
+              {t('Added {name} to your menu.', { name: added.name })}
+            </T>
+            <Button
+              title={t('Undo')}
+              accessibilityLabel={t('Undo adding {name}', { name: added.name })}
+              variant="secondary"
+              onPress={() => undoAdd(added)}
+            />
+          </Row>
+        ) : null}
+        {loaded ? <ErrorText message={error} /> : null}
       </Section>
 
       {missing.length && !editingId ? (
@@ -197,9 +271,18 @@ export default function Services() {
       ) : null}
 
       {/* For new services only, so it always starts empty. */}
-      <Section title={t('Add a service')}>
-        <ServiceForm shopId={shop.id} sortOrder={services.length} onSaved={load} />
-      </Section>
+      {loaded ? (
+        <Section title={t('Add a service')}>
+          <ServiceForm
+            shopId={shop.id}
+            sortOrder={services.length}
+            onSaved={() => {
+              setAdded(null);
+              load();
+            }}
+          />
+        </Section>
+      ) : null}
     </Screen>
   );
 }

@@ -770,7 +770,9 @@ $$;
 
 -- Move a booking to another free time instead of cancelling and booking
 -- again, so it keeps its place in the diary, its note and its price.
--- Customers move their own upcoming bookings. The new time follows the same rules as
+-- Customers move their own upcoming bookings, and the shop owner moves any of
+-- the shop's (a customer who calls to come later, or a walk-in booked ahead),
+-- so the customer's booking stays theirs. The new time follows the same rules as
 -- booking, except that the booking's own time doesn't count as taken, so
 -- moving 15 minutes later works. With no barber given it stays with the
 -- same barber if they are free, else goes to whoever is least busy that day.
@@ -798,7 +800,7 @@ begin
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
 
-  if v_booking.customer_id is distinct from auth.uid() then
+  if v_booking.customer_id is distinct from auth.uid() and not public.owns_shop(v_booking.shop_id) then
     raise exception 'Booking not found.' using errcode = 'P0002';
   end if;
   if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
 import { TimeField } from '@/components/time-field';
-import { Button, Chip, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
+import { Button, Chip, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { confirmAction } from '@/lib/confirm';
 import { WALK_IN } from '@/lib/customers';
@@ -41,17 +41,28 @@ function hoursIfOutside(barber: BarberWithHours, day: string, clock: string): st
   return ranges.map((h) => `${formatClock(h.opens_at)}–${formatClock(h.closes_at)}`).join(', ');
 }
 
-/** Barber adds a walk-in / WhatsApp / phone booking, or blocks time. */
+/** Who a new booking is for at first: the barber the day was showing, else the first one working that day. */
+function firstBarber(list: BarberWithHours[], day: string, wanted?: string): string | null {
+  if (wanted && list.some((b) => b.id === wanted)) return wanted;
+  const weekday = new Date(`${day}T00:00:00Z`).getUTCDay();
+  return (list.find((b) => b.working_hours.some((h) => h.weekday === weekday)) ?? list[0])?.id ?? null;
+}
+
+/**
+ * Barber adds a walk-in / WhatsApp / phone booking, or blocks time. `barber` is the barber the
+ * Bookings tab was showing, and `kind` "block" opens on Block time (a shop with no services yet).
+ */
 export default function NewBooking() {
   const { shop } = useMyShop();
-  const params = useLocalSearchParams<{ day?: string }>();
+  const params = useLocalSearchParams<{ day?: string; barber?: string; kind?: string }>();
   const tz = shop!.time_zone;
   const today = localDateString(new Date(), tz);
   const day = params.day ?? today;
 
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
   const [services, setServices] = useState<Service[]>([]);
-  const [kind, setKind] = useState<Kind>('booking');
+  const [loaded, setLoaded] = useState(false);
+  const [kind, setKind] = useState<Kind>(params.kind === 'block' ? 'block' : 'booking');
   const [barberId, setBarberId] = useState<string | null>(null);
   // Blocks only: close the shop, one block per barber.
   const [everyone, setEveryone] = useState(false);
@@ -90,11 +101,12 @@ export default function NewBooking() {
       const menu = (s.data ?? []) as Service[];
       setBarbers(list);
       setServices(menu);
-      if (list.length) setBarberId((current) => current ?? list[0].id);
+      setLoaded(true);
+      setBarberId((current) => current ?? firstBarber(list, day, params.barber));
       // Most walk-ins are for the first thing on the menu.
       if (menu.length) setServiceId((current) => current ?? menu[0].id);
     });
-  }, [shop]);
+  }, [shop, day, params.barber]);
 
   // The barber's free start times, the same ones customers see.
   const slotsKey = kind === 'booking' && serviceId && barberId ? `${serviceId}|${barberId}|${slotsVersion}` : null;
@@ -138,6 +150,22 @@ export default function NewBooking() {
     const clock = wholeDay ? '00:00' : time === NOW ? localClock(new Date(), tz, 5) : time;
     if (!clock) return setError(t('Pick a start time.'));
     if (kind === 'booking' && !serviceId) return setError(t('Pick a service.'));
+
+    // The whole shop for the whole day is a closure, as from My shop > Close for a few days:
+    // one "Shop closed" on the day with one Reopen, not a block per barber.
+    if (allBarbers && wholeDay) {
+      setBusy(true);
+      setError(null);
+      const { error: failed } = await supabase.rpc('close_shop_days', { p_from: day, p_days: 1, p_reason: note });
+      setBusy(false);
+      if (!failed) return router.back();
+      return setError(
+        failed.code === 'P0001'
+          ? t('There are bookings on this day. Cancel them first (and let the customers know), then close the shop.')
+          : errorMessage(failed),
+      );
+    }
+
     const minutes = kind === 'block' ? blockMinutes : null;
     const key = `${clock}|${minutes}`;
     const targets = allBarbers
@@ -191,11 +219,14 @@ export default function NewBooking() {
     if (!allBarbers) return setError(reason(failed[0].error));
 
     setBlocked({ key, ids: [...(blocked.key === key ? blocked.ids : []), ...done.map((b) => b.id)] });
+    // A reason several barbers share is said once: "Ali, Danial: ...".
+    const byReason = new Map<string, string[]>();
+    for (const { b, error } of failed) byReason.set(reason(error), [...(byReason.get(reason(error)) ?? []), b.name]);
     setError(
       [
         done.length ? t('Blocked for {names}.', { names: done.map((b) => b.name).join(', ') }) : null,
         t('Not blocked:'),
-        ...failed.map(({ b, error }) => `${b.name}: ${reason(error)}`),
+        ...[...byReason].map(([why, names]) => `${names.join(', ')}: ${why}`),
       ]
         .filter(Boolean)
         .join('\n'),
@@ -238,18 +269,31 @@ export default function NewBooking() {
     </>
   );
 
+  // A new shop can get here before its menu has anything to book; blocking time still works.
+  const noMenu = kind === 'booking' && loaded && services.length === 0;
+
   return (
     <Screen
       edges={[]}
       footer={
-        <>
-          <ErrorText message={error} />
-          <Button
-            title={kind === 'booking' ? t('Add booking') : wholeDay ? t('Block the day') : t('Block time')}
-            onPress={save}
-            loading={busy}
-          />
-        </>
+        noMenu ? undefined : (
+          <>
+            <ErrorText message={error} />
+            <Button
+              title={
+                kind === 'booking'
+                  ? t('Add booking')
+                  : allBarbers && wholeDay
+                    ? t('Close for 1 day')
+                    : wholeDay
+                      ? t('Block the day')
+                      : t('Block time')
+              }
+              onPress={save}
+              loading={busy}
+            />
+          </>
+        )
       }>
       <T variant="heading">{formatDay(`${day}T12:00:00Z`, 'UTC')}</T>
 
@@ -263,7 +307,15 @@ export default function NewBooking() {
           : t('For breaks, errands or a day off. Online customers can’t book this time.')}
       </T>
 
-      {barbers.length > 1 ? (
+      {noMenu ? (
+        <Empty
+          title={t('Add a service first')}
+          body={t('Customers book a service, so add what you offer before adding a booking. You can still block time.')}>
+          <Button title={t('Go to Services')} variant="secondary" onPress={() => router.navigate('/barber/services')} />
+        </Empty>
+      ) : null}
+
+      {barbers.length > 1 && !noMenu ? (
         <Section title={t('Barber')}>
           <Row role="radiogroup" accessibilityLabel={t('Barber')}>
             {kind === 'block' ? (
@@ -284,7 +336,7 @@ export default function NewBooking() {
         </Section>
       ) : null}
 
-      {kind === 'booking' ? (
+      {noMenu ? null : kind === 'booking' ? (
         <Section title={t('Service')}>
           <Row role="radiogroup" accessibilityLabel={t('Service')}>
             {services.map((s) => (
@@ -313,7 +365,7 @@ export default function NewBooking() {
         </Section>
       )}
 
-      {wholeDay ? null : kind === 'block' && !isToday ? (
+      {wholeDay || noMenu ? null : kind === 'block' && !isToday ? (
         <TimeField label={t('Start time')} value={time} onChange={setTime} />
       ) : (
         <Section title={t('Start time')}>
@@ -332,7 +384,7 @@ export default function NewBooking() {
         </Section>
       )}
 
-      {kind === 'booking' ? (
+      {noMenu ? null : kind === 'booking' ? (
         <View style={{ gap: Spacing.lg }}>
           <Field
             label={t('Customer name (optional)')}

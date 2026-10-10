@@ -313,6 +313,38 @@ test('a customer moves their cut, and can put the new time in their calendar', a
   expect(after.get('dates')).not.toBe(before.get('dates'));
 });
 
+test('the shop moves a booking when the customer calls, and tells them the new time', async ({ page, context }) => {
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await button(app, 'More actions for Hakim').click();
+  await button(app, 'Change time for Hakim').click();
+
+  // The same barber's free times, without the time Hakim has now.
+  const time = app.getByRole('radiogroup', { name: /^Free times for / }).getByRole('radio').first();
+  await expect(time).toBeVisible();
+  const movedTo = (await time.textContent()) ?? '';
+  expect(movedTo).not.toBe('4:30 pm');
+  await time.click();
+  await button(app, 'Move to this time').click();
+  await expect(app.getByText('Booking moved')).toBeVisible();
+  await expect(app.getByText(/^Was .* at 4:30 pm\.$/)).toBeVisible();
+  await snap(page, 'demo-10b-shop-moved');
+
+  const opened = context.waitForEvent('page');
+  await button(app, 'Let Hakim know on WhatsApp').click();
+  const whatsapp = await opened;
+  await whatsapp.waitForLoadState();
+  expect(new URL(whatsapp.url()).searchParams.get('text')).toMatch(
+    new RegExp(`^Hi Hakim, this is Ali Barber Sungai Chua\\. Your Skin fade is now on .+ at ${movedTo}\\. See you then!$`),
+  );
+  await whatsapp.close();
+  await button(app, 'Done').click();
+  // Still Hakim's booking, at the new time, and due a reminder for it.
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
+});
+
 test('one tap across to the barber side, and the demo starts over cleanly', async ({ page }) => {
   const app = await open(page);
   await button(app, 'Try as a customer').click();

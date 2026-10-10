@@ -300,7 +300,10 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
 export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unknown, barberId: unknown = null) {
   const booking = findById('bookings', bookingId);
   if (!booking || booking.is_block) throw new PgError('P0002', 'Booking not found.', 500);
-  if (c.uid == null || booking.customer_id !== c.uid) throw new PgError('P0002', 'Booking not found.', 500);
+  // The customer's own, or any of the shop's for its owner.
+  if (c.uid == null || (booking.customer_id !== c.uid && !ownsShop(booking.shop_id, c.uid))) {
+    throw new PgError('P0002', 'Booking not found.', 500);
+  }
   if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
     throw new PgError('42501', 'You can only change an upcoming booking.', 403);
   }

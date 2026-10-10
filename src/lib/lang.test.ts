@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { formatClock, openStatus, summarizeWeek } from './hours.ts';
 import { setCurrentLang, t } from './lang.ts';
 import { ms } from './strings-ms.ts';
-import { formatDay, formatDuration, formatTime, groupByPartOfDay, upcomingDays } from './time.ts';
+import { formatDay, formatDuration, formatTime, formatTimeParts, groupByPartOfDay, upcomingDays } from './time.ts';
 import { WEEKDAYS } from './types.ts';
 
 const SRC = path.resolve(import.meta.dirname, '..');
@@ -110,6 +110,7 @@ test('dates, times and hours read naturally in Malay', () => {
     assert.equal(formatClock('13:30'), '1.30 tengah hari');
     assert.equal(formatClock('17:00'), '5.00 petang');
     assert.equal(formatTime('2026-10-06T01:15:00Z', 'Asia/Kuala_Lumpur'), '9.15 pagi');
+    assert.deepEqual(formatTimeParts('2026-10-06T04:00:00Z', 'Asia/Kuala_Lumpur'), { clock: '12.00', period: 'tengah hari' });
     const week = [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens_at: '10:00', closes_at: '20:00' }));
     assert.equal(summarizeWeek(week), 'Isn–Sab · 10.00 pagi–8.00 malam');
     const at = (clock: string) => new Date(`2026-10-06T${clock}:00+08:00`);

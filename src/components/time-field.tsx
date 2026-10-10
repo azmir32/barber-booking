@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button, Chip, T } from '@/components/ui';
@@ -25,7 +26,7 @@ export function timeChoices(from: string, to: string, step: number): [PartOfDay,
 /**
  * A time that is picked, not typed: shows "2:30 pm" and opens a sheet of
  * times every 15 minutes, so there is no keyboard and no 24-hour rule.
- * `value` and `onChange` use "HH:MM".
+ * `value` and `onChange` use "HH:MM". The sheet opens on the picked time.
  */
 export function TimeField({
   label,
@@ -35,6 +36,8 @@ export function TimeField({
   to = '23:45',
   step = 15,
   hint,
+  title,
+  error,
 }: {
   label: string;
   value: string | null;
@@ -43,10 +46,27 @@ export function TimeField({
   to?: string;
   step?: number;
   hint?: string;
+  /** The sheet's heading when the label alone isn't enough, e.g. "Mon · To". */
+  title?: string;
+  /** Marks the field in red, when the time is the problem; say why next to it. */
+  error?: boolean;
 }) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
   const shown = value ? formatClock(value) : t('Pick a time');
+  const heading = title ?? label;
+  const sheet = useRef<ScrollView>(null);
+  // Where the picked time sits in the sheet: its part of the day, the chips under that part's
+  // name, and the chip itself. Once all three are laid out the sheet scrolls to it.
+  const spot = useRef<{ part?: number; grid?: number; chip?: number; done?: boolean }>({});
+  const place = (key: 'part' | 'grid' | 'chip', y: number) => {
+    spot.current[key] = y;
+    const { part, grid, chip, done } = spot.current;
+    if (done || part === undefined || grid === undefined || chip === undefined) return;
+    spot.current.done = true;
+    // A row of times above it stays in view, so it doesn't look like the first choice.
+    sheet.current?.scrollTo({ y: Math.max(0, part + grid + chip - 56), animated: false });
+  };
 
   return (
     <View style={styles.field}>
@@ -54,12 +74,22 @@ export function TimeField({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${label}: ${shown}`}
-        onPress={() => setOpen(true)}
+        aria-invalid={error || undefined}
+        onPress={() => {
+          spot.current = {};
+          setOpen(true);
+        }}
         style={({ pressed }) => [
           styles.input,
-          { backgroundColor: theme.card, borderColor: theme.border, opacity: pressed ? 0.8 : 1 },
+          {
+            backgroundColor: theme.card,
+            borderColor: error ? theme.danger : theme.inputBorder,
+            borderWidth: error ? 2 : 1,
+            opacity: pressed ? 0.8 : 1,
+          },
         ]}>
-        <T style={{ color: value ? theme.text : theme.textSecondary }}>{shown}</T>
+        <T style={{ flex: 1, color: value ? theme.text : theme.textSecondary }}>{shown}</T>
+        <Ionicons name="time-outline" size={20} color={theme.textSecondary} />
       </Pressable>
       {hint ? <T variant="small">{hint}</T> : null}
       {open ? (
@@ -68,28 +98,45 @@ export function TimeField({
             <View
               role="dialog"
               aria-modal
-              aria-label={label}
+              aria-label={heading}
               style={[styles.sheet, { backgroundColor: theme.card, borderColor: theme.border }]}>
-              <T variant="heading">{label}</T>
-              <ScrollView contentContainerStyle={{ gap: Spacing.md }}>
-                {timeChoices(from, to, step).map(([part, times]) => (
-                  <View key={part} style={{ gap: Spacing.sm }}>
-                    <T variant="label">{t(part)}</T>
-                    <View style={styles.grid}>
-                      {times.map((time) => (
-                        <Chip
-                          key={time}
-                          label={formatClock(time)}
-                          selected={time === value}
-                          onPress={() => {
-                            onChange(time);
-                            setOpen(false);
-                          }}
-                        />
-                      ))}
+              <T variant="heading">{heading}</T>
+              <ScrollView ref={sheet} contentContainerStyle={{ gap: Spacing.md }}>
+                {timeChoices(from, to, step).map(([part, times]) => {
+                  const holdsValue = value !== null && times.includes(value);
+                  return (
+                    <View
+                      key={part}
+                      style={{ gap: Spacing.sm }}
+                      onLayout={holdsValue ? (e) => place('part', e.nativeEvent.layout.y) : undefined}>
+                      <T variant="label">{t(part)}</T>
+                      <View
+                        style={styles.grid}
+                        onLayout={holdsValue ? (e) => place('grid', e.nativeEvent.layout.y) : undefined}>
+                        {times.map((time) => {
+                          const chip = (
+                            <Chip
+                              key={time}
+                              label={formatClock(time)}
+                              selected={time === value}
+                              onPress={() => {
+                                onChange(time);
+                                setOpen(false);
+                              }}
+                            />
+                          );
+                          return time === value ? (
+                            <View key={time} onLayout={(e) => place('chip', e.nativeEvent.layout.y)}>
+                              {chip}
+                            </View>
+                          ) : (
+                            chip
+                          );
+                        })}
+                      </View>
                     </View>
-                  </View>
-                ))}
+                  );
+                })}
               </ScrollView>
               <Button title={t('Cancel')} variant="secondary" onPress={() => setOpen(false)} />
             </View>
@@ -104,10 +151,11 @@ const styles = StyleSheet.create({
   field: { gap: Spacing.xs },
   input: {
     minHeight: 48,
-    borderWidth: 1,
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.md,
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   backdrop: {
     flex: 1,

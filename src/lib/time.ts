@@ -106,24 +106,34 @@ export function localClock(at: string | Date, timeZone = DEFAULT_TIME_ZONE, step
  * and malam.
  */
 export function clockLabel(hour: number, minute: number): string {
-  const digits = clockDigits(hour, minute);
-  if (getLang() === 'ms') {
-    const period = hour < 12 ? 'pagi' : hour < 14 ? 'tengah hari' : hour < 19 ? 'petang' : 'malam';
-    return `${digits} ${period}`;
-  }
-  return `${digits} ${hour < 12 ? 'am' : 'pm'}`;
+  const { clock, period } = clockParts(hour, minute);
+  return `${clock} ${period}`;
 }
 
-/** "8:30", or "8.30" in Malay: the 12-hour clock without am/pm. */
-function clockDigits(hour: number, minute: number): string {
+/** clockLabel in two parts: { clock: '8:30', period: 'pm' }, or { clock: '8.30', period: 'malam' }. */
+export function clockParts(hour: number, minute: number): { clock: string; period: string } {
   const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-  return `${hour12}${getLang() === 'ms' ? '.' : ':'}${String(minute).padStart(2, '0')}`;
+  const mm = String(minute).padStart(2, '0');
+  if (getLang() === 'ms') {
+    const period = hour < 12 ? 'pagi' : hour < 14 ? 'tengah hari' : hour < 19 ? 'petang' : 'malam';
+    return { clock: `${hour12}.${mm}`, period };
+  }
+  return { clock: `${hour12}:${mm}`, period: hour < 12 ? 'am' : 'pm' };
 }
 
 /** "10:30 am" in the shop's zone. */
 export function formatTime(at: string | Date, timeZone = DEFAULT_TIME_ZONE): string {
+  const { clock, period } = formatTimeParts(at, timeZone);
+  return `${clock} ${period}`;
+}
+
+/**
+ * formatTime in two parts, so a narrow column can put a long Malay period
+ * ("tengah hari") under the clock instead of letting the time break anywhere.
+ */
+export function formatTimeParts(at: string | Date, timeZone = DEFAULT_TIME_ZONE): { clock: string; period: string } {
   const [h, m] = localClock(at, timeZone).split(':').map(Number);
-  return clockLabel(h, m);
+  return clockParts(h, m);
 }
 
 /**
@@ -132,7 +142,7 @@ export function formatTime(at: string | Date, timeZone = DEFAULT_TIME_ZONE): str
  */
 export function formatClockOnly(at: string | Date, timeZone = DEFAULT_TIME_ZONE): string {
   const [h, m] = localClock(at, timeZone).split(':').map(Number);
-  return clockDigits(h, m);
+  return clockParts(h, m).clock;
 }
 
 /** Text with non-breaking spaces, so "4:00 pm" or "Sat, 10 Oct" never splits over two lines. */

@@ -6,13 +6,17 @@ import { Spacing } from '@/constants/theme';
 import { t } from '@/lib/lang';
 import type { DayOption } from '@/lib/time';
 
-/** A horizontal strip of day chips ("Today 5 Oct", "Tomorrow 6 Oct", ...). Closed days show but can't be picked. */
+/**
+ * A horizontal strip of day chips ("Today 5 Oct", "Tomorrow 6 Oct", ...). Closed days show but can't be
+ * picked, unless pickClosed (the shop's own diary, where a closed day can be opened again).
+ */
 export function DayPicker({
   days,
   selected,
   onSelect,
   closed,
   closedLabel = t('Closed'),
+  pickClosed = false,
 }: {
   days: DayOption[];
   selected: string | null;
@@ -21,6 +25,7 @@ export function DayPicker({
   closed?: Set<string>;
   /** What those days say instead of the date, e.g. "Off" when one barber doesn't work that day. */
   closedLabel?: string;
+  pickClosed?: boolean;
 }) {
   const strip = useRef<ScrollView>(null);
   // Where each chip sits and which part of the strip is on screen, so a day picked
@@ -64,7 +69,7 @@ export function DayPicker({
               label={d.label}
               sublabel={isClosed ? closedLabel : `${d.dayOfMonth} ${d.month}`}
               selected={selected === d.date}
-              disabled={isClosed}
+              disabled={isClosed && !pickClosed}
               onPress={() => onSelect(d.date)}
             />
           </View>

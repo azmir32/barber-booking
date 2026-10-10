@@ -844,20 +844,29 @@ begin
   end;
 end $$;
 
--- Only the customer moves it: not the shop, and never blocked time.
+-- The shop moves it too (the customer called to come later), and it stays the
+-- customer's booking. Blocked time never moves.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 do $$
 declare
   d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 5;
-  v_id uuid;
+  v bookings;
+  moved bookings;
 begin
-  select id into v_id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
+  select * into v from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1'
     and status = 'confirmed' and starts_at > now();
+  moved := reschedule_booking(v.id, (d + time '11:30') at time zone 'Asia/Kuala_Lumpur');
+  assert moved.id = v.id and moved.customer_id = v.customer_id and moved.barber_id = v.barber_id
+     and moved.starts_at = (d + time '11:30') at time zone 'Asia/Kuala_Lumpur'
+     and moved.customer_note = v.customer_note and moved.price = v.price,
+    'the shop should move the customer''s own booking, with the same barber, note and price';
   begin
-    perform reschedule_booking(v_id, (d + time '10:00') at time zone 'Asia/Kuala_Lumpur');
-    raise exception 'the shop should not move a customer''s booking';
-  exception when sqlstate 'P0002' then null;
+    perform reschedule_booking(v.id, (d + time '11:00') at time zone 'Asia/Kuala_Lumpur', '00000000-0000-0000-0000-0000000000a1');
+    raise exception 'the shop should not move a booking onto a taken time';
+  exception when sqlstate 'P0001' then null;
   end;
+  moved := reschedule_booking(v.id, v.starts_at);
+  assert moved.starts_at = v.starts_at, 'and back again';
   begin
     perform reschedule_booking((select id from bookings where is_block and status = 'confirmed' and starts_at > now() limit 1),
                                (d + time '10:30') at time zone 'Asia/Kuala_Lumpur');
@@ -925,6 +934,12 @@ set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
 do $$ begin
   perform mark_booking_reminded(current_setting('test.reminded_booking')::uuid, now() + interval '1 day', false);
   raise exception 'another shop''s owner should not change it';
+exception when sqlstate 'P0002' then null;
+end $$;
+do $$ begin
+  perform reschedule_booking(current_setting('test.reminded_booking')::uuid,
+                             ((now() at time zone 'Asia/Kuala_Lumpur')::date + 5 + time '11:30') at time zone 'Asia/Kuala_Lumpur');
+  raise exception 'another shop''s owner should not move it';
 exception when sqlstate 'P0002' then null;
 end $$;
 

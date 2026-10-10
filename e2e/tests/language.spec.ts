@@ -84,7 +84,7 @@ test.describe('on a phone set to Malay', () => {
     await choice(page, 'Sekat masa').click();
     await choice(page, 'Sepanjang hari').click();
     await button(page, 'Sekat sepanjang hari').click();
-    await expect(page.getByText('Sepanjang hari', { exact: true })).toBeVisible();
+    await expect(page.getByText('Seharian', { exact: true })).toBeVisible();
     await snap(page, 'ms-07-day-blocked');
   });
 });

@@ -30,6 +30,7 @@ export function Screen({
   footer,
   overlay,
   scrollRef,
+  onScroll,
 }: {
   children: ReactNode;
   scroll?: boolean;
@@ -41,6 +42,8 @@ export function Screen({
   /** Floats over the content, e.g. an undo bar or an add button. Position it absolutely. */
   overlay?: ReactNode;
   scrollRef?: Ref<ScrollView>;
+  /** How far the content has scrolled, e.g. to show a floating button only once its inline twin is out of view. */
+  onScroll?: (y: number) => void;
 }) {
   const theme = useTheme();
   const [refreshing, setRefreshing] = useState(false);
@@ -69,6 +72,8 @@ export function Screen({
           ref={scrollRef}
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
+          onScroll={onScroll && ((e) => onScroll(e.nativeEvent.contentOffset.y))}
+          scrollEventThrottle={onScroll ? 100 : undefined}
           refreshControl={refreshControl}>
           {inner}
         </ScrollView>
