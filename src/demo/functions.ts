@@ -4,7 +4,7 @@
 // decide for themselves what the caller may do.
 
 import { toWhatsAppNumber } from '../lib/phone.ts';
-import { firstName, REVIEW_WINDOW_DAYS } from '../lib/reviews.ts';
+import { firstName, REVIEW_WINDOW_DAYS, reviewName } from '../lib/reviews.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import {
   COLUMNS,
@@ -408,6 +408,7 @@ export function myBookings(c: Caller, limitArg: unknown = 100) {
             ? {
                 rating: r.rating,
                 comment: r.comment,
+                first_name: r.first_name,
                 reply: r.reply,
                 replied_at: r.replied_at,
                 created_at: r.created_at,
@@ -891,16 +892,23 @@ const trimmedText = (v: unknown) => (v == null ? null : String(v).replace(/^[ \t
 /**
  * The booking's own customer rates their cut, 1 to 5 stars with an optional
  * comment, once the shop has marked it done and for 14 days after it started.
- * Rating again in that time changes the same review.
+ * Rating again in that time changes the same review. nameArg is the name it
+ * shows; without one a new review takes firstName and a changed one keeps its name.
  */
-export function rateBooking(c: Caller, bookingId: unknown, ratingArg: unknown, commentArg: unknown = null) {
+export function rateBooking(
+  c: Caller,
+  bookingId: unknown,
+  ratingArg: unknown,
+  commentArg: unknown = null,
+  nameArg: unknown = null,
+) {
   const booking = findById('bookings', toColumnValue('bookings', 'id', bookingId));
   if (!booking || c.uid == null || booking.customer_id !== c.uid) {
     throw new PgError('P0002', 'Booking not found.', 500);
   }
   if (ownsShop(booking.shop_id, c.uid)) throw new PgError('42501', 'You can\'t rate your own shop.', 403);
   if (booking.status !== 'completed' || now() >= ms(booking.starts_at) + REVIEW_WINDOW_MS) {
-    throw new PgError('42501', 'You can rate a cut for 14 days, once the shop marks it done.', 403);
+    throw new PgError('42501', 'You can rate a cut once the shop marks it done, until 14 days after it.', 403);
   }
   const rating = ratingArg == null ? null : Number(toColumnValue('reviews', 'rating', ratingArg));
   if (rating == null || rating < 1 || rating > 5) throw new PgError('22023', 'Pick from 1 to 5 stars.', 400);
@@ -908,15 +916,14 @@ export function rateBooking(c: Caller, bookingId: unknown, ratingArg: unknown, c
   if (comment != null && [...comment].length > 280) {
     throw new PgError('22001', 'Please keep your comment under 280 characters.', 400);
   }
-  // The name they go by, never a surname.
-  const name = firstName(String(findById('profiles', c.uid)?.full_name ?? ''));
+  const name = nameArg == null ? null : reviewName(String(nameArg));
 
   const existing = tables().reviews.find((r) => r.booking_id === booking.id);
   if (existing) {
     return updateRows('reviews', [existing], {
       rating,
       comment,
-      first_name: name,
+      first_name: name ?? existing.first_name,
       updated_at: new Date(now()).toISOString(),
     })[0];
   }
@@ -927,7 +934,7 @@ export function rateBooking(c: Caller, bookingId: unknown, ratingArg: unknown, c
     customer_id: booking.customer_id,
     rating,
     comment,
-    first_name: name,
+    first_name: name ?? firstName(String(findById('profiles', c.uid)?.full_name ?? '')),
   });
 }
 
@@ -1040,7 +1047,10 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
     case 'my_bookings':
       return { status: 200, body: myBookings(c, args.p_limit) };
     case 'rate_booking':
-      return { status: 200, body: rateBooking(c, args.p_booking_id, args.p_rating, args.p_comment ?? null) };
+      return {
+        status: 200,
+        body: rateBooking(c, args.p_booking_id, args.p_rating, args.p_comment ?? null, args.p_name ?? null),
+      };
     case 'reply_to_review':
       return { status: 200, body: replyToReview(c, args.p_booking_id, args.p_reply) };
     case 'delete_my_account':

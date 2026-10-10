@@ -4,6 +4,7 @@ import { beforeEach, test } from 'node:test';
 
 import { createClient } from '@supabase/supabase-js';
 
+import { firstName } from '../lib/reviews.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import { insertRow, reloadTables, save, setClock, tables, type Row } from './db.ts';
@@ -1514,7 +1515,7 @@ test('the sample shop has regulars, and a few are due for a cut whatever the day
 
 type MyBooking = Row & {
   shops: { slug: string };
-  review: { rating: number; comment: string | null; reply: string | null; updated_at: string } | null;
+  review: { rating: number; comment: string | null; first_name: string; reply: string | null; updated_at: string } | null;
 };
 
 async function myBookings(c: ReturnType<typeof client>) {
@@ -1551,8 +1552,8 @@ test('customers rate a finished cut for 14 days, and each shop keeps count', asy
   const kemas = sampleTotals('kemas-barber-kajang');
   assert.deepEqual(await ratingOf('kemas-barber-kajang'), [kemas.count, kemas.avg]);
 
-  const rate = (id: unknown, rating: unknown, comment: unknown = null) =>
-    hakim.rpc('rate_booking', { p_booking_id: id, p_rating: rating, p_comment: comment });
+  const rate = (id: unknown, rating: unknown, comment: unknown = null, name?: unknown) =>
+    hakim.rpc('rate_booking', { p_booking_id: id, p_rating: rating, p_comment: comment, p_name: name });
   const first = await rate(kemasCut.id, 5, '  Great hot towel shave \n');
   assert.equal(first.error, null);
   assert.deepEqual(
@@ -1570,6 +1571,15 @@ test('customers rate a finished cut for 14 days, and each shop keeps count', asy
   assert.deepEqual(await ratingOf('kemas-barber-kajang'), [kemas.count + 1, avg(kemas.sum + 3, kemas.count + 1)]);
   assert.equal((await myBookings(hakim)).find((b) => b.id === kemasCut.id)?.review?.rating, 3);
 
+  // He can change the name it shows, which stays until he changes it again,
+  // tidied and cut to 40 characters; a blank one is no change.
+  assert.equal((await rate(kemasCut.id, 3, null, '  Kim \n Hakim ')).data.first_name, 'Kim Hakim');
+  assert.equal((await rate(kemasCut.id, 3)).data.first_name, 'Kim Hakim');
+  assert.equal((await rate(kemasCut.id, 3, null, '   ')).data.first_name, 'Kim Hakim');
+  assert.equal((await rate(kemasCut.id, 3, null, 'Kim '.repeat(15))).data.first_name, 'Kim '.repeat(10).trimEnd());
+  assert.equal((await rate(kemasCut.id, 3, null, 'Hakim')).data.first_name, 'Hakim');
+  assert.equal((await myBookings(hakim)).find((b) => b.id === kemasCut.id)?.review?.first_name, 'Hakim');
+
   // 280 characters fit, 281 don't.
   assert.equal((await rate(kemasCut.id, 4, 'x'.repeat(280))).error, null);
   const long = await rate(kemasCut.id, 4, 'x'.repeat(281));
@@ -1580,7 +1590,7 @@ test('customers rate a finished cut for 14 days, and each shop keeps count', asy
   }
 
   // Too long ago, still to come, or not marked done.
-  const window = 'You can rate a cut for 14 days, once the shop marks it done.';
+  const window = 'You can rate a cut once the shop marks it done, until 14 days after it.';
   assert.equal((await rate(aliCut.id, 4)).error?.message, window);
   const coming = mine.find((b) => b.status === 'confirmed')!;
   assert.equal((await rate(coming.id, 4)).error?.message, window);
@@ -1661,7 +1671,16 @@ test('anyone reads a live shop’s reviews, but not who wrote them, and the owne
   assert.equal(page.data!.length, 5);
   const times = page.data!.map((r) => Date.parse(r.created_at));
   assert.deepEqual(times, [...times].sort((a, b) => b - a));
-  assert.ok(page.data!.every((r) => !r.first_name.includes(' ') && typeof (r.barbers as unknown as { name: string }).name === 'string'));
+  assert.ok(page.data!.every((r) => typeof (r.barbers as unknown as { name: string }).name === 'string'));
+  // Each with the name its customer goes by: Tan Wei Jie is Wei Jie.
+  const reviewer = (bookingId: string) =>
+    tables().profiles.find((p) => p.id === tables().reviews.find((r) => r.booking_id === bookingId)!.customer_id)!;
+  assert.deepEqual(
+    page.data!.map((r) => r.first_name),
+    page.data!.map((r) => firstName(String(reviewer(r.booking_id).full_name))),
+  );
+  const weiJie = tables().reviews.find((r) => r.shop_id === kemas.id && reviewer(String(r.booking_id)).full_name === 'Tan Wei Jie');
+  assert.equal(weiJie?.first_name, 'Wei Jie');
   const rest = await guest.from('reviews').select('booking_id').eq('shop_id', kemas.id).range(5, 14);
   assert.equal(rest.data!.length, totals.count - 5);
 

@@ -814,13 +814,13 @@ export const ms: Record<string, string> = {
 
   // Round 8, reviews: rating a cut, the stars on Find a barber and the shop page, and the owner's replies
   'You can\'t rate your own shop.': 'Anda tidak boleh menilai kedai anda sendiri.',
-  'You can rate a cut for 14 days, once the shop marks it done.':
-    'Anda boleh menilai potongan selama 14 hari, selepas kedai menandanya selesai.',
+  'You can rate a cut once the shop marks it done, until 14 days after it.':
+    'Anda boleh menilai potongan selepas kedai menandanya selesai, sehingga 14 hari selepas potongan itu.',
   'Pick from 1 to 5 stars.': 'Pilih antara 1 hingga 5 bintang.',
   'Please keep your comment under 280 characters.': 'Sila pastikan ulasan kurang daripada 280 aksara.',
   'Please keep your reply under 280 characters.': 'Sila pastikan balasan kurang daripada 280 aksara.',
   'Review not found.': 'Ulasan tidak dijumpai.',
-  'Rated {avg} out of 5 from {count} reviews': 'Penilaian {avg} daripada 5, dari {count} ulasan',
+  'Rated {avg} out of 5 from {reviews}': 'Penilaian {avg} daripada 5, dari {reviews}',
   '1 star': '1 bintang',
   '{count} stars': '{count} bintang',
   '1 review': '1 ulasan',
