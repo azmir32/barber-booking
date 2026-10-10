@@ -178,7 +178,8 @@ test('a reminder sent from a screen that missed a move says so, and the new time
   await app.getByRole('radio', { name: /^Tomorrow/ }).click();
   await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
 
-  // Hakim moves his cut an hour later on his own phone; this screen hasn't reloaded yet.
+  // Hakim moves his cut an hour earlier on his own phone; this screen hasn't reloaded yet. Earlier is
+  // free whichever chair he is on: later runs into Wei Jie's 6 pm when he is with Ali (Mondays).
   await page.evaluate(() => {
     const key = 'potongku.demo.v1';
     const saved = JSON.parse(localStorage.getItem(key)!);
@@ -187,8 +188,8 @@ test('a reminder sent from a screen that missed a move says so, and the new time
     const cut = (saved.tables.bookings as Row[]).find(
       (b) => b.customer_id === hakim.id && b.status === 'confirmed' && Date.parse(b.starts_at!) > Date.now(),
     )!;
-    const later = (at: string | null) => new Date(Date.parse(at!) + 3_600_000).toISOString();
-    Object.assign(cut, { starts_at: later(cut.starts_at), ends_at: later(cut.ends_at), reminded_at: null });
+    const earlier = (at: string | null) => new Date(Date.parse(at!) - 3_600_000).toISOString();
+    Object.assign(cut, { starts_at: earlier(cut.starts_at), ends_at: earlier(cut.ends_at), reminded_at: null });
     localStorage.setItem(key, JSON.stringify(saved));
   });
 
@@ -198,12 +199,12 @@ test('a reminder sent from a screen that missed a move says so, and the new time
   // The row now shows the new time, says the reminder wasn't saved, and still offers one.
   const notSaved = app.getByRole('alert');
   await expect(notSaved).toHaveText('Reminder not saved. This booking has changed. Check the new time.');
-  await expect(app.getByText('5:30 pm', { exact: true })).toBeVisible();
+  await expect(app.getByText('3:30 pm', { exact: true })).toBeVisible();
   await snap(page, 'demo-11-reminder-not-saved');
 
   const again = context.waitForEvent('page');
   await button(app, 'Remind Hakim on WhatsApp').click();
-  expect(await sent(again)).toMatch(/is tomorrow at 5:30 pm\./);
+  expect(await sent(again)).toMatch(/is tomorrow at 3:30 pm\./);
   await expect(notSaved).toHaveCount(0);
   await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
 });
@@ -539,20 +540,34 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
   await picker.getByRole('radio', { name: '5 stars', exact: true }).click();
   await expect(picker.getByRole('radio', { name: '5 stars', exact: true })).toBeChecked();
   await app.getByLabel('Comment (optional)', { exact: true }).fill('Clean fade, and no wait at all.');
+  // Before it goes up, the form says which name it shows, and that can be changed.
+  await expect(app.getByText('Shown on the shop’s page as “Hakim”.', { exact: true })).toBeVisible();
   await snap(page, 'demo-18-rate-cut');
+  await button(app, 'Change name').click();
+  await expect(app.getByLabel('Name on your review', { exact: true })).toHaveValue('Hakim');
   await button(app, 'Send').click();
   await expect(app.getByText('Thanks! Your rating is saved.')).toBeVisible();
   await expect(app.getByText('“Clean fade, and no wait at all.”')).toBeVisible();
-  // It can still be changed for a while.
+  // It can still be changed for a while, up to the cut's own time 14 days on.
   await expect(button(app, /^Change your rating for /)).toBeVisible();
+  await expect(app.getByText(/^You can change it until .+ at \d{1,2}:\d\d\s[ap]m\.$/)).toBeVisible();
 
-  // On the shop's page it is the newest review, with his first name.
+  // On the shop's page it is the newest review, with his name.
   await app.getByRole('tab', { name: /Barbers/ }).click();
   await app.getByRole('link', { name: /^Kemas Barber Kajang/ }).click();
   const summary = app.getByRole('link', { name: new RegExp(`^Rated \\d\\.\\d out of 5 from ${count + 1} reviews\\. See reviews$`) });
   await expect(summary).toBeVisible();
+  // A 44pt target, though its line is shorter.
+  expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  // With a service picked the steps open above the reviews, and See reviews still lands on them.
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await expect(app.getByRole('heading', { name: /Pick a time$/ })).toBeVisible();
+  await expect(app.getByText('Checking free times…')).toHaveCount(0);
   await summary.click();
-  await expect(app.getByRole('heading', { name: 'Reviews', exact: true })).toBeVisible();
+  const reviews = app.getByRole('heading', { name: 'Reviews', exact: true });
+  await expect(reviews).toBeVisible();
+  await expect.poll(async () => (await reviews.boundingBox())?.y).toBeLessThan(200);
+  await expect.poll(async () => (await reviews.boundingBox())?.y).toBeGreaterThan(0);
   await expect(app.getByText('Clean fade, and no wait at all.', { exact: true })).toBeVisible();
   await expect(app.getByText('Hakim', { exact: true })).toBeVisible();
   await snap(page, 'demo-19-shop-reviews');

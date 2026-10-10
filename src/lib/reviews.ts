@@ -24,7 +24,7 @@ export type MyReview = {
   updated_at: string;
 };
 
-/** A review as a shop page or the shop's owner reads it: a first name, never whose account wrote it. */
+/** A review as a shop page or the shop's owner reads it: the name it shows, never whose account wrote it. */
 export type ShopReview = {
   booking_id: string;
   rating: number;

@@ -16,8 +16,8 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
 - See upcoming and past bookings, move one to another time, cancel, WhatsApp the shop, book again
-- Rate a cut from one to five stars, with an optional comment, once the shop has marked it done: My bookings asks "How was your cut?" for 14 days after it, and the rating can be changed in that time. The shop's reply shows under it
-- A shop with three or more reviews shows its average and count (4.8 ★ (23)) in the list and by its name; its page lists the reviews below the booking steps, newest first, each with the customer's first name, the barber, the comment and the shop's reply
+- Rate a cut from one to five stars, with an optional comment, once the shop has marked it done: My bookings asks "How was your cut?" for 14 days after it, and the rating can be changed in that time. The form says which name the review will show (the name they go by, worked out from their full name: "Mohd Hakim bin Ali" is Hakim, "Tan Wei Jie" is Wei Jie, never a surname) and lets them change it. The shop's reply shows under it
+- A shop with three or more reviews shows its average and count (4.8 ★ (23)) in the list and by its name; its page lists the reviews below the booking steps, newest first, each with the customer's chosen name, the barber, the comment and the shop's reply
 - Add a booking to the phone's calendar, so it reminds them: Safari on iPhone, iPad and Mac gets a calendar file for Apple Calendar (with an alert an hour before); Android, the iOS app and other browsers open Google Calendar's add-event page (with their usual Google reminder)
 
 **Barbers and shop owners**
@@ -43,7 +43,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Owners can't change their own trial or subscription status, or when their shop first went live (`shops.published_at`, set by the database)
 - A barber account can turn into a customer one (`become_customer`) only while it has no shop
 - Limits against abuse: bookings at most 60 days ahead, at most 4 upcoming bookings per customer per shop, notes, review comments and replies up to 280 characters
-- Only the customer can rate a cut, one rating per booking, once it is marked done and up to 14 days after it started (`rate_booking`); owners can't rate their own shop. Nobody can read which account wrote a review, only the first name it shows. Owners only reply (`reply_to_review`), and the database keeps each shop's review count and total
+- Only the customer can rate a cut, one rating per booking, once it is marked done and up to 14 days after it started (`rate_booking`); owners can't rate their own shop. Nobody can read which account wrote a review, only the name it shows. Owners only reply (`reply_to_review`), and the database keeps each shop's review count and total
 - Barbers with booking history can't be deleted (mark them away instead), so past bookings keep their barber; one added by mistake can be removed
 
 ## Tech

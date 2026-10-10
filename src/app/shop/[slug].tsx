@@ -39,6 +39,8 @@ type BarberWithHours = Barber & { working_hours: Pick<WorkingHours, 'weekday' | 
 type Step = 'move' | 'barber' | 'time' | 'note';
 /** A shop that exists but is hidden from customers (paused, or its trial ended). */
 type HiddenShop = { name: string; phone: string | null; is_live: boolean };
+/** ScrollView's getInnerViewRef, its scrolled content: there on native and on the web, but missing from its types. */
+type ScrollWithContent = ScrollView & { getInnerViewRef?: () => View | null };
 
 const DAYS_AHEAD = 14;
 
@@ -143,7 +145,7 @@ export default function ShopPage() {
   // Where the steps below the services (or the booking being moved) start, and a step to scroll to once it is laid out.
   const stepY = useRef<Partial<Record<Step, number>>>({});
   const scrollAfterLayout = useRef<Step | null>(null);
-  const reviewsY = useRef<number | null>(null);
+  const reviewsRef = useRef<View>(null);
 
   useEffect(() => {
     if (waitForAuth) return;
@@ -257,6 +259,18 @@ export default function ShopPage() {
     if (!target || stepY.current[target] === undefined) return;
     if (!slotsLoading) scrollAfterLayout.current = null;
     scrollToStep(target);
+  }
+
+  // Measured on the tap rather than kept from onLayout: on the web onLayout only follows a
+  // view's size, so it misses the reviews moving down as the steps above them open.
+  function scrollToReviews() {
+    // Asked for now, so it isn't pulled back to a step whose free times are still coming in.
+    scrollAfterLayout.current = null;
+    const content = (scrollRef.current as ScrollWithContent | null)?.getInnerViewRef?.();
+    if (!content) return;
+    reviewsRef.current?.measureLayout(content, (_x, y) =>
+      scrollRef.current?.scrollTo({ y: Math.max(0, y - Spacing.lg), animated: true }),
+    );
   }
 
   // Changing service, barber or day clears the picked time, and any error about the last one.
@@ -648,9 +662,7 @@ export default function ShopPage() {
           <RatingSummary
             average={ratingAverage(shop.rating_sum, shop.rating_count)}
             count={shop.rating_count}
-            onPress={() => {
-              if (reviewsY.current != null) scrollRef.current?.scrollTo({ y: Math.max(0, reviewsY.current - Spacing.lg) });
-            }}
+            onPress={scrollToReviews}
           />
         )}
         {openNow ? (
@@ -822,7 +834,7 @@ export default function ShopPage() {
 
       {/* Below the steps, so choosing a time is as quick as ever; a booking being moved needs none of it. */}
       {moving ? null : (
-        <ShopReviews shop={shop} now={now} onLayout={(e) => (reviewsY.current = e.nativeEvent.layout.y)} />
+        <ShopReviews shop={shop} now={now} ref={reviewsRef} />
       )}
 
       {week.some(Boolean) ? (

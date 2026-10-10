@@ -839,17 +839,21 @@ export const ms: Record<string, string> = {
   'Your rating': 'Penilaian anda',
   'Your rating: {stars}': 'Penilaian anda: {stars}',
   'Comment (optional)': 'Ulasan (pilihan)',
-  'Shown on the shop’s page with your first name.': 'Dipaparkan di halaman kedai dengan nama pertama anda.',
+  'Shown on the shop’s page as “{name}”.': 'Dipaparkan di halaman kedai sebagai “{name}”.',
+  'Change name': 'Ubah nama',
+  'Name on your review': 'Nama pada ulasan anda',
+  'Shown on the shop’s page. A first name or nickname is enough.':
+    'Dipaparkan di halaman kedai. Nama pertama atau nama panggilan pun cukup.',
   'What did you like? What could be better?': 'Apa yang anda suka? Apa yang boleh diperbaiki?',
   Send: 'Hantar',
   'Thanks! Your rating is saved.': 'Terima kasih! Penilaian anda disimpan.',
-  'You can change it until {day}.': 'Anda boleh mengubahnya sehingga {day}.',
+  'You can change it until {day} at {time}.': 'Anda boleh mengubahnya sehingga {day} jam {time}.',
   'Change your rating for {day}': 'Ubah penilaian anda untuk {day}',
   'See what customers say about their cuts.': 'Lihat apa kata pelanggan tentang potongan mereka.',
   'No reviews yet': 'Belum ada ulasan',
   'Couldn’t load your reviews': 'Tidak dapat memuatkan ulasan anda',
-  'Customers can rate a cut for 14 days once you mark it done on the Bookings tab.':
-    'Pelanggan boleh menilai potongan selama 14 hari selepas anda menandanya Selesai di tab Tempahan.',
+  'Customers can rate a cut once you mark it as Done on the Bookings tab, up to 14 days after the cut. Mark cuts Done on the day.':
+    'Pelanggan boleh menilai potongan selepas anda menandanya Selesai di tab Tempahan, sehingga 14 hari selepas potongan itu. Tandakan Selesai pada hari yang sama.',
   'Reply to say thanks, or to put right what went wrong. Replies show on your shop’s page.':
     'Balas untuk berterima kasih, atau untuk membetulkan apa yang tidak kena. Balasan dipaparkan di halaman kedai anda.',
   Reply: 'Balas',
