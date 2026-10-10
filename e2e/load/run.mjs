@@ -123,6 +123,8 @@ const SCENARIOS = {
           .select('id, barbers!inner(shop_id)', { count: 'exact', head: true })
           .eq('barbers.shop_id', shopId),
       ),
+      // The Bookings tab's number, asked every minute: as a phone that has never looked, the most to count.
+      must(c.rpc('shop_changes', { p_since: null, p_limit: 5 })),
     ]);
   },
   'Book a cut': async () => {

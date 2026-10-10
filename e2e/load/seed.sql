@@ -47,9 +47,11 @@ from generate_series(1, :shops) i, generate_series(1, 3) j, generate_series(1, 6
 
 \echo › bookings (a few minutes)
 -- Ten 30-minute cuts a day per chair, 45 minutes apart, Monday to Saturday.
--- History is mostly done; the coming month is about 60% full.
+-- History is mostly done; the coming month is about 60% full. Customers
+-- booked each one online at least three days ahead, the coming ones at some
+-- point in the last fortnight, so every shop's Bookings tab has news.
 insert into public.bookings (shop_id, barber_id, service_id, customer_id, service_name, price,
-                             starts_at, ends_at, status, created_at)
+                             starts_at, ends_at, status, created_at, customer_changed_at, customer_change)
 select md5('shop' || i)::uuid, md5('barber' || i || '-' || j)::uuid, md5('service' || i || '-1')::uuid,
        md5('customer' || (1 + floor(random() * :customers))::int)::uuid,
        'Haircut', 20, t, t + interval '30 minutes',
@@ -57,7 +59,9 @@ select md5('shop' || i)::uuid, md5('barber' || i || '-' || j)::uuid, md5('servic
              else (array['completed', 'completed', 'completed', 'completed', 'completed', 'completed',
                          'completed', 'completed', 'no_show', 'cancelled'])[1 + floor(random() * 10)::int] end
        )::public.booking_status,
-       t - interval '3 days'
+       t - interval '3 days',
+       least(t - interval '3 days', now() - random() * interval '14 days'),
+       'booked'
 from generate_series(1, :shops) i,
      generate_series(1, 3) j,
      generate_series(-90, 30) d,

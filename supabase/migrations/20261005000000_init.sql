@@ -1530,12 +1530,13 @@ begin
       'count', (select count(*) from changed),
       'latest', (select max(customer_changed_at) from changed),
       'changes', coalesce((
-        -- A deleted account's name is gone; delete_my_account leaves 'Deleted account'.
+        -- Names one lookup each, however few the planner expects. A deleted
+        -- account's name is gone; delete_my_account leaves 'Deleted account'.
         select jsonb_agg(jsonb_build_object(
                  'booking_id', l.id,
                  'barber_id', l.barber_id,
-                 'barber_name', br.name,
-                 'customer_name', coalesce(p.full_name, l.guest_name),
+                 'barber_name', (select br.name from barbers br where br.id = l.barber_id),
+                 'customer_name', coalesce((select p.full_name from profiles p where p.id = l.customer_id), l.guest_name),
                  'service_name', l.service_name,
                  'starts_at', l.starts_at,
                  'change', l.customer_change,
@@ -1548,8 +1549,6 @@ begin
                  )
                ) order by l.customer_changed_at desc, l.id)
         from latest l
-        join barbers br on br.id = l.barber_id
-        left join profiles p on p.id = l.customer_id
       ), '[]'::jsonb)
     )
   );
