@@ -75,6 +75,11 @@ create table public.shops (
   trial_ends_at timestamptz not null default now() + interval '30 days',
   subscription_status text not null default 'trialing'
     check (subscription_status in ('trialing', 'active', 'past_due', 'cancelled')),
+  -- How many reviews the shop has and their stars added up, kept by the
+  -- reviews_count trigger, so shop lists never add up reviews per row.
+  -- Owners can't write them (see the grants below).
+  rating_count int not null default 0,
+  rating_sum int not null default 0,
   created_at timestamptz not null default now()
 );
 
@@ -225,6 +230,57 @@ create table public.shop_closures (
   primary key (shop_id, day)
 );
 
+-- Reviews: one per booking, by the customer who had the cut, with the
+-- shop's reply. Written only by rate_booking and reply_to_review. The
+-- reviewer's first name is copied in when they rate, so a shop's page
+-- shows it without reading their profile (and never their surname or
+-- number). updated_at is when the customer last changed their rating.
+create table public.reviews (
+  booking_id uuid primary key references public.bookings (id) on delete cascade,
+  shop_id uuid not null references public.shops (id) on delete cascade,
+  barber_id uuid not null references public.barbers (id),
+  customer_id uuid not null references public.profiles (id) on delete cascade,
+  rating smallint not null check (rating between 1 and 5),
+  comment text check (length(comment) <= 280),
+  first_name text not null check (length(first_name) <= 40),
+  reply text check (length(reply) <= 280),
+  replied_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check ((reply is null) = (replied_at is null))
+);
+-- A shop's newest reviews, a page at a time, and its newest with a comment
+-- (My shop's card), each one index lookup however many it has.
+create index reviews_shop_created_idx on public.reviews (shop_id, created_at desc, booking_id);
+create index reviews_shop_commented_idx on public.reviews (shop_id, created_at desc) where comment is not null;
+-- So deleting an account finds its reviews without reading everyone's.
+create index reviews_customer_idx on public.reviews (customer_id);
+
+-- Keeps shops.rating_count and rating_sum in step with the shop's reviews.
+-- Runs as the table's owner, since nobody else may write those columns.
+create function public.reviews_count()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    update shops set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.shop_id;
+  elsif tg_op = 'DELETE' then
+    update shops set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.shop_id;
+  elsif new.rating <> old.rating then
+    update shops set rating_sum = rating_sum - old.rating + new.rating where id = new.shop_id;
+  end if;
+  return null;
+end;
+$$;
+revoke execute on function public.reviews_count() from public, anon, authenticated;
+
+create trigger reviews_count
+  after insert or delete or update of rating on public.reviews
+  for each row execute function public.reviews_count();
+
 -- Row level security --------------------------------------------------------
 
 alter table public.profiles enable row level security;
@@ -235,6 +291,7 @@ alter table public.working_hours enable row level security;
 alter table public.bookings enable row level security;
 -- No policies: read and written only through the functions below.
 alter table public.shop_closures enable row level security;
+alter table public.reviews enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -288,7 +345,16 @@ create policy "owners manage hours" on public.working_hours
 create policy "customers and shop owners read bookings" on public.bookings
   for select using (customer_id = (select auth.uid()) or shop_id = (select public.my_shop_id()));
 
--- Users can't change their own role or billing fields from the app.
+-- Anyone reads the reviews of a live shop, and its owner all of theirs (the
+-- shops policy decides inside the subquery). Reviewers always see their own.
+-- A scalar subquery rather than exists: Postgres turned exists into a scan
+-- of every shop on each request, where this looks up the one shop per row.
+create policy "read reviews of visible shops, and your own" on public.reviews
+  for select using (
+    coalesce((select true from public.shops s where s.id = shop_id), false) or customer_id = (select auth.uid())
+  );
+
+-- Users can't change their own role, billing fields or review counts from the app.
 revoke update on public.profiles from anon, authenticated;
 grant update (full_name, phone) on public.profiles to authenticated;
 revoke insert, update on public.shops from anon, authenticated;
@@ -298,6 +364,12 @@ grant update (name, slug, about, address, area, phone, instagram, is_published)
   on public.shops to authenticated;
 revoke insert, update, delete on public.bookings from anon, authenticated;
 revoke insert, update, delete on public.shop_closures from anon, authenticated;
+-- Reviews are written through rate_booking and reply_to_review, and read
+-- without who wrote them: an account id would tie one person's reviews
+-- together across shops.
+revoke all on public.reviews from anon, authenticated;
+grant select (booking_id, shop_id, barber_id, rating, comment, first_name, reply, replied_at, created_at, updated_at)
+  on public.reviews to anon, authenticated;
 
 -- Finding a barber ----------------------------------------------------------
 
@@ -441,8 +513,10 @@ revoke execute on function public.shop_next_free(uuid) from public, anon, authen
 -- the search, a page at a time, with each shop's lowest price, number of
 -- chairs, today's hours (first barber in to last one out, in the shop's
 -- time zone; breaks and blocked time are not counted, and both are null
--- when nobody works today) and its next free time. Sending every shop with
--- all its services and barbers came to 570 KB for 1,000 shops (e2e/load).
+-- when nobody works today), its next free time, and how many reviews it
+-- has with their average to one decimal (null without any). Sending every
+-- shop with all its services and barbers came to 570 KB for 1,000 shops
+-- (e2e/load).
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
@@ -460,7 +534,9 @@ returns table (
   barber_count int,
   opens_today time,
   closes_today time,
-  next_free_at timestamptz
+  next_free_at timestamptz,
+  rating_count int,
+  rating_avg numeric
 )
 language sql
 stable
@@ -470,9 +546,10 @@ as $$
   -- The page is picked first, so today's hours and the next free time are
   -- only worked out for the shops sent back.
   select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
-         h.opens_today, h.closes_today, public.shop_next_free(p.id)
+         h.opens_today, h.closes_today, public.shop_next_free(p.id),
+         p.rating_count, round(p.rating_sum::numeric / nullif(p.rating_count, 0), 1)
   from (
-    select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone,
+    select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone, s.rating_count, s.rating_sum,
            (select min(v.price) from services v where v.shop_id = s.id and v.is_active) as from_price,
            (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active) as barber_count
     from shops s
@@ -1460,7 +1537,8 @@ $$;
 -- of bookings with shops(...) lost the shop's name, address and phone the
 -- moment it paused: the booking still stood, but the customer no longer knew
 -- where to go or how to reach the shop. is_live says whether it still takes
--- online bookings, so the app can hide Change time and say why.
+-- online bookings, so the app can hide Change time and say why. review is
+-- the customer's rating of that cut and the shop's reply, or null.
 create function public.my_bookings(p_limit int default 100)
 returns jsonb
 language sql
@@ -1475,14 +1553,103 @@ as $$
              'shops', jsonb_build_object(
                'name', s.name, 'slug', s.slug, 'address', s.address, 'area', s.area,
                'phone', s.phone, 'time_zone', s.time_zone, 'is_live', public.shop_is_live(s)),
-             'barbers', jsonb_build_object('name', br.name)) as item
+             'barbers', jsonb_build_object('name', br.name),
+             'review', case when r.booking_id is not null then jsonb_build_object(
+               'rating', r.rating, 'comment', r.comment, 'reply', r.reply, 'replied_at', r.replied_at,
+               'created_at', r.created_at, 'updated_at', r.updated_at) end) as item
     from bookings b
     join shops s on s.id = b.shop_id
     join barbers br on br.id = b.barber_id
+    left join reviews r on r.booking_id = b.id
     where b.customer_id = auth.uid()
     order by b.starts_at desc, b.id
     limit least(greatest(coalesce(p_limit, 100), 1), 200)
   ) x;
+$$;
+
+-- Reviews ----------------------------------------------------------------------
+
+-- The booking's own customer rates their cut, 1 to 5 stars with an optional
+-- comment, once the shop has marked it done and for 14 days after it started
+-- (src/lib/reviews.ts shows the same window). Rating again in that time
+-- changes the same review. Owners can't rate their own shop.
+create function public.rate_booking(p_booking_id uuid, p_rating int, p_comment text default null)
+returns public.reviews
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_booking bookings;
+  v_comment text := nullif(btrim(p_comment, E' \t\r\n'), '');
+  v_words text[];
+  v_review reviews;
+begin
+  select * into v_booking from bookings where id = p_booking_id;
+  if not found or v_booking.customer_id is distinct from auth.uid() then
+    raise exception 'Booking not found.' using errcode = 'P0002';
+  end if;
+  if public.owns_shop(v_booking.shop_id) then
+    raise exception 'You can''t rate your own shop.' using errcode = '42501';
+  end if;
+  if v_booking.status <> 'completed' or now() >= v_booking.starts_at + interval '14 days' then
+    raise exception 'You can rate a cut for 14 days, once the shop marks it done.' using errcode = '42501';
+  end if;
+  if p_rating is null or p_rating not between 1 and 5 then
+    raise exception 'Pick from 1 to 5 stars.' using errcode = '22023';
+  end if;
+  if length(v_comment) > 280 then
+    raise exception 'Please keep your comment under 280 characters.' using errcode = '22001';
+  end if;
+
+  -- The name they go by, for a public page: the first word, or the next one
+  -- after Muhammad or Mohd ("Mohd Hakim bin Ali" is Hakim). Never a surname.
+  -- src/lib/reviews.ts (firstName) does the same for the demo.
+  select regexp_split_to_array(btrim(full_name, E' \t\r\n'), '\s+') into v_words
+  from profiles where id = auth.uid();
+  if lower(rtrim(v_words[1], '.')) in ('muhammad', 'muhamad', 'mohammad', 'mohamad', 'mohammed', 'mohamed',
+                                       'mohd', 'muhd', 'mhd', 'md')
+     and coalesce(v_words[2], '') <> '' then
+    v_words := v_words[2:];
+  end if;
+
+  insert into reviews (booking_id, shop_id, barber_id, customer_id, rating, comment, first_name)
+  values (v_booking.id, v_booking.shop_id, v_booking.barber_id, v_booking.customer_id, p_rating, v_comment,
+          coalesce(left(nullif(v_words[1], ''), 40), 'Customer'))
+  on conflict (booking_id) do update set
+    rating = excluded.rating,
+    comment = excluded.comment,
+    first_name = excluded.first_name,
+    updated_at = now()
+  returning * into v_review;
+  return v_review;
+end;
+$$;
+
+-- The shop's owner replies under a review, or changes their reply. An empty
+-- reply takes it away.
+create function public.reply_to_review(p_booking_id uuid, p_reply text)
+returns public.reviews
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_reply text := nullif(btrim(p_reply, E' \t\r\n'), '');
+  v_review reviews;
+begin
+  select * into v_review from reviews where booking_id = p_booking_id;
+  if not found or not public.owns_shop(v_review.shop_id) then
+    raise exception 'Review not found.' using errcode = 'P0002';
+  end if;
+  if length(v_reply) > 280 then
+    raise exception 'Please keep your reply under 280 characters.' using errcode = '22001';
+  end if;
+  update reviews set reply = v_reply, replied_at = case when v_reply is not null then now() end
+  where booking_id = p_booking_id
+  returning * into v_review;
+  return v_review;
+end;
 $$;
 
 -- People can delete their own account (the app stores require it).
@@ -1559,5 +1726,9 @@ revoke execute on function public.shop_summary(date, date) from public, anon;
 grant execute on function public.shop_summary(date, date) to authenticated;
 revoke execute on function public.shop_customers(text, int, int) from public, anon;
 grant execute on function public.shop_customers(text, int, int) to authenticated;
+revoke execute on function public.rate_booking(uuid, int, text) from public, anon;
+grant execute on function public.rate_booking(uuid, int, text) to authenticated;
+revoke execute on function public.reply_to_review(uuid, text) from public, anon;
+grant execute on function public.reply_to_review(uuid, text) to authenticated;
 -- Booking links are opened by guests too.
 grant execute on function public.shop_public_status(text) to anon, authenticated;
