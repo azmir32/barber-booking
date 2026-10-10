@@ -73,6 +73,9 @@ export type Booking = {
   customer_note: string | null;
   /** When the shop last sent a WhatsApp reminder; cleared when the booking moves. */
   reminded_at: string | null;
+  /** When the customer last booked, moved or cancelled it themselves, and which; null for the shop's own. */
+  customer_changed_at: string | null;
+  customer_change: 'booked' | 'moved' | 'cancelled' | null;
   created_at: string;
 };
 

@@ -2,7 +2,8 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { DayPicker } from '@/components/day-picker';
@@ -16,8 +17,10 @@ import { WALK_IN } from '@/lib/customers';
 import { summarizeWeek } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
+import { ago, changeLine, changeTag, moreText, seenMark, type ShopChange, type ShopChanges } from '@/lib/news';
 import { whatsappUrl } from '@/lib/phone';
 import { canRemind, needsReminder, reminderMessage } from '@/lib/reminders';
+import { useShopNews } from '@/lib/shop-news';
 import { errorMessage, supabase } from '@/lib/supabase';
 import {
   addDays,
@@ -28,6 +31,7 @@ import {
   formatTime,
   formatTimeParts,
   localDateString,
+  noBreak,
   upcomingDays,
 } from '@/lib/time';
 import type { Barber, Booking, BookingStatus, WorkingHours } from '@/lib/types';
@@ -110,6 +114,16 @@ export default function BarberBookings() {
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const latest = useRef(0);
   const shopId = shop?.id;
+  // What customers changed since this phone last looked; the tab's badge counts the same.
+  const { news, seen, refresh: refreshNews, markSeen } = useShopNews();
+  const scroller = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  const insets = useSafeAreaInsets();
+  // A booking opened from that card, brought into view once its day is on screen.
+  const [focus, setFocus] = useState<{ id: string; day: string } | null>(null);
+  const focusPending = useRef(false);
+  const focusRef = useRef<View>(null);
+  const dayHeaderRef = useRef<View>(null);
 
   useEffect(() => {
     if (!shopId) return;
@@ -191,6 +205,15 @@ export default function BarberBookings() {
   useEffect(() => {
     loadRef.current = load;
   }, [load]);
+
+  useEffect(() => {
+    if (!focus || !focusPending.current || focus.day !== day || loadedDay !== day) return;
+    focusPending.current = false;
+    // The card itself, or the day's heading when the card is folded away or no longer there.
+    (focusRef.current ?? dayHeaderRef.current)?.measureInWindow((_x, y) =>
+      scroller.current?.scrollTo({ y: Math.max(0, scrollY.current + y - insets.top - Spacing.lg), animated: true }),
+    );
+  }, [focus, day, loadedDay, insets.top]);
 
   useFocusEffect(
     useCallback(() => {
@@ -451,36 +474,70 @@ export default function BarberBookings() {
   // The floating button would cover the bar, and the button under the date already shows near the top.
   const showFab = canAdd && !notice && pastAddButton;
 
-  const renderOpen = (b: ShopBooking) =>
-    b.is_block ? (
-      <Card key={b.id} style={styles.compactCard}>
-        <BlockRow booking={b} tz={tz} onRemove={() => cancel(b)} />
-      </Card>
+  // Cards the customer booked or moved since this phone last looked say so until Got it.
+  const seenUpTo = seenMark(seen, news);
+  /** The booking opened from the news card, with a handle to bring it into view. */
+  const focusable = (b: ShopBooking, row: ReactNode) =>
+    b.id === focus?.id ? (
+      <View key={b.id} ref={focusRef}>
+        {row}
+      </View>
     ) : (
-      <LiveCard
-        key={b.id}
-        booking={b}
-        tz={tz}
-        now={now}
-        showBarber={showBarber}
-        away={awayIds.has(b.barber_id)}
-        onMark={(status) => mark([b], status)}
-        onCancel={() => cancel(b)}
-        onMove={() => router.push({ pathname: '/barber/move-booking', params: { id: b.id } })}
-        onWhatsApp={() => whatsapp(b)}
-        unsaved={unsaved[b.id] && awaitsReminder(b, now) ? unsaved[b.id] : undefined}
-        onRemind={() => remind(b)}
-        onSaveReminder={() => saveReminder(b, unsaved[b.id].startsAt)}
-        onUnremind={() => unremind(b)}
-      />
+      row
+    );
+
+  const renderOpen = (b: ShopBooking) =>
+    focusable(
+      b,
+      b.is_block ? (
+        <Card key={b.id} style={styles.compactCard}>
+          <BlockRow booking={b} tz={tz} onRemove={() => cancel(b)} />
+        </Card>
+      ) : (
+        <LiveCard
+          key={b.id}
+          booking={b}
+          tz={tz}
+          now={now}
+          showBarber={showBarber}
+          away={awayIds.has(b.barber_id)}
+          onMark={(status) => mark([b], status)}
+          onCancel={() => cancel(b)}
+          onMove={() => router.push({ pathname: '/barber/move-booking', params: { id: b.id } })}
+          onWhatsApp={() => whatsapp(b)}
+          unsaved={unsaved[b.id] && awaitsReminder(b, now) ? unsaved[b.id] : undefined}
+          onRemind={() => remind(b)}
+          onSaveReminder={() => saveReminder(b, unsaved[b.id].startsAt)}
+          onUnremind={() => unremind(b)}
+          tag={changeTag(b, seenUpTo)}
+        />
+      ),
     );
 
   const closeNotice = () => showNotice(null);
 
+  /** A line of the news card: its day, with that booking brought into view. */
+  const openChange = async (c: ShopChange) => {
+    // A phone showing one barber's bookings switches to that booking's barber, without saving it as its choice.
+    if (filterId && filterId !== c.barber_id) setBarberId(c.barber_id);
+    // Cancelled ones wait in the folded list at the bottom.
+    if (c.change === 'cancelled') setShowFinished(true);
+    const target = localDateString(new Date(c.starts_at), tz);
+    // The day on screen may have loaded before the customer booked.
+    if (target === day) await load();
+    focusPending.current = true;
+    setFocus({ id: c.booking_id, day: target });
+    pickDay(target);
+  };
+
   return (
     <Screen
-      onRefresh={load}
-      onScroll={(y) => setPastAddButton(y > addButtonBottom)}
+      onRefresh={() => Promise.all([load(), refreshNews()])}
+      scrollRef={scroller}
+      onScroll={(y) => {
+        scrollY.current = y;
+        setPastAddButton(y > addButtonBottom);
+      }}
       overlay={
         <View style={styles.overlay}>
           <View style={styles.overlayInner}>
@@ -516,6 +573,17 @@ export default function BarberBookings() {
         </View>
       }>
       <T variant="title">{t('Bookings')}</T>
+
+      {news && news.count > 0 ? (
+        <NewsCard
+          news={news}
+          tz={tz}
+          now={now}
+          showBarber={barbers.length > 1 || new Set(news.changes.map((c) => c.barber_id)).size > 1}
+          onOpen={openChange}
+          onDone={markSeen}
+        />
+      ) : null}
 
       {services !== null && !ready ? (
         <Card>
@@ -584,7 +652,7 @@ export default function BarberBookings() {
 
       {loaded ? <ErrorText message={error} /> : null}
 
-      <View style={styles.dayHeader}>
+      <View ref={dayHeaderRef} style={styles.dayHeader}>
         <T variant="heading">{formatDay(dayBounds(day, tz).start, tz)}</T>
         {loaded && counted.length ? <T variant="muted">{summary}</T> : null}
       </View>
@@ -679,14 +747,17 @@ export default function BarberBookings() {
                 b.is_block ? (
                   <BlockRow key={b.id} booking={b} tz={tz} />
                 ) : (
-                  <FinishedRow
-                    key={b.id}
-                    booking={b}
-                    tz={tz}
-                    showBarber={showBarber}
-                    onRestore={() => restore([b])}
-                    onWhatsApp={() => (b.status === 'cancelled' && cancelledHere.has(b.id) ? sorry(b) : whatsapp(b))}
-                  />
+                  focusable(
+                    b,
+                    <FinishedRow
+                      key={b.id}
+                      booking={b}
+                      tz={tz}
+                      showBarber={showBarber}
+                      onRestore={() => restore([b])}
+                      onWhatsApp={() => (b.status === 'cancelled' && cancelledHere.has(b.id) ? sorry(b) : whatsapp(b))}
+                    />,
+                  )
                 ),
               )}
             </Card>
@@ -757,6 +828,7 @@ function LiveCard({
   onRemind,
   onSaveReminder,
   onUnremind,
+  tag,
 }: {
   booking: ShopBooking;
   tz: string;
@@ -772,6 +844,8 @@ function LiveCard({
   onRemind: () => Promise<void>;
   onSaveReminder: () => Promise<void>;
   onUnremind: () => Promise<void>;
+  /** Booked or moved by the customer since this phone last looked. */
+  tag: ReturnType<typeof changeTag>;
 }) {
   const theme = useTheme();
   const [more, setMore] = useState(false);
@@ -812,8 +886,9 @@ function LiveCard({
           <T>
             {b.service_name} · {formatPrice(b.price)}
           </T>
-          {barber || awayNow || ended || byShop ? (
+          {tag || barber || awayNow || ended || byShop ? (
             <Row style={styles.badges}>
+              {tag ? <Badge label={tag.label} tone={tag.kind === 'new' ? 'success' : 'warning'} /> : null}
               {/* Even on that barber's own list, so nobody expects them in. */}
               {awayNow ? (
                 <Badge label={t('{name} is away', { name: b.barbers?.name ?? '' })} tone="warning" />
@@ -919,6 +994,69 @@ function LiveCard({
           <Button title={t('Cancel booking')} variant="danger" onPress={onCancel} />
         </Row>
       ) : null}
+    </Card>
+  );
+}
+
+/**
+ * What customers booked, moved or cancelled since this phone last looked,
+ * newest first, one sentence each. A line opens its day; Got it clears the
+ * card and the tab's number until something else changes.
+ */
+function NewsCard({
+  news,
+  tz,
+  now,
+  showBarber,
+  onOpen,
+  onDone,
+}: {
+  news: ShopChanges;
+  tz: string;
+  now: number;
+  showBarber: boolean;
+  onOpen: (c: ShopChange) => void;
+  onDone: () => void;
+}) {
+  const theme = useTheme();
+  const more = moreText(news.count, news.changes.length);
+  const look = {
+    booked: { icon: 'add-circle-outline', color: theme.success },
+    moved: { icon: 'swap-horizontal-outline', color: theme.warning },
+    cancelled: { icon: 'close-circle-outline', color: theme.danger },
+  } as const;
+  return (
+    <Card style={styles.compactCard}>
+      <T variant="heading" style={styles.newsHeading}>
+        {t('Since you last looked')}
+      </T>
+      {news.changes.map((c) => {
+        const text = changeLine(c, now, tz, showBarber);
+        const when = ago(c.changed_at, now);
+        return (
+          <Pressable
+            key={c.booking_id}
+            accessibilityRole="button"
+            accessibilityLabel={`${text}. ${when}`}
+            onPress={() => onOpen(c)}
+            style={({ pressed }) => [styles.newsLine, pressed && { opacity: 0.6 }]}>
+            <Ionicons name={look[c.change].icon} size={22} color={look[c.change].color} />
+            <T style={styles.newsText}>
+              {text}
+              <Text style={{ color: theme.textSecondary }}>{` · ${noBreak(when)}`}</Text>
+            </T>
+            <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
+          </Pressable>
+        );
+      })}
+      <View style={styles.newsFooter}>
+        {more ? (
+          <T variant="muted" style={styles.newsText}>
+            {more}
+          </T>
+        ) : null}
+        <Button title={t('Got it')} variant="secondary" onPress={onDone} />
+      </View>
     </Card>
   );
 }
@@ -1068,6 +1206,10 @@ const styles = StyleSheet.create({
   cardRow: { flexDirection: 'row', gap: Spacing.sm },
   compactRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48 },
   compactCard: { paddingVertical: Spacing.sm },
+  newsHeading: { paddingTop: Spacing.xs },
+  newsLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48 },
+  newsText: { flex: 1 },
+  newsFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: Spacing.sm },
   // Fixed, so the start times line up down the day.
   timeCol: { width: 92 },
   time: { fontSize: 16, lineHeight: 22 },

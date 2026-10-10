@@ -811,4 +811,33 @@ export const ms: Record<string, string> = {
   'You have a shop, so this account stays a barber account.':
     'Anda mempunyai kedai, jadi akaun ini kekal sebagai akaun barber.',
   'You can go live once you subscribe.': 'Anda boleh buka tempahan selepas melanggan.',
+
+  // Round 8, what customers changed since the barber last looked (barber/(tabs)/_layout.tsx,
+  // barber/(tabs)/index.tsx, lib/news.ts)
+  '1 change since you last looked': '1 perubahan sejak kali terakhir anda lihat',
+  '{count} changes since you last looked': '{count} perubahan sejak kali terakhir anda lihat',
+  'Since you last looked': 'Sejak kali terakhir anda lihat',
+  'Got it': 'Faham',
+  New: 'Baharu',
+  Moved: 'Masa ditukar',
+  'Deleted account': 'Akaun dipadam',
+  'today at {time}': 'hari ini jam {time}',
+  'tomorrow at {time}': 'esok jam {time}',
+  'yesterday at {time}': 'semalam jam {time}',
+  '{day} at {time}': '{day} jam {time}',
+  '{name} booked {service} for {when}': '{name} menempah {service} untuk {when}',
+  '{name} booked {service} for {when} with {barber}': '{name} menempah {service} untuk {when} dengan {barber}',
+  '{name} moved to {when}': '{name} menukar masa ke {when}',
+  '{name} moved to {when} with {barber}': '{name} menukar masa ke {when} dengan {barber}',
+  '{name} cancelled {when}': '{name} membatalkan tempahan {when}',
+  '{name} cancelled {when} with {barber}': '{name} membatalkan tempahan {when} dengan {barber}',
+  '{name} cancelled {when}, so that chair is free': '{name} membatalkan tempahan {when}, jadi kerusi itu kosong',
+  '{name} cancelled {when} with {barber}, so that chair is free':
+    '{name} membatalkan tempahan {when} dengan {barber}, jadi kerusi itu kosong',
+  'Just now': 'Baru tadi',
+  '{count} min ago': '{count} min lalu',
+  '{count} hr ago': '{count} jam lalu',
+  '1 day ago': '1 hari lalu',
+  '{count} days ago': '{count} hari lalu',
+  'And {count} more': 'Dan {count} lagi',
 };
