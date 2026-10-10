@@ -255,7 +255,7 @@ test('a customer books, sees and cancels, and the same time cannot be taken twic
   assert.equal(retry.error, null);
 });
 
-test('customers move their own booking to another free time, and nobody else can', async () => {
+test('customers (and their shop) move a booking to another free time, and nobody else can', async () => {
   const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
   const shop = await shopBySlug(hakim, 'gunting-pak-mat');
   const { data: services } = await hakim.from('services').select('*').eq('shop_id', shop.id).order('sort_order');
@@ -330,8 +330,16 @@ test('customers move their own booking to another free time, and nobody else can
   assert.equal((await move(ravi, { p_starts_at: at('09:00') })).error?.message, 'Booking not found.');
   assert.equal((await move(client(), { p_starts_at: at('09:00') })).error?.code, '42501');
 
-  // Only Hakim moves it: not the shop, and never blocked time.
-  assert.equal((await move(owner, { p_starts_at: at('10:00') })).error?.message, 'Booking not found.');
+  // The shop can move it too (Hakim called to change it), and it stays Hakim's; so can a walk-in.
+  // Never blocked time.
+  const byShop = await move(owner, { p_starts_at: at('10:00'), p_barber_id: mat.id });
+  assert.equal(byShop.error, null);
+  assert.equal(byShop.data.customer_id, booked.data.customer_id);
+  assert.equal(byShop.data.barber_id, mat.id);
+  assert.equal(Date.parse(byShop.data.starts_at), Date.parse(at('10:00')));
+  const walkIn = await owner.rpc('reschedule_booking', { p_booking_id: guest.data.id, p_starts_at: at('11:30') });
+  assert.equal(walkIn.error, null);
+  assert.equal(walkIn.data.guest_name, 'Pak Long');
   const blockMove = await owner.rpc('reschedule_booking', { p_booking_id: block.data.id, p_starts_at: at('15:00') });
   assert.equal(blockMove.error?.message, 'Booking not found.');
   const back = await move(hakim, { p_starts_at: at('10:00'), p_barber_id: mat.id });
@@ -599,6 +607,12 @@ test('a new barber signs up, sets up a shop and goes live', async () => {
     [1, 2, 3, 4, 5, 6].map((weekday) => ({ barber_id: barber.data.id, weekday, opens_at: '10:00', closes_at: '20:00' })),
   );
   assert.equal(hours.error, null);
+  // A barber added by mistake is removed, hours and all, while nobody has booked them.
+  const typo = await c.from('barbers').insert({ shop_id: created.data.id, name: 'Zak', sort_order: 1 }).select().single();
+  await c.from('working_hours').insert({ barber_id: typo.data.id, weekday: 1, opens_at: '10:00', closes_at: '20:00' });
+  assert.equal((await c.from('barbers').delete().eq('id', typo.data.id)).error, null);
+  assert.deepEqual((await c.from('barbers').select('name').eq('shop_id', created.data.id)).data, [{ name: 'Zack' }]);
+  assert.equal((await c.from('working_hours').select('id').eq('barber_id', typo.data.id)).data?.length, 0);
   const service = await c.from('services').insert({ shop_id: created.data.id, name: 'Haircut', duration_min: 30, price: 20, sort_order: 0 });
   assert.equal(service.error, null);
 
@@ -768,6 +782,9 @@ test('ids stay unique and rows that others point at keep theirs', async () => {
   const myChair = tables().barbers.find((b) => b.shop_id === mine.id)!;
   const moved = await ali.from('barbers').update({ id: '00000000-0000-4000-8000-000000000999' }).eq('id', myChair.id);
   assert.equal(moved.error?.code, '23503');
+  // A barber with bookings stays (Remove on the Barbers tab says so), so past bookings keep their barber.
+  const removed = await ali.from('barbers').delete().eq('id', myChair.id);
+  assert.equal(removed.error?.code, '23503');
 });
 
 test('a barber closes the shop for Hari Raya, customers see it, and it reopens', async () => {

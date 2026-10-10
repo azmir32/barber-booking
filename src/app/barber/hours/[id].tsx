@@ -1,10 +1,12 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
+import { usePreventRemove } from 'expo-router/react-navigation';
+import { useEffect, useRef, useState } from 'react';
+import { ScrollView, View } from 'react-native';
 
 import { TimeField } from '@/components/time-field';
 import { Button, Chip, ErrorText, Field, Loading, Row, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -20,13 +22,22 @@ const weekFrom = (hours: WorkingHours[]) =>
 export default function Hours() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { shop } = useMyShop();
+  const navigation = useNavigation();
   const shopId = shop?.id;
   const [name, setName] = useState('');
   const [week, setWeek] = useState<DayPlan[] | null>(null);
+  // As loaded, so leaving with changes asks first.
+  const [saved, setSaved] = useState('');
   // The shop's other barbers with hours set, to copy from.
   const [others, setOthers] = useState<BarberWithHours[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What is wrong with each day, by weekday, shown under that day's times.
+  const [dayErrors, setDayErrors] = useState<Record<number, string>>({});
+  const scroll = useRef<ScrollView>(null);
+  const dayY = useRef<Record<number, number>>({});
+  // Set once saved, so going back doesn't ask about changes that are already kept.
+  const leaving = useRef(false);
 
   useEffect(() => {
     if (!shopId) return;
@@ -41,20 +52,44 @@ export default function Hours() {
       const barbers = (data ?? []) as BarberWithHours[];
       const barber = barbers.find((b) => b.id === id);
       if (!barber) return setError(t('Barber not found.'));
+      const loaded = weekFrom(barber.working_hours ?? []);
       setName(barber.name);
-      setWeek(weekFrom(barber.working_hours ?? []));
+      setWeek(loaded);
+      setSaved(JSON.stringify([barber.name, loaded]));
       setOthers(barbers.filter((b) => b.id !== id && b.working_hours?.length));
     })();
   }, [id, shopId]);
 
+  const dirty = week !== null && JSON.stringify([name, week]) !== saved;
+
+  // The header's back arrow, Android's back button or Cancel: changes are only lost on purpose.
+  usePreventRemove(dirty, ({ data }) => {
+    if (leaving.current) return navigation.dispatch(data.action);
+    confirmAction(
+      t('Discard changes?'),
+      t('Your changes to {name}’s hours are not saved.', { name: name.trim() || t('this barber') }),
+      t('Discard'),
+      t('Keep editing'),
+    ).then((ok) => {
+      if (ok) navigation.dispatch(data.action);
+    });
+  });
+
   function update(weekday: number, patch: Partial<DayPlan>) {
     setWeek((w) => w && w.map((d, i) => (i === weekday ? { ...d, ...patch } : d)));
+    // The day's message goes once it has been changed.
+    setDayErrors((all) => {
+      const next = { ...all };
+      delete next[weekday];
+      return next;
+    });
   }
 
   // Most barbers keep the same hours all week: copy Monday's times to every
   // open day. A day's own break (like Friday prayers) is never overwritten;
   // Monday's break only goes to days without one.
   function copyMondayToAll() {
+    setDayErrors({});
     setWeek(
       (w) =>
         w &&
@@ -72,10 +107,18 @@ export default function Hours() {
   async function save() {
     if (!week) return;
     const rows = [];
+    const problems: Record<number, string> = {};
     for (const weekday of WEEK_ORDER) {
       const ranges = rangesFromPlan(week[weekday]);
-      if (typeof ranges === 'string') return setError(`${t(WEEKDAYS[weekday])}: ${ranges}`);
-      rows.push(...ranges.map((r) => ({ weekday, ...r })));
+      if (typeof ranges === 'string') problems[weekday] = ranges;
+      else rows.push(...ranges.map((r) => ({ weekday, ...r })));
+    }
+    setDayErrors(problems);
+    const first = WEEK_ORDER.find((d) => d in problems);
+    if (first !== undefined) {
+      // Up to the first day with a problem, which says what it is.
+      scroll.current?.scrollTo({ y: Math.max(0, (dayY.current[first] ?? 0) - Spacing.lg), animated: true });
+      return setError(t('Check {day}’s hours, marked in red.', { day: t(WEEKDAYS[first]) }));
     }
     setBusy(true);
     setError(null);
@@ -84,13 +127,26 @@ export default function Hours() {
     setBusy(false);
     const failed = nameUpdate.error || hours.error;
     if (failed) return setError(errorMessage(failed));
+    leaving.current = true;
     router.back();
   }
 
   if (!week) return error ? <Screen><ErrorText message={error} /></Screen> : <Loading />;
 
   return (
-    <Screen edges={[]}>
+    <Screen
+      edges={[]}
+      scrollRef={scroll}
+      // Always in reach, however far down the week the barber has scrolled.
+      footer={
+        <>
+          <ErrorText message={error} />
+          <Row style={{ flexWrap: 'nowrap' }}>
+            <Button title={t('Cancel')} variant="ghost" onPress={() => router.back()} />
+            <Button title={t('Save hours')} onPress={save} loading={busy} disabled={!name.trim()} style={{ flex: 1 }} />
+          </Row>
+        </>
+      }>
       <Field label={t('Barber name')} value={name} onChangeText={setName} maxLength={40} />
       {others.length ? (
         // A new barber usually works the same hours as someone already set up.
@@ -102,7 +158,10 @@ export default function Hours() {
                 key={b.id}
                 label={b.name}
                 accessibilityLabel={t('Copy hours from {name}', { name: b.name })}
-                onPress={() => setWeek(weekFrom(b.working_hours))}
+                onPress={() => {
+                  setDayErrors({});
+                  setWeek(weekFrom(b.working_hours));
+                }}
               />
             ))}
           </Row>
@@ -116,13 +175,24 @@ export default function Hours() {
       ) : null}
       {WEEK_ORDER.map((weekday) => {
         const d = week[weekday];
+        const dayName = t(WEEKDAYS[weekday]);
+        const problem = dayErrors[weekday];
+        // Which times the message is about: the break, or the day's own hours.
+        const breakProblem = Boolean(problem) && d.hasBreak && rangesFromPlan({ ...d, hasBreak: false }) !== problem;
         // Break times are picked from inside the day's hours, so the list is short.
         const withinDay = d.opens < d.closes ? { from: d.opens, to: d.closes } : {};
         return (
-          <View key={weekday} role="group" aria-label={t(WEEKDAYS[weekday])} style={{ gap: Spacing.sm }}>
+          <View
+            key={weekday}
+            role="group"
+            aria-label={dayName}
+            style={{ gap: Spacing.sm }}
+            onLayout={(e) => {
+              dayY.current[weekday] = e.nativeEvent.layout.y;
+            }}>
             <Row style={{ justifyContent: 'space-between' }}>
-              <T variant="label">{t(WEEKDAYS[weekday])}</T>
-              <Row role="radiogroup" accessibilityLabel={t(WEEKDAYS[weekday])}>
+              <T variant="label">{dayName}</T>
+              <Row role="radiogroup" accessibilityLabel={dayName}>
                 <Chip label={t('Open')} selected={d.open} onPress={() => update(weekday, { open: true })} />
                 <Chip label={t('Off')} selected={!d.open} onPress={() => update(weekday, { open: false })} />
               </Row>
@@ -130,10 +200,22 @@ export default function Hours() {
             {d.open ? (
               <Row style={{ flexWrap: 'nowrap' }}>
                 <View style={{ flex: 1 }}>
-                  <TimeField label={t('From')} value={d.opens} onChange={(v) => update(weekday, { opens: v })} />
+                  <TimeField
+                    label={t('From')}
+                    title={`${dayName} · ${t('From')}`}
+                    value={d.opens}
+                    error={Boolean(problem) && !breakProblem}
+                    onChange={(v) => update(weekday, { opens: v })}
+                  />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <TimeField label={t('To')} value={d.closes} onChange={(v) => update(weekday, { closes: v })} />
+                  <TimeField
+                    label={t('To')}
+                    title={`${dayName} · ${t('To')}`}
+                    value={d.closes}
+                    error={Boolean(problem) && !breakProblem}
+                    onChange={(v) => update(weekday, { closes: v })}
+                  />
                 </View>
               </Row>
             ) : null}
@@ -142,7 +224,9 @@ export default function Hours() {
                 <View style={{ flex: 1 }}>
                   <TimeField
                     label={t('Break from')}
+                    title={`${dayName} · ${t('Break from')}`}
                     value={d.breakFrom}
+                    error={breakProblem}
                     onChange={(v) => update(weekday, { breakFrom: v })}
                     {...withinDay}
                   />
@@ -150,13 +234,16 @@ export default function Hours() {
                 <View style={{ flex: 1 }}>
                   <TimeField
                     label={t('Break to')}
+                    title={`${dayName} · ${t('Break to')}`}
                     value={d.breakTo}
+                    error={breakProblem}
                     onChange={(v) => update(weekday, { breakTo: v })}
                     {...withinDay}
                   />
                 </View>
               </Row>
             ) : null}
+            <ErrorText message={problem ? `${dayName}: ${problem}` : null} />
             {d.open ? (
               <Button
                 title={
@@ -170,9 +257,6 @@ export default function Hours() {
           </View>
         );
       })}
-      <ErrorText message={error} />
-      <Button title={t('Save hours')} onPress={save} loading={busy} disabled={!name.trim()} />
-      <Button title={t('Cancel')} variant="ghost" onPress={() => router.back()} />
     </Screen>
   );
 }

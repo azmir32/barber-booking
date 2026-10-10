@@ -9,6 +9,7 @@ import {
   formatDuration,
   formatPrice,
   formatTime,
+  formatTimeParts,
   groupByPartOfDay,
   localClock,
   localDateString,
@@ -55,6 +56,7 @@ test('dayBounds gives the local midnight instants', () => {
 
 test('formatTime shows shop-local time', () => {
   assert.match(formatTime('2026-10-06T02:00:00Z'), /^10:00\s?am$/i);
+  assert.deepEqual(formatTimeParts('2026-10-06T04:30:00Z'), { clock: '12:30', period: 'pm' });
 });
 
 test('formatPrice, formatCount and formatDuration', () => {

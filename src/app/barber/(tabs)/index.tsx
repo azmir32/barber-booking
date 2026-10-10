@@ -1,8 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Linking, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { DayPicker } from '@/components/day-picker';
@@ -10,6 +10,7 @@ import { Badge, Button, Card, Chip, Empty, ErrorText, IconButton, Row, Screen, S
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
+import { dateRange } from '@/lib/closures';
 import { confirmAction } from '@/lib/confirm';
 import { WALK_IN } from '@/lib/customers';
 import { summarizeWeek } from '@/lib/hours';
@@ -25,6 +26,7 @@ import {
   formatDuration,
   formatPrice,
   formatTime,
+  formatTimeParts,
   localDateString,
   upcomingDays,
 } from '@/lib/time';
@@ -48,8 +50,11 @@ type Unsaved = { startsAt: string; reason: string };
 
 type BarberWithHours = Barber & { working_hours: WorkingHours[] };
 
-/** The bar at the bottom: what just happened and one thing to do about it (undo, or message the customer). */
-type Notice = { message: string; actionLabel: string; onAction: () => void };
+/**
+ * The bar at the bottom: what just happened and one thing to do about it (undo, or message the
+ * customer). A closable one stays until the barber acts on it or closes it.
+ */
+type Notice = { message: string; actionLabel: string; onAction: () => void; closable?: boolean };
 
 /** How long the bar stays up: long enough to notice a slip with wet hands. */
 const NOTICE_MS = 8000;
@@ -63,23 +68,45 @@ export default function BarberBookings() {
   const theme = useTheme();
   const now = useNow();
   const tz = shop!.time_zone;
+  // From the Barbers tab: one barber's bookings on a day ("See bookings" for a barber marked away).
+  const params = useLocalSearchParams<{ day?: string; barber?: string; at?: string }>();
   // Yesterday is included so last-minute no-shows can still be marked.
   const days = useMemo(() => upcomingDays(15, tz, new Date(), -1), [tz]);
-  const [day, setDay] = useState(days[1].date);
+  const [day, setDay] = useState(params.day ?? days[1].date);
   const [bookings, setBookings] = useState<ShopBooking[]>([]);
+  // The day `bookings` belong to. Until the day on screen has loaded, its list isn't shown,
+  // so the day before's cards never sit under the new date.
+  const [loadedDay, setLoadedDay] = useState<string | null>(null);
   const [tomorrow, setTomorrow] = useState<ToRemind[]>([]);
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
   const [services, setServices] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [barberId, setBarberId] = useState<string | null>(null);
+  const [barberId, setBarberId] = useState<string | null>(params.barber ?? null);
+  // Each "See bookings" tap carries a new `at`, so tapping it again goes back to that barber's day.
+  const [seenAt, setSeenAt] = useState(params.at);
+  if (params.at !== seenAt) {
+    setSeenAt(params.at);
+    if (params.day) setDay(params.day);
+    if (params.barber) setBarberId(params.barber);
+    setError(null);
+  }
   const [hoursChecked, setHoursChecked] = useState(false);
   const [hoursOpen, setHoursOpen] = useState(false);
   const [showFinished, setShowFinished] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [noticeHeight, setNoticeHeight] = useState(0);
+  // The floating add button only shows once the one under the date has scrolled away, and
+  // hides while the list scrolls down, so it doesn't sit on the card the barber is heading for.
+  const [addButtonBottom, setAddButtonBottom] = useState(0);
+  const [scroll, setScroll] = useState({ y: 0, up: false });
   // By booking. Reloads keep them, so the row still says so when the barber is back from WhatsApp.
   const [unsaved, setUnsaved] = useState<Record<string, Unsaved>>({});
-  // The shop closed for the day (Hari Raya, say), with the reason the owner gave.
-  const [closure, setClosure] = useState<{ reason: string | null } | null>(null);
+  // Bookings cancelled from this screen, whose WhatsApp says sorry rather than just hello.
+  const [cancelledHere, setCancelledHere] = useState<Set<string>>(() => new Set());
+  // Days on the strip the shop is closed (Hari Raya, say), with the reason the owner gave,
+  // and days every barber has off.
+  const [closures, setClosures] = useState<Record<string, string | null>>({});
+  const [allOff, setAllOff] = useState<Set<string>>(() => new Set());
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const latest = useRef(0);
   const shopId = shop?.id;
@@ -87,7 +114,8 @@ export default function BarberBookings() {
   useEffect(() => {
     if (!shopId) return;
     AsyncStorage.getItem(filterKey(shopId))
-      .then((saved) => setBarberId(saved || null))
+      // A barber picked on the Barbers tab meanwhile comes first.
+      .then((saved) => setBarberId((current) => current ?? (saved || null)))
       .catch(() => {});
     AsyncStorage.getItem(hoursCheckedKey(shopId))
       .then((saved) => setHoursChecked(saved === '1'))
@@ -104,6 +132,8 @@ export default function BarberBookings() {
     const today = localDateString(new Date(), tz);
     // On today, tomorrow's bookings nobody has reminded yet, for the card at the top.
     const next = day === today ? dayBounds(addDays(today, 1), tz) : null;
+    const first = days[0].date;
+    const last = days[days.length - 1].date;
     const [list, active, team, closed, unreminded] = await Promise.all([
       supabase
         .from('bookings')
@@ -114,7 +144,12 @@ export default function BarberBookings() {
         .order('starts_at'),
       supabase.from('services').select('id', { count: 'exact', head: true }).eq('shop_id', shop.id).eq('is_active', true),
       supabase.from('barbers').select('*, working_hours(*)').eq('shop_id', shop.id).order('sort_order').order('created_at'),
-      supabase.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: day, p_to: day }),
+      // The whole strip, so closed days say so before they are picked.
+      supabase.rpc('shop_closed_days', {
+        p_shop_id: shop.id,
+        p_from: day < first ? day : first,
+        p_to: day > last ? day : last,
+      }),
       next
         ? supabase
             .from('bookings')
@@ -137,17 +172,19 @@ export default function BarberBookings() {
     setError(null);
     const fresh = (list.data ?? []) as ShopBooking[];
     setBookings(fresh);
+    setLoadedDay(day);
     setServices(active.count ?? 0);
     if (!team.error) setBarbers((team.data ?? []) as BarberWithHours[]);
     if (!closed.error) {
-      const row = ((closed.data ?? []) as { reason: string | null; is_closure: boolean }[]).find((d) => d.is_closure);
-      setClosure(row ? { reason: row.reason } : null);
+      const rows = (closed.data ?? []) as { day: string; reason: string | null; is_closure: boolean }[];
+      setClosures(Object.fromEntries(rows.filter((d) => d.is_closure).map((d) => [d.day, d.reason])));
+      setAllOff(new Set(rows.filter((d) => !d.is_closure).map((d) => d.day)));
     }
     if (!unreminded) setTomorrow([]);
     // The client can't tell that the customer is one profile rather than a list.
     else if (!unreminded.error) setTomorrow((unreminded.data ?? []) as unknown as ToRemind[]);
     return fresh;
-  }, [shop, day, tz]);
+  }, [shop, day, tz, days]);
 
   // Reloads after a status change use the day on screen by then, not the day the button was tapped on.
   const loadRef = useRef(load);
@@ -222,6 +259,19 @@ export default function BarberBookings() {
     if (phone) openWhatsApp(phone, t('Hi {who}, this is {shop} about your {service} on {day} at {time}.', messageVars(b)));
   };
 
+  /** The shop had to cancel: sorry, and an offer of another time. */
+  const sorry = (b: ShopBooking) => {
+    const phone = phoneOf(b);
+    if (!phone) return;
+    openWhatsApp(
+      phone,
+      t(
+        'Hi {who}, sorry, {shop} has to cancel your {service} on {day} at {time}. Reply here and we will find you another time.',
+        messageVars(b),
+      ),
+    );
+  };
+
   /**
    * Records a reminder for the time the message named, so the other phones in
    * the shop see it. If that fails, the row says so and can save it again
@@ -291,26 +341,44 @@ export default function BarberBookings() {
     if (!ok) return;
     const [cancelled] = await setStatuses([b], 'cancelled');
     if (!cancelled || !phone) return;
-    // Tell the customer straight away, with a sorry and an offer of another time.
-    const sorry = () =>
-      openWhatsApp(
-        phone,
-        t(
-          'Hi {who}, sorry, {shop} has to cancel your {service} on {day} at {time}. Reply here and we will find you another time.',
-          messageVars(b),
-        ),
-      );
+    // The Cancelled row's WhatsApp says sorry too, for when the bar has gone.
+    setCancelledHere((all) => new Set(all).add(b.id));
     // Browsers block a new tab that isn't opened by a tap, and the cancel took a round trip,
-    // so on the web the barber taps once more in the bar.
+    // so on the web the barber taps once more in the bar, which waits for it.
     if (Platform.OS === 'web') {
-      showNotice({
-        message: t('Booking cancelled. Let {name} know.', { name: whoFor(b) }),
-        actionLabel: t('WhatsApp {name}', { name: whoFor(b) }),
-        onAction: sorry,
-      });
+      showNotice(
+        {
+          message: t('Booking cancelled. Let {name} know.', { name: whoFor(b) }),
+          actionLabel: t('Send WhatsApp'),
+          onAction: () => sorry(b),
+          closable: true,
+        },
+        true,
+      );
     } else {
-      sorry();
+      sorry(b);
     }
+  };
+
+  /** Shop closed this day by mistake, or plans changed: open it again for bookings. */
+  const reopen = async () => {
+    const range = dateRange(day, day);
+    const ok = await confirmAction(
+      t('Reopen {days}?', { days: range }),
+      t('Customers will be able to book again.'),
+      t('Reopen'),
+    );
+    if (!ok) return;
+    const { error: failed } = await supabase.rpc('reopen_shop_days', { p_from: day, p_days: 1 });
+    if (failed) return setError(errorMessage(failed));
+    await load();
+  };
+
+  /** Another day: any message on screen was about the day before. */
+  const pickDay = (next: string) => {
+    if (next === day) return;
+    setDay(next);
+    setError(null);
   };
 
   const pickBarber = (id: string | null) => {
@@ -323,8 +391,6 @@ export default function BarberBookings() {
     AsyncStorage.setItem(hoursCheckedKey(shop.id), '1').catch(() => {});
   };
 
-  const addBooking = () => router.push({ pathname: '/barber/new-booking', params: { day } });
-
   // Setup -------------------------------------------------------------------
   const activeBarbers = barbers.filter((b) => b.is_active);
   const hasHours = activeBarbers.some((b) => b.working_hours.length > 0);
@@ -333,13 +399,20 @@ export default function BarberBookings() {
   const ready = services !== null && services > 0 && activeBarbers.length > 0 && hasHours && shop.is_published;
 
   // The day's list ---------------------------------------------------------
-  // A saved choice for a barber who has left or is away shows everyone.
-  const filterId = activeBarbers.length > 1 && activeBarbers.some((b) => b.id === barberId) ? barberId : null;
+  const loaded = loadedDay === day;
   // A removed block is gone from the barber's point of view.
-  const kept = bookings.filter((b) => !(b.is_block && b.status === 'cancelled'));
+  const kept = loaded ? bookings.filter((b) => !(b.is_block && b.status === 'cancelled')) : [];
+  // A barber marked away keeps a chip on days they still have customers booked.
+  const awayIds = new Set(barbers.filter((b) => !b.is_active).map((b) => b.id));
+  const chipBarbers = barbers.filter(
+    (b) => b.is_active || kept.some((x) => x.barber_id === b.id && !x.is_block && x.status === 'confirmed'),
+  );
+  // A saved choice for a barber who has left, or is away with nobody booked, shows everyone.
+  const filterId = chipBarbers.length > 1 && chipBarbers.some((b) => b.id === barberId) ? barberId : null;
   const shown = filterId ? kept.filter((b) => b.barber_id === filterId) : kept;
   const showBarber = barbers.length > 1 && !filterId;
   const isToday = day === localDateString(new Date(now), tz);
+  const closure = loaded && day in closures ? { reason: closures[day] } : null;
   const toRemind = isToday
     ? tomorrow.filter((b) => (!filterId || b.barber_id === filterId) && needsReminder(b, phoneOf(b), now, tz)).length
     : 0;
@@ -367,6 +440,18 @@ export default function BarberBookings() {
     ...(completed.length ? [t('{money} done', { money: total(completed) })] : []),
   ].join(' · ');
 
+  // Nothing can be added to a day the shop is closed; reopening it comes first.
+  const canAdd = !closure;
+  // On the barber's own phone, the barber they show; with no services yet, only time can be blocked.
+  const addBooking = () =>
+    router.push({
+      pathname: '/barber/new-booking',
+      params: { day, barber: filterId ?? '', kind: services === 0 ? 'block' : 'booking' },
+    });
+  // The floating button would cover the bar, and the button under the date already shows near the top.
+  // Scrolling back up a little brings it from anywhere in a long day.
+  const showFab = canAdd && !notice && scroll.y > addButtonBottom && scroll.up;
+
   const renderOpen = (b: ShopBooking) =>
     b.is_block ? (
       <Card key={b.id} style={styles.compactCard}>
@@ -379,8 +464,10 @@ export default function BarberBookings() {
         tz={tz}
         now={now}
         showBarber={showBarber}
+        away={awayIds.has(b.barber_id)}
         onMark={(status) => mark([b], status)}
         onCancel={() => cancel(b)}
+        onMove={() => router.push({ pathname: '/barber/move-booking', params: { id: b.id } })}
         onWhatsApp={() => whatsapp(b)}
         unsaved={unsaved[b.id] && awaitsReminder(b, now) ? unsaved[b.id] : undefined}
         onRemind={() => remind(b)}
@@ -389,9 +476,12 @@ export default function BarberBookings() {
       />
     );
 
+  const closeNotice = () => showNotice(null);
+
   return (
     <Screen
       onRefresh={load}
+      onScroll={(y) => setScroll((was) => ({ y, up: y === was.y ? was.up : y < was.y }))}
       overlay={
         <View style={styles.overlay}>
           <View style={styles.overlayInner}>
@@ -399,22 +489,30 @@ export default function BarberBookings() {
               <View
                 role="status"
                 accessibilityLiveRegion="polite"
+                onLayout={(e) => setNoticeHeight(e.nativeEvent.layout.height)}
                 style={[styles.undoBar, { backgroundColor: theme.card, borderColor: theme.border }]}>
-                <T style={{ flex: 1 }}>{notice.message}</T>
-                <Button
-                  title={notice.actionLabel}
-                  variant="secondary"
-                  onPress={() => {
-                    showNotice(null);
-                    notice.onAction();
-                  }}
-                />
+                <T style={styles.noticeText}>{notice.message}</T>
+                <View style={styles.noticeActions}>
+                  <Button
+                    title={notice.actionLabel}
+                    variant="secondary"
+                    onPress={() => {
+                      closeNotice();
+                      notice.onAction();
+                    }}
+                  />
+                  {notice.closable ? (
+                    <IconButton icon="close" label={t('Close')} variant="ghost" onPress={closeNotice} />
+                  ) : null}
+                </View>
               </View>
             ) : null}
             {/* Adding a walk-in works from anywhere in a long day. */}
-            <View style={styles.fab}>
-              <IconButton icon="add" label={t('Add booking or block time')} variant="primary" onPress={addBooking} />
-            </View>
+            {showFab ? (
+              <View style={styles.fab}>
+                <IconButton icon="add" label={t('Add booking or block time')} variant="primary" onPress={addBooking} />
+              </View>
+            ) : null}
           </View>
         </View>
       }>
@@ -445,13 +543,25 @@ export default function BarberBookings() {
         </Card>
       ) : null}
 
-      <DayPicker days={days} selected={day} onSelect={setDay} />
+      <DayPicker
+        days={days}
+        selected={day}
+        onSelect={pickDay}
+        closed={new Set([...Object.keys(closures), ...allOff])}
+        pickClosed
+      />
 
-      {activeBarbers.length > 1 ? (
+      {chipBarbers.length > 1 ? (
         <Row role="radiogroup" accessibilityLabel={t('Show bookings for')}>
           <Chip label={t('Everyone')} selected={!filterId} onPress={() => pickBarber(null)} />
-          {activeBarbers.map((b) => (
-            <Chip key={b.id} label={b.name} selected={filterId === b.id} onPress={() => pickBarber(b.id)} />
+          {chipBarbers.map((b) => (
+            <Chip
+              key={b.id}
+              label={b.name}
+              sublabel={b.is_active ? undefined : t('Away')}
+              selected={filterId === b.id}
+              onPress={() => pickBarber(b.id)}
+            />
           ))}
         </Row>
       ) : null}
@@ -460,7 +570,7 @@ export default function BarberBookings() {
       {toRemind > 0 ? (
         <Card
           style={styles.compactCard}
-          onPress={() => setDay(addDays(day, 1))}
+          onPress={() => pickDay(addDays(day, 1))}
           accessibilityLabel={`${t('Remind tomorrow’s customers')}: ${t('{count} still to remind', { count: toRemind })}`}>
           <View style={styles.compactRow}>
             <Ionicons name="logo-whatsapp" size={22} color={theme.success} />
@@ -473,19 +583,51 @@ export default function BarberBookings() {
         </Card>
       ) : null}
 
-      <ErrorText message={error} />
+      {loaded ? <ErrorText message={error} /> : null}
 
       <View style={styles.dayHeader}>
         <T variant="heading">{formatDay(dayBounds(day, tz).start, tz)}</T>
-        {counted.length ? <T variant="muted">{summary}</T> : null}
+        {loaded && counted.length ? <T variant="muted">{summary}</T> : null}
       </View>
-      <Button title={t('+ Add booking or block time')} variant="secondary" onPress={addBooking} />
+      {canAdd ? (
+        <View onLayout={(e) => setAddButtonBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}>
+          <Button title={t('+ Add booking or block time')} variant="secondary" onPress={addBooking} />
+        </View>
+      ) : null}
 
-      {closure ? (
+      {!loaded ? (
+        error ? (
+          // This day never loaded, so there is nothing to show under its date but the reason and a retry.
+          <View style={styles.list}>
+            <ErrorText message={error} />
+            <Button
+              title={t('Try again')}
+              variant="secondary"
+              onPress={() => {
+                // Back to the spinner while it tries.
+                setError(null);
+                load();
+              }}
+            />
+          </View>
+        ) : (
+          <ActivityIndicator
+            color={theme.tint}
+            accessibilityLabel={t('Loading bookings…')}
+            style={styles.loading}
+          />
+        )
+      ) : closure ? (
         <Card>
           <T variant="heading">{t('Shop closed')}</T>
           {closure.reason ? <T>{closure.reason}</T> : null}
-          <T variant="small">{t('Customers can’t book this day. To open it again, go to My shop.')}</T>
+          <T variant="small">{t('Customers can’t book this day.')}</T>
+          <Button
+            title={t('Reopen')}
+            accessibilityLabel={t('Reopen {days}', { days: dateRange(day, day) })}
+            variant="secondary"
+            onPress={reopen}
+          />
         </Card>
       ) : shown.length === 0 ? (
         <Empty
@@ -544,7 +686,7 @@ export default function BarberBookings() {
                     tz={tz}
                     showBarber={showBarber}
                     onRestore={() => restore([b])}
-                    onWhatsApp={() => whatsapp(b)}
+                    onWhatsApp={() => (b.status === 'cancelled' && cancelledHere.has(b.id) ? sorry(b) : whatsapp(b))}
                   />
                 ),
               )}
@@ -553,8 +695,8 @@ export default function BarberBookings() {
         </View>
       ) : null}
 
-      {/* Room for the add button, so it never covers the last card's buttons. */}
-      <View style={styles.fabSpace} />
+      {/* Room for the add button and the bar, so neither covers the last card's buttons for good. */}
+      <View style={{ height: notice ? Math.max(48, noticeHeight) : 48 }} />
     </Screen>
   );
 }
@@ -580,20 +722,38 @@ const openWhatsApp = (phone: string, message: string) => Linking.openURL(whatsap
 const call = (phone: string) => Linking.openURL(`tel:${phone.replace(/[^\d+]/g, '')}`).catch(() => {});
 
 /**
+ * A start time in the time column, read as one ("10:30 am"). Malay's longer
+ * periods ("tengah hari") go on a line of their own under the clock, so the
+ * time never breaks in the middle and the column fits both languages.
+ */
+function StartTime({ at, tz, variant }: { at: string; tz: string; variant: 'heading' | 'label' }) {
+  const { clock, period } = formatTimeParts(at, tz);
+  const short = period.length <= 2;
+  return (
+    <T variant={variant} style={variant === 'heading' ? styles.time : undefined}>
+      {short ? `${clock} ${period}` : clock}
+      {short ? null : <Text style={styles.period}>{`\n${period}`}</Text>}
+    </T>
+  );
+}
+
+/**
  * A booking still to come or still to mark. The time sits on the left so a
- * column of cards reads like the day; Cancel and Call wait behind "more", away
- * from Done and No-show. The day before, Remind takes Done's place until
- * someone in the shop has sent one; other reminders, and taking one back,
- * wait behind "more".
+ * column of cards reads like the day; Change time, Cancel and Call wait behind
+ * "more", away from Done and No-show, with the whole note. The day before,
+ * Remind takes Done's place until someone in the shop has sent one; other
+ * reminders, and taking one back, wait behind "more".
  */
 function LiveCard({
   booking: b,
   tz,
   now,
   showBarber,
+  away,
   unsaved,
   onMark,
   onCancel,
+  onMove,
   onWhatsApp,
   onRemind,
   onSaveReminder,
@@ -603,9 +763,12 @@ function LiveCard({
   tz: string;
   now: number;
   showBarber: boolean;
+  /** The barber is marked away, so someone has to see to this customer. */
+  away: boolean;
   unsaved?: Unsaved;
   onMark: (status: 'completed' | 'no_show') => void;
   onCancel: () => void;
+  onMove: () => void;
   onWhatsApp: () => void;
   onRemind: () => Promise<void>;
   onSaveReminder: () => Promise<void>;
@@ -613,7 +776,9 @@ function LiveCard({
 }) {
   const theme = useTheme();
   const [more, setMore] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
   const [reminding, setReminding] = useState(false);
+  const wholeNote = more || noteOpen;
   const who = whoFor(b);
   const phone = phoneOf(b);
   const remindable = canRemind(b, phone, now, tz);
@@ -632,30 +797,45 @@ function LiveCard({
   const started = new Date(b.starts_at).getTime() <= now;
   const ended = new Date(b.ends_at).getTime() <= now;
   const barber = showBarber && b.barbers ? b.barbers.name : null;
+  // Only bookings still to come: someone has to see to them, or let the customer know.
+  const awayNow = away && !started;
+  // Added at the counter or from a call, rather than booked online by the customer.
+  const byShop = !b.customer_id;
   return (
     <Card>
       <View style={styles.cardRow}>
         <View style={styles.timeCol}>
-          <T variant="heading" style={styles.time}>
-            {formatTime(b.starts_at, tz)}
-          </T>
+          <StartTime at={b.starts_at} tz={tz} variant="heading" />
           <T variant="small">{formatDuration(minutesOf(b))}</T>
         </View>
         <View style={styles.info}>
-          <T variant="label">{b.customer_id ? who : t('{name} (added by you)', { name: who })}</T>
+          <T variant="label">{who}</T>
           <T>
             {b.service_name} · {formatPrice(b.price)}
           </T>
-          {barber || ended ? (
+          {barber || awayNow || ended || byShop ? (
             <Row style={styles.badges}>
-              {barber ? <Badge label={barber} /> : null}
+              {/* Even on that barber's own list, so nobody expects them in. */}
+              {awayNow ? (
+                <Badge label={t('{name} is away', { name: b.barbers?.name ?? '' })} tone="warning" />
+              ) : barber ? (
+                <Badge label={barber} />
+              ) : null}
               {ended ? <BookingStatusBadge booking={b} forShop /> : null}
+              {byShop ? <Badge label={t('Added by shop')} /> : null}
             </Row>
           ) : null}
+          {/* Notes can be long (up to 280 characters): a tap on it, or More, shows the whole of it. */}
           {b.customer_note ? (
-            <T variant="muted" numberOfLines={2}>
-              “{b.customer_note}”
-            </T>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityHint={wholeNote ? undefined : t('Shows the whole note')}
+              aria-expanded={wholeNote}
+              onPress={() => setNoteOpen(!wholeNote)}>
+              <T variant="muted" numberOfLines={wholeNote ? undefined : 2}>
+                “{b.customer_note}”
+              </T>
+            </Pressable>
           ) : null}
           {b.reminded_at ? <T variant="small">✓ {t('Reminded')}</T> : null}
         </View>
@@ -724,6 +904,15 @@ function LiveCard({
               onPress={busy(onUnremind)}
             />
           ) : null}
+          {/* A customer who calls to come later keeps their booking, and their app shows the new time. */}
+          {started ? null : (
+            <Button
+              title={t('Change time')}
+              accessibilityLabel={t('Change time for {name}', { name: who })}
+              variant="secondary"
+              onPress={onMove}
+            />
+          )}
           {phone ? <Button title={t('Call')} variant="secondary" onPress={() => call(phone)} /> : null}
           <Button title={t('Cancel booking')} variant="danger" onPress={onCancel} />
         </Row>
@@ -737,7 +926,7 @@ function BlockRow({ booking: b, tz, onRemove }: { booking: ShopBooking; tz: stri
   return (
     <View style={styles.compactRow}>
       <View style={styles.timeCol}>
-        <T variant="label">{isWholeDay(b) ? t('Whole day') : formatTime(b.starts_at, tz)}</T>
+        {isWholeDay(b) ? <T variant="label">{t('All day')}</T> : <StartTime at={b.starts_at} tz={tz} variant="label" />}
         {isWholeDay(b) ? null : <T variant="small">{formatDuration(minutesOf(b))}</T>}
       </View>
       <View style={styles.info}>
@@ -776,7 +965,7 @@ function FinishedRow({
     <View style={styles.list}>
       <View style={styles.compactRow}>
         <View style={styles.timeCol}>
-          <T variant="label">{formatTime(b.starts_at, tz)}</T>
+          <StartTime at={b.starts_at} tz={tz} variant="label" />
         </View>
         <View style={styles.info}>
           <T variant="label" numberOfLines={1}>
@@ -880,9 +1069,12 @@ const styles = StyleSheet.create({
   // Fixed, so the start times line up down the day.
   timeCol: { width: 92 },
   time: { fontSize: 16, lineHeight: 22 },
+  // A Malay period under the clock: smaller, so "tengah hari" fits the column on one line.
+  period: { fontSize: 13, lineHeight: 18, fontWeight: '600' },
   info: { flex: 1, gap: 2 },
   fold: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 48 },
   hoursCheck: { gap: Spacing.sm, paddingLeft: Spacing.lg },
+  loading: { paddingVertical: Spacing.xxl },
   overlay: { position: 'absolute', left: 0, right: 0, bottom: 0, pointerEvents: 'box-none' },
   overlayInner: {
     width: '100%',
@@ -895,11 +1087,14 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     pointerEvents: 'box-none',
   },
+  // A long message ("Booking cancelled. Let Encik Rosli know.") puts the button on a line of its own.
   undoBar: {
     flex: 1,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
-    gap: Spacing.sm,
+    justifyContent: 'flex-end',
+    columnGap: Spacing.sm,
     borderWidth: 1,
     borderRadius: Radius.md,
     paddingVertical: Spacing.xs,
@@ -907,6 +1102,7 @@ const styles = StyleSheet.create({
     paddingRight: Spacing.xs,
     boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
   },
+  noticeText: { flexGrow: 1, flexShrink: 1, flexBasis: 'auto', paddingVertical: Spacing.sm },
+  noticeActions: { flexDirection: 'row', alignItems: 'center', marginLeft: 'auto' },
   fab: { borderRadius: Radius.md, boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)' },
-  fabSpace: { height: 48 },
 });
