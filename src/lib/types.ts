@@ -22,6 +22,8 @@ export type Shop = {
   instagram: string | null;
   time_zone: string;
   is_published: boolean;
+  /** When the shop first went live; set by the database, and kept while it is paused. */
+  published_at: string | null;
   trial_ends_at: string;
   subscription_status: 'trialing' | 'active' | 'past_due' | 'cancelled';
   created_at: string;

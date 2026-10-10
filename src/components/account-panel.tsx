@@ -38,7 +38,8 @@ export function AccountPanel() {
   );
 }
 
-function LanguagePicker() {
+/** English or Malay, for the whole app. Also on the shop set-up screen. */
+export function LanguagePicker() {
   const { lang, setLang } = useLanguage();
   return (
     <Card>
@@ -58,19 +59,21 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
   const [phone, setPhone] = useState(profile.phone ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  // The details as last saved, so "Saved." only shows until the next edit.
+  const [savedAs, setSavedAs] = useState<string | null>(null);
+
+  const fields = { full_name: fullName.trim(), phone: phone.trim() || null };
+  const current = JSON.stringify(fields);
+  const justSaved = savedAs === current;
+  const unchanged = justSaved || (fields.full_name === profile.full_name && fields.phone === profile.phone);
 
   async function save() {
     setBusy(true);
-    setSaved(false);
-    const { error } = await supabase
-      .from('profiles')
-      .update({ full_name: fullName.trim(), phone: phone.trim() || null })
-      .eq('id', profile.id);
+    const { error } = await supabase.from('profiles').update(fields).eq('id', profile.id);
     setBusy(false);
     if (error) return setError(errorMessage(error));
     setError(null);
-    setSaved(true);
+    setSavedAs(current);
     refreshProfile();
   }
 
@@ -99,8 +102,12 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
       <Field label={t('Full name')} value={fullName} onChangeText={setFullName} maxLength={80} />
       <Field label={t('Phone (WhatsApp)')} value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={20} />
       <ErrorText message={error} />
-      {saved ? <T variant="small">{t('Saved.')}</T> : null}
-      <Button title={t('Save')} variant="secondary" onPress={save} loading={busy} />
+      <Button title={t('Save')} variant="secondary" onPress={save} loading={busy} disabled={unchanged} />
+      {justSaved ? (
+        <T variant="small" role="status" accessibilityLiveRegion="polite">
+          {t('Saved.')}
+        </T>
+      ) : null}
       <Button
         title={t('Sign out')}
         variant="ghost"

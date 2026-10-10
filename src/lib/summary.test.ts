@@ -195,7 +195,7 @@ test('My shop sums up the week in one line', () => {
   assert.equal(weekLine({ done: 1250, takings: 31250 }), 'This week: RM31,250 from 1,250 cuts');
   setCurrentLang('ms');
   try {
-    assert.equal(weekLine({ done: 42, takings: 1240 }), 'Minggu ini: RM1,240 daripada 42 pelanggan');
+    assert.equal(weekLine({ done: 42, takings: 1240 }), 'Minggu ini: RM1,240 daripada 42 potongan');
   } finally {
     setCurrentLang('en');
   }

@@ -213,3 +213,16 @@ export function slugify(name: string): string {
     .slice(0, 40)
     .replace(/-+$/g, '');
 }
+
+/**
+ * Another link to try when `slug` is taken: with the area added
+ * ("ali-barber-kajang"), or else the next number ("ali-barber-kajang-2").
+ * Still at most 40 characters.
+ */
+export function suggestSlug(slug: string, area: string): string {
+  const numbered = /^(.+)-(\d+)$/.exec(slug);
+  const base = numbered ? numbered[1] : slug;
+  const place = slugify(area);
+  const end = numbered ? String(Number(numbered[2]) + 1) : place && !base.includes(place) ? place : '2';
+  return `${base.slice(0, 39 - end.length).replace(/-+$/, '')}-${end}`;
+}

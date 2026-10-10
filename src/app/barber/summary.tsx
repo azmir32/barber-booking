@@ -102,9 +102,16 @@ export default function Takings() {
 
   return (
     <Screen edges={[]} onRefresh={load}>
-      <Row role="radiogroup" accessibilityLabel={t('Show takings for')}>
+      {/* One row that shares the width, so a longer language never pushes a period onto a line of its own. */}
+      <Row role="radiogroup" accessibilityLabel={t('Show takings for')} style={styles.periods}>
         {PERIODS.map((p) => (
-          <Chip key={p} label={periodLabel(p)} selected={p === period} onPress={() => setPeriod(p)} />
+          <Chip
+            key={p}
+            label={periodLabel(p)}
+            selected={p === period}
+            onPress={() => setPeriod(p)}
+            style={styles.period}
+          />
         ))}
       </Row>
       <T variant="heading">{periodTitle(period, from, to)}</T>
@@ -315,6 +322,8 @@ function Line({ label, note, value }: { label: string; note?: string; value: str
 }
 
 const styles = StyleSheet.create({
+  periods: { flexWrap: 'nowrap', alignItems: 'stretch' },
+  period: { flex: 1, minWidth: 0, paddingHorizontal: Spacing.xs },
   // Side by side on a tablet, one above the other on a phone so a month's takings never squeeze.
   stats: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.lg },
   stat: { flexGrow: 1, flexBasis: 220, gap: Spacing.xs },

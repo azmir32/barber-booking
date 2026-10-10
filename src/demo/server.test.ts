@@ -604,8 +604,16 @@ test('a new barber signs up, sets up a shop and goes live', async () => {
 
   // Not live yet: guests can't see it.
   assert.equal((await client().from('shops').select('*').eq('slug', 'zack-cuts').maybeSingle()).data, null);
+  assert.equal(created.data.published_at, null);
+  const sneakyLive = await c.from('shops').update({ published_at: new Date().toISOString() }).eq('id', created.data.id);
+  assert.equal(sneakyLive.error?.code, '42501');
   await c.from('shops').update({ is_published: true }).eq('id', created.data.id);
   assert.equal((await client().from('shops').select('*').eq('slug', 'zack-cuts').maybeSingle()).data?.name, 'Zack Cuts');
+  // When it first went live is kept through a pause, so My shop can say "Bookings paused".
+  const firstLive = (await shopBySlug(c, 'zack-cuts')).published_at;
+  assert.ok(firstLive);
+  await c.from('shops').update({ is_published: false }).eq('id', created.data.id);
+  assert.equal((await shopBySlug(c, 'zack-cuts')).published_at, firstLive);
 
   const dup = await c.auth.signUp({ email: 'NEW@shop.my', password: 'password123' });
   assert.equal(dup.error?.message, 'User already registered');
@@ -616,6 +624,26 @@ test('a new barber signs up, sets up a shop and goes live', async () => {
     .from('shops')
     .insert({ name: 'Hakim', slug: 'hakim-cuts', owner_id: (await hakim.auth.getUser()).data.user!.id });
   assert.equal(sneaky.error?.code, '42501');
+});
+
+test('a barber account with no shop can become a customer one, but an owner can\'t', async () => {
+  const c = client();
+  const signUp = await c.auth.signUp({
+    email: 'oops@shop.my',
+    password: 'password123',
+    options: { data: { role: 'barber', full_name: 'Oops' } },
+  });
+  assert.equal(signUp.error, null);
+  const changed = await c.rpc('become_customer');
+  assert.equal(changed.error, null);
+  const { data: profile } = await c.from('profiles').select('role').eq('id', signUp.data.user!.id).single();
+  assert.equal(profile!.role, 'customer');
+
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const refused = await ali.rpc('become_customer');
+  assert.equal(refused.error?.message, 'You have a shop, so this account stays a barber account.');
+  assert.equal(tables().profiles.find((p) => p.full_name === 'Ali')?.role, 'barber');
+  assert.equal((await client().rpc('become_customer')).error?.code, '42501');
 });
 
 test('password reset by code, wrong passwords and deleting an account', async () => {
@@ -835,7 +863,11 @@ test('a barber closes the shop for Hari Raya, customers see it, and it reopens',
   assert.equal(booked.error, null);
   const refused = await barber.rpc('close_shop_days', { p_from: addDays(from, 3), p_days: 2, p_reason: 'Kenduri' });
   assert.equal(refused.error?.code, 'P0001');
-  assert.match(refused.error!.message, /^There are bookings on those days/);
+  // With how many and the first day, for the app to say.
+  assert.equal(
+    refused.error!.message,
+    `There are bookings on those days (1, the first on ${addDays(from, 4)}). Cancel them first (and let the customers know), then close the shop.`,
+  );
   assert.equal(tables().shop_closures.filter((c) => c.reason === 'Kenduri').length, 0);
   const notMine = await customer.rpc('close_shop_days', { p_from: from, p_days: 1 });
   assert.equal(notMine.error?.message, 'Set up your shop first.');

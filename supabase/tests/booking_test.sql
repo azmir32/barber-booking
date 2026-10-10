@@ -31,6 +31,14 @@ do $$ begin
 exception when insufficient_privilege then null;
 end $$;
 
+-- Nor when it first went live: the database notes that.
+do $$ begin
+  assert (select published_at is null from shops where slug = 'ali-cuts'), 'a new shop has never been live';
+  update shops set published_at = now();
+  raise exception 'owners should not set when their shop went live';
+exception when insufficient_privilege then null;
+end $$;
+
 -- Give the shop a fixed id so the rest of the script can refer to it.
 reset role;
 update shops set id = '00000000-0000-0000-0000-00000000005a' where slug = 'ali-cuts';
@@ -84,6 +92,20 @@ end $$;
 -- Publish, then customers can see and book ---------------------------------
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 update shops set is_published = true;
+
+-- Pausing and going live again keep when it first went live, so the app can
+-- tell a paused shop from a new one.
+do $$
+declare
+  first_live timestamptz;
+begin
+  select published_at into first_live from shops;
+  assert first_live is not null, 'going live notes when';
+  update shops set is_published = false;
+  assert (select published_at = first_live from shops), 'pausing keeps when it first went live';
+  update shops set is_published = true;
+  assert (select published_at = first_live from shops), 'going live again keeps the first time';
+end $$;
 
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
 
@@ -635,7 +657,10 @@ begin
   begin
     perform close_shop_days(d + 4, 2, 'Kenduri');
     raise exception 'closing over a customer booking should be refused';
-  exception when sqlstate 'P0001' then null;
+  exception when sqlstate 'P0001' then
+    -- How many, and the first day, for the app to say.
+    assert sqlerrm = format('There are bookings on those days (1, the first on %s). Cancel them first '
+      '(and let the customers know), then close the shop.', to_char(d + 5, 'YYYY-MM-DD')), sqlerrm;
   end;
   assert (select count(*) from shop_closed_days(shop, d + 3, d + 6)) = 0, 'a refused closure leaves nothing behind';
 
@@ -1426,6 +1451,40 @@ begin
   assert (shop_summary(today + 7, today + 13) #>> '{previous,until}')::timestamptz
          < (today::timestamp at time zone 'Asia/Kuala_Lumpur'), 'a later week';
   assert shop_summary(today + 7, today + 13) #> '{previous,done}' = '0', 'nothing to compare before it starts';
+end $$;
+rollback;
+
+-- Signed up as a barber by mistake --------------------------------------------
+-- Before making a shop, a barber account can turn into a customer one. An
+-- owner can't, or their shop would be left without anyone to run it.
+begin;
+reset role;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b9', 'oops@test', '{"role":"barber","full_name":"Oops"}');
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b9';
+do $$ begin
+  perform become_customer();
+  assert (select role from profiles where id = auth.uid()) = 'customer', 'a barber with no shop becomes a customer';
+  begin
+    insert into shops (owner_id, name, slug) values (auth.uid(), 'Oops Cuts', 'oops-cuts');
+    raise exception 'a customer should not be able to create a shop';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  perform become_customer();
+  raise exception 'an owner should stay a barber';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'You have a shop, so this account stays a barber account.', sqlerrm;
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform become_customer();
+  raise exception 'guests must not call become_customer';
+exception when insufficient_privilege then null;
 end $$;
 rollback;
 

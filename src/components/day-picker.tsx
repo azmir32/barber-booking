@@ -13,6 +13,7 @@ export function DayPicker({
   onSelect,
   closed,
   closedLabel = t('Closed'),
+  notes,
 }: {
   days: DayOption[];
   selected: string | null;
@@ -21,6 +22,8 @@ export function DayPicker({
   closed?: Set<string>;
   /** What those days say instead of the date, e.g. "Off" when one barber doesn't work that day. */
   closedLabel?: string;
+  /** A line under some days' dates, by date, e.g. "2 booked". */
+  notes?: Record<string, string>;
 }) {
   const strip = useRef<ScrollView>(null);
   // Where each chip sits and which part of the strip is on screen, so a day picked
@@ -62,7 +65,9 @@ export function DayPicker({
             }}>
             <Chip
               label={d.label}
-              sublabel={isClosed ? closedLabel : `${d.dayOfMonth} ${d.month}`}
+              sublabel={
+                isClosed ? closedLabel : `${d.dayOfMonth} ${d.month}${notes?.[d.date] ? `\n${notes[d.date]}` : ''}`
+              }
               selected={selected === d.date}
               disabled={isClosed}
               onPress={() => onSelect(d.date)}

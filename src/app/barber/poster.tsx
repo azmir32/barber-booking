@@ -1,12 +1,16 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { Share, StyleSheet, useWindowDimensions, View } from 'react-native';
 
+import { KeepLiveButton } from '@/components/keep-live-button';
 import { QrCode } from '@/components/qr-code';
 import { Button, Card, Row, Screen, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
 import { Colors, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
+import { useTheme } from '@/hooks/use-theme';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { POSTER_TEXT, posterHtml } from '@/lib/poster';
@@ -25,6 +29,7 @@ export default function Poster() {
   const [printing, setPrinting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const now = useNow();
+  const theme = useTheme();
 
   if (!shop) return null;
   const link = bookingLink(shop.slug);
@@ -34,6 +39,7 @@ export default function Poster() {
   const paid =
     shop.subscription_status === 'active' ||
     (shop.subscription_status === 'trialing' && Date.parse(shop.trial_ends_at) > now);
+  const bookable = shop.is_published && paid;
   // What's left inside the screen's and the card's padding.
   const qrSize = Math.min(MAX_QR, Math.min(width, MaxContentWidth) - Spacing.lg * 4 - Spacing.md);
 
@@ -72,7 +78,16 @@ export default function Poster() {
             </T>
           ) : null}
           <Row>
-            {webLink ? <Button title={t('Print')} onPress={print} loading={printing} style={styles.action} /> : null}
+            {webLink ? (
+              <Button
+                title={t('Print')}
+                // While the code can't take bookings, the warning's action comes first.
+                variant={bookable ? 'primary' : 'secondary'}
+                onPress={print}
+                loading={printing}
+                style={styles.action}
+              />
+            ) : null}
             <Button title={t('Share')} variant="secondary" onPress={share} style={styles.action} />
           </Row>
         </>
@@ -81,17 +96,31 @@ export default function Poster() {
         {t('Print it for your counter or mirror. Walk-in customers scan the code with their phone camera to book.')}
       </T>
 
-      {!shop.is_published ? (
-        <Card>
-          <T variant="heading">{t('Not live yet')}</T>
-          <T variant="muted">{t('Customers can’t book from this poster until you go live on My shop.')}</T>
+      {bookable ? null : (
+        // Unlike the white poster below, so it isn't skipped on the way to Print.
+        <Card style={{ borderColor: theme.warning, borderWidth: 2 }}>
+          <View style={styles.warningTitle}>
+            <Ionicons name="warning-outline" size={22} color={theme.warning} />
+            <T variant="heading" style={styles.grow}>
+              {shop.is_published
+                ? t('Hidden from customers')
+                : shop.published_at
+                  ? t('Bookings paused')
+                  : t('Not live yet')}
+            </T>
+          </View>
+          <T variant="muted">
+            {shop.is_published
+              ? t('Once your subscription is active, customers can book from this poster again.')
+              : t('Customers can’t book from this poster until you go live on My shop.')}
+          </T>
+          {shop.is_published ? (
+            <KeepLiveButton shop={shop} />
+          ) : (
+            <Button title={t('Go to My shop')} onPress={() => router.dismissTo('/barber/shop')} />
+          )}
         </Card>
-      ) : !paid ? (
-        <Card>
-          <T variant="heading">{t('Trial ended, customers can no longer book')}</T>
-          <T variant="muted">{t('Once your subscription is active, customers can book from this poster again.')}</T>
-        </Card>
-      ) : null}
+      )}
 
       {webLink ? null : (
         <Card>
@@ -140,4 +169,6 @@ const styles = StyleSheet.create({
   lines: { gap: 2, alignItems: 'center' },
   second: { fontWeight: '600' },
   action: { flexGrow: 1, flexBasis: '40%' },
+  warningTitle: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  grow: { flex: 1 },
 });

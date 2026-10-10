@@ -17,7 +17,14 @@ export type TableName =
   | 'shop_closures';
 export type Tables = Record<TableName, Row[]>;
 type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
-type Column = { type: ColumnType; nullable: boolean; default?: () => unknown; values?: readonly string[] };
+type Column = {
+  type: ColumnType;
+  nullable: boolean;
+  default?: () => unknown;
+  values?: readonly string[];
+  /** For a demo saved before the column was added: what the row would have had. */
+  backfill?: (row: Row) => unknown;
+};
 
 /** An error shaped like the ones PostgREST sends back. */
 export class PgError extends Error {
@@ -94,6 +101,7 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     instagram: opt('text'),
     time_zone: req('text', () => 'Asia/Kuala_Lumpur'),
     is_published: req('bool', () => false),
+    published_at: { ...opt('timestamptz'), backfill: (r) => (r.is_published ? r.created_at : null) },
     trial_ends_at: req('timestamptz', () => new Date(clock() + 30 * 86_400_000).toISOString()),
     subscription_status: req('text', () => 'trialing', ['trialing', 'active', 'past_due', 'cancelled']),
     created_at: createdAt,
@@ -461,7 +469,7 @@ export function tables(): Tables {
       for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
         for (const row of current[table]) {
           for (const [column, col] of Object.entries(columns)) {
-            if (!(column in row)) row[column] = col.default ? col.default() : null;
+            if (!(column in row)) row[column] = col.backfill ? col.backfill(row) : col.default ? col.default() : null;
           }
         }
       }
@@ -569,6 +577,7 @@ export function insertRow(table: TableName, values: Row, guard?: (row: Row) => v
     else row[column] = col.default ? col.default() : null;
   }
   guard?.(row);
+  beforeWrite(table, row);
   checkRow(table, row);
   tables()[table].push(row);
   if (table === 'users') handleNewUser(row);
@@ -584,6 +593,7 @@ export function updateRows(table: TableName, rows: Row[], patch: Row, guard?: (r
   for (const row of rows) {
     const next = { ...row, ...coerced };
     guard?.(next);
+    beforeWrite(table, next);
     if (next.id !== row.id) {
       // ON UPDATE NO ACTION: an id other rows point at can't change.
       for (const fk of FOREIGN_KEYS) {
@@ -645,6 +655,11 @@ export function deleteRows(table: TableName, rows: Row[]) {
     }
   }
   for (const [t, set] of doomed) all[t] = all[t].filter((r) => !set.has(r));
+}
+
+/** The shops_first_published trigger: notes when a shop first goes live, and keeps it while paused. */
+function beforeWrite(table: TableName, row: Row) {
+  if (table === 'shops' && row.is_published === true && row.published_at == null) row.published_at = nowIso();
 }
 
 /** The on_auth_user_created trigger: every new user gets a profile. */

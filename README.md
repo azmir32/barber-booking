@@ -19,7 +19,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Add a booking to the phone's calendar, so it reminds them: Safari on iPhone, iPad and Mac gets a calendar file for Apple Calendar (with an alert an hour before); Android, the iOS app and other browsers open Google Calendar's add-event page (with their usual Google reminder)
 
 **Barbers and shop owners**
-- Create a shop with a booking link (`/shop/your-shop`)
+- Create a shop with a booking link (`/shop/your-shop`); a link another shop already has is flagged at the field, with a free one to try (e.g. with the area added). Someone who picked "Barber / shop owner" by mistake can carry on as a customer from the set-up screen, or sign out
 - Services menu with prices and durations, plus quick-add suggestions
 - Barbers (one per chair) with weekly working hours and an optional daily break (e.g. Friday prayers); a solo barber is a shop with one chair
 - Bookings by day with expected takings, refreshed every minute and by pulling down; mark done or no-show once the time has started, cancel, WhatsApp the customer
@@ -27,8 +27,9 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Customer list from My shop: everyone who has booked or been in, online or added by the shop (walk-ins are matched by phone number however it was typed, including to an online customer with that number), with their number, visits, last cut and next booking. Customers due for a cut (their usual gap between cuts has passed and nothing is booked) come first, with a ready-written WhatsApp invite that includes the booking link, which is also there for anyone away much longer; anyone with a number can be messaged or called. Searchable by name or number
 - Add walk-in, WhatsApp or phone bookings, and block time or a whole day off, so online customers can't take those times
 - Takings for this week, last week or this month: money in and cuts done against the same point in the period before (once the shop has been on the app that long), no-shows and cancellations, the busiest days (by the average day) and hours, each barber's share and the top services. My shop shows the week so far in one line
-- Go live / pause, share or copy the booking link; while paused, the link asks customers to WhatsApp the shop
-- One-month free trial on every new shop
+- Go live / pause, share or copy the booking link; while paused, the link asks customers to WhatsApp the shop, and My shop says the shop is paused (bookings already made still stand) rather than new
+- Close the whole shop for a few days (Hari Raya): days with customers still to come say how many, and those booked on the chosen days are listed to cancel and WhatsApp one by one before it closes
+- One-month free trial on every new shop. From five days before it ends, My shop (and the poster once it has ended) has a button that WhatsApps the PotongKu team, with the shop's name and link written, to subscribe
 
 **Rules enforced in the database**
 - A barber can never be double-booked (Postgres exclusion constraint)
@@ -36,7 +37,8 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Customers only see their own bookings; owners only see their own shop's bookings and customers
 - Takings come from one owner-only `shop_summary` call over at most 93 days, counted at the price each booking was made at
 - Shops are only visible while published and paid up or inside the free trial
-- Owners can't change their own trial or subscription status
+- Owners can't change their own trial or subscription status, or when their shop first went live (`shops.published_at`, set by the database)
+- A barber account can turn into a customer one (`become_customer`) only while it has no shop
 - Limits against abuse: bookings at most 60 days ahead, at most 4 upcoming bookings per customer per shop, notes up to 280 characters
 - Barbers with booking history can't be deleted (mark them away instead), so past bookings keep their barber
 
@@ -126,6 +128,7 @@ That is far more than a pre-Raya peak needs: if all 100,000 customers booked wit
 - A shop's free trial ends 30 days after it is created (`shops.trial_ends_at`).
 - When a barber pays, set `subscription_status = 'active'` on their shop in the Supabase table editor.
 - When a trial ends without payment, the shop disappears from search and its link stops taking bookings (it tells customers to WhatsApp the shop instead).
+- Barbers ask to subscribe from the app's "Keep my shop live" button, which WhatsApps the number in `EXPO_PUBLIC_SUPPORT_WHATSAPP` (set it in `.env` before launch; without it, WhatsApp opens with the message written and asks who to send it to).
 
 ## Translations
 
@@ -141,6 +144,5 @@ The name shown in the app comes from `name` in `app.json`. Also update `slug`, `
 - Online subscription payments for barbers (FPX and cards)
 - Optional deposits at booking
 - Reviews and a photo gallery of cuts
-- Shop-wide holidays (e.g. closing every chair for Hari Raya in one step)
 - "Find a barber near me" with a map
 - Walk-in queue mode

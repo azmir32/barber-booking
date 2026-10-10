@@ -113,6 +113,8 @@ export function Button({
   loading,
   style,
   accessibilityLabel,
+  icon,
+  iconColor,
 }: {
   title: string;
   onPress?: () => void;
@@ -123,6 +125,10 @@ export function Button({
   style?: ViewStyle;
   /** When the title alone is ambiguous, e.g. one "Reopen" per row: "Reopen Fri, 20 Mar". */
   accessibilityLabel?: string;
+  /** Shown before the title, e.g. the WhatsApp logo on a button that opens WhatsApp. */
+  icon?: ComponentProps<typeof Ionicons>['name'];
+  /** The icon's colour when it isn't the text's, e.g. WhatsApp green. */
+  iconColor?: string;
 }) {
   const theme = useTheme();
   const bg =
@@ -150,7 +156,14 @@ export function Button({
         { backgroundColor: bg, borderColor: border, opacity: disabled ? 0.5 : pressed ? 0.8 : 1 },
         style,
       ]}>
-      <Text style={[styles.buttonText, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
+      {icon ? (
+        <View style={[styles.buttonInner, { opacity: loading ? 0 : 1 }]}>
+          <Ionicons name={icon} size={20} color={iconColor ?? fg} />
+          <Text style={[styles.buttonText, styles.buttonTextBesideIcon, { color: fg }]}>{title}</Text>
+        </View>
+      ) : (
+        <Text style={[styles.buttonText, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
+      )}
       {loading ? <ActivityIndicator color={fg} style={StyleSheet.absoluteFill} /> : null}
     </Pressable>
   );
@@ -166,6 +179,8 @@ export function Field({
   hint?: string;
   /** Shown under the field in red, and read out, when what was typed is not right. */
   error?: string | null;
+  /** To focus the field from outside, e.g. to bring it into view with its error. */
+  ref?: Ref<TextInput>;
 }) {
   const theme = useTheme();
   const [focused, setFocused] = useState(false);
@@ -243,6 +258,33 @@ export function Card({
   );
 }
 
+/** A card that opens another screen: an icon, a title, a line on what is there, and a chevron. */
+export function LinkCard({
+  icon,
+  title,
+  summary,
+  onPress,
+}: {
+  icon: ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  summary: string;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Card role="link" onPress={onPress} accessibilityLabel={`${title}: ${summary}`}>
+      <View style={styles.linkRow}>
+        <Ionicons name={icon} size={24} color={theme.tint} />
+        <View style={styles.linkInfo}>
+          <T variant="heading">{title}</T>
+          <T variant="muted">{summary}</T>
+        </View>
+        <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+      </View>
+    </Card>
+  );
+}
+
 /**
  * A choice. With `selected` set it is one option of a set (a radio button to
  * screen readers, or an on/off switch with mode="toggle"); without it, it is
@@ -256,6 +298,7 @@ export function Chip({
   mode = 'radio',
   accessibilityLabel,
   onPress,
+  style,
 }: {
   label: string;
   sublabel?: string;
@@ -265,6 +308,8 @@ export function Chip({
   mode?: 'radio' | 'toggle';
   accessibilityLabel?: string;
   onPress?: () => void;
+  /** E.g. flex: 1, for chips that share a row evenly like a segmented control. */
+  style?: ViewStyle;
 }) {
   const theme = useTheme();
   const choice = selected !== undefined;
@@ -290,6 +335,7 @@ export function Chip({
           borderColor: selected ? theme.accent : theme.inputBorder,
           opacity: disabled ? 0.45 : 1,
         },
+        style,
       ]}>
       <Text style={[styles.chipText, { color: selected ? theme.accentText : theme.text }]}>{label}</Text>
       {sublabel ? (
@@ -435,7 +481,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  buttonInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
   buttonText: { fontSize: 16, fontWeight: '600' },
+  buttonTextBesideIcon: { flexShrink: 1, textAlign: 'center' },
   field: { gap: Spacing.xs },
   input: {
     minHeight: 48,
@@ -451,6 +499,8 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     gap: Spacing.sm,
   },
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  linkInfo: { flex: 1, gap: 2 },
   chip: {
     borderWidth: 1,
     borderRadius: Radius.md,
@@ -478,14 +528,17 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     gap: Spacing.sm,
   },
-  chipText: { fontSize: 15, fontWeight: '600' },
-  chipSub: { fontSize: 12 },
+  chipText: { fontSize: 15, fontWeight: '600', textAlign: 'center' },
+  chipSub: { fontSize: 12, textAlign: 'center' },
   badge: {
     borderWidth: 1,
     borderRadius: Radius.pill,
     paddingHorizontal: Spacing.sm,
     paddingVertical: 2,
     alignSelf: 'flex-start',
+    // A long badge (often in Malay) wraps inside its card instead of running past it.
+    flexShrink: 1,
+    maxWidth: '100%',
   },
   badgeText: { fontSize: 12, fontWeight: '600' },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexWrap: 'wrap' },

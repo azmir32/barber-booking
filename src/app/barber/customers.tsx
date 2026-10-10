@@ -98,6 +98,19 @@ export default function Customers() {
   if (!shop) return null;
   const tz = shop.time_zone;
 
+  /** Saves who was invited when (null takes one back), forgetting invites too old to matter. */
+  function remember(key: string, when: string | null) {
+    setInvited((prev) => {
+      const next = Object.fromEntries(
+        Object.entries({ ...prev, [key]: when }).filter(
+          (entry): entry is [string, string] => entry[1] != null && now - Date.parse(entry[1]) < INVITE_MEMORY_MS,
+        ),
+      );
+      AsyncStorage.setItem(INVITED_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }
+
   function invite(c: ShopCustomer) {
     if (!c.phone || !c.last_visit_at) return;
     const message = inviteMessage(
@@ -107,15 +120,7 @@ export default function Customers() {
       tz,
     );
     Linking.openURL(whatsappUrl(c.phone, message)).catch(() => {});
-    setInvited((prev) => {
-      const next = Object.fromEntries(
-        Object.entries({ ...prev, [c.customer_key]: new Date(now).toISOString() }).filter(
-          ([, when]) => now - Date.parse(when) < INVITE_MEMORY_MS,
-        ),
-      );
-      AsyncStorage.setItem(INVITED_KEY, JSON.stringify(next)).catch(() => {});
-      return next;
-    });
+    remember(c.customer_key, new Date(now).toISOString());
   }
 
   const searching = query.trim() !== '';
@@ -130,6 +135,8 @@ export default function Customers() {
       now={now}
       invitedAt={invited[c.customer_key] ?? null}
       onInvite={() => invite(c)}
+      // For an invite that never went out, e.g. WhatsApp was closed without sending.
+      onUndoInvite={() => remember(c.customer_key, null)}
     />
   );
 
@@ -197,12 +204,14 @@ function CustomerCard({
   now,
   invitedAt,
   onInvite,
+  onUndoInvite,
 }: {
   customer: ShopCustomer;
   tz: string;
   now: number;
   invitedAt: string | null;
   onInvite: () => void;
+  onUndoInvite: () => void;
 }) {
   const theme = useTheme();
   const name = c.name ?? t('Customer');
@@ -268,12 +277,26 @@ function CustomerCard({
         ) : null}
       </View>
       {canInvite ? (
-        <Button
-          title={invitedThisTime ? t('Invite again') : t('Invite to book')}
-          accessibilityLabel={t('Invite {name} to book on WhatsApp', { name })}
-          variant={invitedThisTime ? 'ghost' : 'secondary'}
-          onPress={onInvite}
-        />
+        <View style={styles.inviteRow}>
+          <Button
+            title={invitedThisTime ? t('Invite again') : t('Invite on WhatsApp')}
+            accessibilityLabel={t('Invite {name} to book on WhatsApp', { name })}
+            icon="logo-whatsapp"
+            iconColor={theme.success}
+            variant={invitedThisTime ? 'ghost' : 'secondary'}
+            onPress={onInvite}
+            style={styles.grow}
+          />
+          {/* Marked as soon as WhatsApp opens, so one that wasn't sent can be taken back the same day. */}
+          {invitedDays != null && invitedDays <= 0 ? (
+            <Button
+              title={t('Undo')}
+              accessibilityLabel={t('Undo the invite to {name}', { name })}
+              variant="ghost"
+              onPress={onUndoInvite}
+            />
+          ) : null}
+        </View>
       ) : null}
     </Card>
   );
@@ -284,4 +307,6 @@ const styles = StyleSheet.create({
   cardRow: { flexDirection: 'row', gap: Spacing.sm },
   info: { flex: 1, gap: 2 },
   actions: { flexDirection: 'row' },
+  inviteRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  grow: { flex: 1 },
 });

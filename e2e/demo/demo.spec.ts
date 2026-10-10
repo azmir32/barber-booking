@@ -276,7 +276,11 @@ test('the barber sees who is due for a cut and invites them back on WhatsApp', a
   );
   // The row remembers it, so nobody gets asked twice by mistake.
   await expect(app.getByText('✓ Invited today')).toBeVisible();
-  await expect(button(app, 'Invite Daniel Tan to book on WhatsApp')).toHaveText('Invite again');
+  await expect(button(app, 'Invite Daniel Tan to book on WhatsApp')).toHaveText(/Invite again$/);
+  // One that never went out (WhatsApp closed without sending) can be taken back.
+  await button(app, 'Undo the invite to Daniel Tan').click();
+  await expect(app.getByText('✓ Invited today')).toHaveCount(0);
+  await expect(button(app, 'Invite Daniel Tan to book on WhatsApp')).toHaveText(/Invite on WhatsApp$/);
 
   // Search finds a number however it is typed.
   await app.getByLabel('Search', { exact: true }).fill('012-688');
@@ -284,6 +288,77 @@ test('the barber sees who is due for a cut and invites them back on WhatsApp', a
   await expect(app.getByText('012-688 4521', { exact: true })).toBeVisible();
   await expect(app.getByText('Daniel Tan', { exact: true })).toHaveCount(0);
   await expect(app.getByText('1 customer · 1 due for a cut')).toBeVisible();
+});
+
+test('a new barber with a taken link gets one to try, and can carry on as a customer instead', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Set up my shop').click();
+  await app.getByLabel('Full name', { exact: true }).fill('Hafiz');
+  await app.getByLabel('Phone (WhatsApp)', { exact: true }).fill('012-999 8888');
+  await app.getByLabel('Email', { exact: true }).fill('hafiz@test.my');
+  await app.getByLabel('Password', { exact: true }).fill('password123');
+  await button(app, 'Create account').click();
+  await expect(app.getByText('Set up your shop')).toBeVisible();
+  await expect(app.getByText('Signed in as hafiz@test.my')).toBeVisible();
+
+  // A common name's link is taken: the link field says so and offers another.
+  await app.getByLabel('Shop name', { exact: true }).fill('Ali Barber');
+  await button(app, 'Create my shop').click();
+  await expect(app.getByText('“ali-barber” is taken by another shop. Try another link.')).toBeVisible();
+  await button(app, 'Use ali-barber-kajang').click();
+  await expect(app.getByLabel('Booking link', { exact: true })).toHaveValue('ali-barber-kajang');
+  await expect(app.getByText(/is taken by another shop/)).toHaveCount(0);
+  await snap(page, 'demo-17-link-taken');
+
+  // Picked "Barber / shop owner" by mistake: a way out, without a shop left behind.
+  await button(app, 'I’m a customer, not a barber').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Yes, I’m a customer', exact: true }).click();
+  await expect(app.getByRole('heading', { name: 'Ali Barber Sungai Chua' })).toBeVisible();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await expect(app.getByText('hafiz@test.my')).toBeVisible();
+});
+
+test('closing over bookings shows who is booked, and the barber cancels and tells them first', async ({ page, context }) => {
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'Close for a few days').click();
+
+  // Nothing to press until a day is picked, and days with customers coming say so.
+  await expect(button(app, 'Pick the first day')).toBeDisabled();
+  await app.getByRole('radio', { name: /^Tomorrow \d+ \w+ \d+ booked$/ }).click();
+  await expect(app.getByRole('heading', { name: /^\d+ bookings? on these days$/ })).toBeVisible();
+  await expect(app.getByText(/^Cancel the (booking|\d+ bookings) on these days first\.$/)).toBeVisible();
+  await expect(button(app, 'Close for 1 day')).toBeDisabled();
+  await snap(page, 'demo-16-close-over-bookings');
+
+  // Hakim's cut is cancelled here, and he can be told on WhatsApp straight after.
+  await button(app, /^Cancel Hakim’s booking on /).click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Cancel and WhatsApp', exact: true }).click();
+  await expect(button(app, /^Cancel Hakim’s booking on /)).toHaveCount(0);
+  await expect(button(app, 'WhatsApp Hakim')).toHaveText(/Let them know$/);
+  const opened = context.waitForEvent('page');
+  await button(app, 'WhatsApp Hakim').click();
+  const whatsapp = await opened;
+  await whatsapp.waitForLoadState();
+  const text = new URL(whatsapp.url()).searchParams.get('text');
+  await whatsapp.close();
+  expect(text).toMatch(/^Hi Hakim, sorry, Ali Barber Sungai Chua has to cancel your Skin fade on .+ at 4:30 pm\. /);
+
+  // Once nobody is left, the shop closes for the day.
+  const cancels = app.getByRole('button', { name: /^Cancel .*’s booking on / });
+  while ((await cancels.count()) > 0) {
+    const before = await cancels.count();
+    await cancels.first().click();
+    await app.getByRole('alertdialog').getByRole('button', { name: /^Cancel (and WhatsApp|booking)$/ }).click();
+    await expect(cancels).toHaveCount(before - 1);
+  }
+  await expect(app.getByRole('heading', { name: 'Bookings cancelled' })).toBeVisible();
+  await expect(app.getByText(/^You’ll be closed /)).toBeVisible();
+  await app.getByLabel('Reason (optional)', { exact: true }).fill('Kenduri');
+  await button(app, 'Close for 1 day').click();
+  await expect(app.getByText('Kenduri', { exact: true })).toBeVisible();
 });
 
 test('a customer moves their cut, and can put the new time in their calendar', async ({ page }) => {
@@ -326,7 +401,9 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   // Pause bookings, then start over: the shop is live again.
   await button(app, 'Pause bookings').click();
   await app.getByRole('alertdialog').getByRole('button', { name: 'Pause bookings', exact: true }).click();
-  await expect(app.getByText('Not live yet')).toBeVisible();
+  // Paused, not new: bookings already made still stand.
+  await expect(app.getByText('Bookings paused')).toBeVisible();
+  await expect(button(app, 'Turn bookings back on')).toBeVisible();
   await button(app, 'See the customer side').click();
   await expect(app.getByText('Kemas Barber Kajang')).toBeVisible();
   await expect(app.getByText('Ali Barber Sungai Chua')).toHaveCount(0);

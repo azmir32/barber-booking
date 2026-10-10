@@ -58,6 +58,9 @@ create table public.shops (
   instagram text check (length(instagram) <= 60),
   time_zone text not null default 'Asia/Kuala_Lumpur',
   is_published boolean not null default false,
+  -- When the shop first went live (set by shops_first_published below), so
+  -- My shop can tell a paused shop from one that has never been live.
+  published_at timestamptz,
   -- Billing: every shop starts with a one-month free trial. Until payments are
   -- built, an admin sets subscription_status = 'active' by hand.
   trial_ends_at timestamptz not null default now() + interval '30 days',
@@ -87,6 +90,24 @@ set search_path = public
 as $$
   select exists (select 1 from shops where id = p_shop_id and owner_id = auth.uid());
 $$;
+
+-- Notes when a shop first goes live. Owners can't write published_at
+-- themselves (see the grants below), and pausing keeps it.
+create function public.shops_first_published()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.is_published and new.published_at is null then
+    new.published_at := now();
+  end if;
+  return new;
+end;
+$$;
+
+create trigger shops_first_published
+  before insert or update on public.shops
+  for each row execute function public.shops_first_published();
 
 -- The signed-in barber's shop (an owner has at most one), or null. Policies
 -- call it as (select public.my_shop_id()) so Postgres works it out once per
@@ -960,6 +981,8 @@ as $$
 declare
   v_shop shops;
   v_today date;
+  v_count int;
+  v_first timestamptz;
 begin
   select * into v_shop from shops where owner_id = auth.uid();
   if not found then
@@ -975,16 +998,19 @@ begin
 
   perform public.lock_shop_diary(v_shop.id);
   -- Customers already served today don't count, only those still to come.
-  if exists (
-    select 1 from bookings
-    where shop_id = v_shop.id
-      and not is_block
-      and status = 'confirmed'
-      and ends_at > now()
-      and starts_at < (p_from + p_days)::timestamp at time zone v_shop.time_zone
-      and ends_at > p_from::timestamp at time zone v_shop.time_zone
-  ) then
-    raise exception 'There are bookings on those days. Cancel them first (and let the customers know), then close the shop.'
+  select count(*), min(starts_at) into v_count, v_first
+  from bookings
+  where shop_id = v_shop.id
+    and not is_block
+    and status = 'confirmed'
+    and ends_at > now()
+    and starts_at < (p_from + p_days)::timestamp at time zone v_shop.time_zone
+    and ends_at > p_from::timestamp at time zone v_shop.time_zone;
+  -- How many and the first day (on the shop's clock), which the app puts in
+  -- its own words; the rest reads as it is for anyone calling this directly.
+  if v_count > 0 then
+    raise exception 'There are bookings on those days (%, the first on %). Cancel them first (and let the customers know), then close the shop.',
+      v_count, to_char(greatest(v_first at time zone v_shop.time_zone, p_from::timestamp), 'YYYY-MM-DD')
       using errcode = 'P0001';
   end if;
 
@@ -1446,8 +1472,30 @@ begin
 end;
 $$;
 
+-- Someone who signed up as a barber by mistake, before making a shop, can
+-- use the app as a customer instead. Owners of a shop can't: their shop
+-- would be left without anyone to run it.
+create function public.become_customer()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not signed in.' using errcode = '42501';
+  end if;
+  if exists (select 1 from shops where owner_id = auth.uid()) then
+    raise exception 'You have a shop, so this account stays a barber account.' using errcode = 'P0001';
+  end if;
+  update profiles set role = 'customer' where id = auth.uid();
+end;
+$$;
+
 revoke execute on function public.delete_my_account() from public, anon;
 grant execute on function public.delete_my_account() to authenticated;
+revoke execute on function public.become_customer() from public, anon;
+grant execute on function public.become_customer() to authenticated;
 revoke execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) from public, anon;
 grant execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) to authenticated;
 revoke execute on function public.book_appointment(uuid, timestamptz, uuid, text) from public, anon;
