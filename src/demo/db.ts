@@ -423,7 +423,11 @@ function moveToToday(saved: Tables, savedOn: string) {
     const dates = Object.keys(columns).filter((c) => columns[c].type === 'date');
     for (const row of saved[table] ?? []) {
       for (const c of moved) {
-        if (row[c] != null) row[c] = new Date(ms(row[c]) + days * 86_400_000).toISOString();
+        if (row[c] == null) continue;
+        const at = ms(row[c]) + days * 86_400_000;
+        // A customer's change has already happened. Opened at an earlier hour than last time, it
+        // would land later today, and a phone that saw it would miss everything booked before then.
+        row[c] = new Date(c === 'customer_changed_at' ? Math.min(at, clock()) : at).toISOString();
       }
       for (const c of dates) {
         if (row[c] != null) row[c] = addDays(String(row[c]), days);

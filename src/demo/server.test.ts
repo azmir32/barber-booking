@@ -1051,6 +1051,57 @@ test('opened a day later, the weeks before yesterday keep their weekdays', () =>
   }
 });
 
+test('opened the next morning, what customers changed last evening is still in the past, and a new booking still counts', async () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const changes = async (since: string | null = null) =>
+    (await ali.rpc('shop_changes', { p_since: since, p_limit: 5 })).data as ShopChanges;
+  try {
+    // Tried at 8 pm, opened again at 9 am: moved a whole day, the sample changes would be this evening.
+    setClock(() => dayBounds(today(), TZ).start.getTime() + 20 * 3_600_000);
+    resetDemo();
+    save();
+    const morning = addDays(today(), 1);
+    let clock = dayBounds(morning, TZ).start.getTime() + 9 * 3_600_000;
+    setClock(() => clock);
+    reloadTables();
+    const news = await changes();
+    assert.equal(news.count, 3);
+    assert.ok(news.latest && Date.parse(news.latest) <= clock, `latest ${news.latest}`);
+    for (const c of news.changes) assert.ok(Date.parse(String(c.changed_at)) <= clock, `${c.change} at ${c.changed_at}`);
+
+    // Got it keeps the newest, and Hakim's booking a few minutes later is news.
+    clock += 5 * 60_000;
+    const shop = await shopBySlug(hakim, 'ali-barber');
+    const { data: services } = await hakim.from('services').select('*').eq('shop_id', shop.id).order('sort_order');
+    let slot: { barber_id: string; starts_at: string } | undefined;
+    for (let d = 1; !slot && d < 7; d++) {
+      const { data } = await hakim.rpc('available_slots', { p_service_id: services![0].id, p_day: addDays(morning, d) });
+      slot = data?.[0];
+    }
+    assert.ok(slot);
+    const booked = await hakim.rpc('book_appointment', {
+      p_service_id: services![0].id,
+      p_starts_at: slot.starts_at,
+      p_barber_id: slot.barber_id,
+    });
+    assert.equal(booked.error, null);
+    const after = await changes(news.latest);
+    assert.deepEqual([after.count, after.changes[0]?.booking_id], [1, booked.data.id]);
+  } finally {
+    setClock(() => Date.now());
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});
+
 test('ids stay unique and rows that others point at keep theirs', async () => {
   const ali = await signedIn(DEMO_BARBER_EMAIL);
   const kemas = await shopBySlug(ali, 'kemas-barber-kajang');
