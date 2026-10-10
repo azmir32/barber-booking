@@ -13,13 +13,18 @@ create type public.booking_status as enum ('confirmed', 'cancelled', 'completed'
 create table public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   role public.user_role not null default 'customer',
-  full_name text not null default '' check (length(full_name) <= 80),
+  full_name text not null check (length(full_name) <= 80),
+  -- A blank name left the barber with a booking from nobody, and the
+  -- customer's WhatsApp messages read "this is ."
+  constraint profiles_full_name_not_blank check (length(trim(full_name)) > 0),
   phone text check (length(phone) <= 20),
   created_at timestamptz not null default now()
 );
 
 -- Create a profile whenever someone signs up. The app passes role, full_name
--- and phone in the sign-up metadata.
+-- and phone in the sign-up metadata, and always a name. An account made
+-- another way (say, by hand in the Supabase dashboard) is named after its
+-- email instead, so it can still be created.
 create function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -32,7 +37,11 @@ begin
     new.id,
     case when new.raw_user_meta_data ->> 'role' = 'barber' then 'barber'::public.user_role
          else 'customer'::public.user_role end,
-    left(trim(coalesce(new.raw_user_meta_data ->> 'full_name', '')), 80),
+    coalesce(
+      nullif(left(trim(coalesce(new.raw_user_meta_data ->> 'full_name', '')), 80), ''),
+      nullif(left(trim(split_part(coalesce(new.email, ''), '@', 1)), 80), ''),
+      'Customer'
+    ),
     nullif(left(trim(coalesce(new.raw_user_meta_data ->> 'phone', '')), 20), '')
   );
   return new;
@@ -1418,6 +1427,36 @@ begin
 end;
 $$;
 
+-- A customer's own bookings, newest first, each with its shop and barber.
+-- Customers can only read live shops (and their barbers), so a plain select
+-- of bookings with shops(...) lost the shop's name, address and phone the
+-- moment it paused: the booking still stood, but the customer no longer knew
+-- where to go or how to reach the shop. is_live says whether it still takes
+-- online bookings, so the app can hide Change time and say why.
+create function public.my_bookings(p_limit int default 100)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(jsonb_agg(x.item order by x.starts_at desc, x.id), '[]'::jsonb)
+  from (
+    select b.id, b.starts_at,
+           to_jsonb(b) || jsonb_build_object(
+             'shops', jsonb_build_object(
+               'name', s.name, 'slug', s.slug, 'address', s.address, 'area', s.area,
+               'phone', s.phone, 'time_zone', s.time_zone, 'is_live', public.shop_is_live(s)),
+             'barbers', jsonb_build_object('name', br.name)) as item
+    from bookings b
+    join shops s on s.id = b.shop_id
+    join barbers br on br.id = b.barber_id
+    where b.customer_id = auth.uid()
+    order by b.starts_at desc, b.id
+    limit least(greatest(coalesce(p_limit, 100), 1), 200)
+  ) x;
+$$;
+
 -- People can delete their own account (the app stores require it).
 -- A customer's upcoming bookings are cancelled, and their past ones stay in
 -- the shop's history without their name or phone. An owner's shop goes
@@ -1447,6 +1486,8 @@ end;
 $$;
 
 revoke execute on function public.delete_my_account() from public, anon;
+revoke execute on function public.my_bookings(int) from public, anon;
+grant execute on function public.my_bookings(int) to authenticated;
 grant execute on function public.delete_my_account() to authenticated;
 revoke execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) from public, anon;
 grant execute on function public.add_shop_booking(uuid, date, time, int, uuid, text, text, text, boolean) to authenticated;
