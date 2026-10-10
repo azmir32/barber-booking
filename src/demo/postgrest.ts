@@ -297,9 +297,12 @@ function shape(table: TableName, row: Row, items: Item[], path: string, q: Query
       checkReadable(...rel.via, q.caller);
       const childPath = path ? `${path}.${item.alias}` : item.alias;
       const ownFilters = q.filters.filter((f) => f.path === childPath || (f.path === (path ? `${path}.${item.name}` : item.name)));
-      let children = tables()[rel.table]
+      let found = tables()[rel.table]
         .filter((child) => rel.matches(row, child) && canSee(rel.table, child, q.caller))
-        .filter((child) => ownFilters.every((f) => matches(rel.table, child, f, q.caller)))
+        .filter((child) => ownFilters.every((f) => matches(rel.table, child, f, q.caller)));
+      // Sorted before shaping, as the order may be by a column the select leaves out.
+      if (!rel.one) found = sortRows(rel.table, found, parseOrder(q.params.get(`${childPath}.order`)), q.caller);
+      let children = found
         .map((child) => shape(rel.table, child, item.items, childPath, q))
         .filter((child): child is Row => child !== null);
       const inner = item.hints.includes('inner');
@@ -307,7 +310,6 @@ function shape(table: TableName, row: Row, items: Item[], path: string, q: Query
         if (inner && children.length === 0) return null;
         out[item.alias] = children[0] ?? null;
       } else {
-        children = sortRows(rel.table, children, parseOrder(q.params.get(`${childPath}.order`)), q.caller);
         const offset = Number(q.params.get(`${childPath}.offset`) ?? 0);
         const limit = q.params.get(`${childPath}.limit`);
         children = children.slice(offset, limit == null ? undefined : offset + Number(limit));

@@ -1704,22 +1704,29 @@ test('anyone reads a live shop’s reviews, but not who wrote them, and the owne
   assert.equal((await reply(hakim, 'Hi')).error?.message, 'Review not found.');
   assert.equal((await reply(guest, 'Hi')).error?.code, '42501');
 
-  // My shop's card: the count, the total and the newest review with a comment, in one request.
-  const card = await rahman
-    .from('shops')
-    .select('rating_count, rating_sum, reviews(rating, comment, first_name, created_at)')
-    .eq('id', kemas.id)
-    .not('reviews.comment', 'is', null)
-    .order('created_at', { referencedTable: 'reviews', ascending: false })
-    .limit(1, { referencedTable: 'reviews' })
-    .single();
+  // My shop's card: the count, the total and the newest review with a comment, in one request,
+  // ordered by a column it doesn't read, as the app asks.
+  const cardOf = (c: ReturnType<typeof client>, shopId: unknown) =>
+    c
+      .from('shops')
+      .select('rating_count, rating_sum, reviews(rating, comment, first_name)')
+      .eq('id', shopId)
+      .not('reviews.comment', 'is', null)
+      .order('created_at', { referencedTable: 'reviews', ascending: false })
+      .limit(1, { referencedTable: 'reviews' })
+      .single();
+  const newestComment = (shopId: unknown) =>
+    tables()
+      .reviews.filter((r) => r.shop_id === shopId && r.comment != null)
+      .sort((a, b) => Date.parse(String(b.created_at)) - Date.parse(String(a.created_at)))[0].comment;
+  const card = await cardOf(rahman, kemas.id);
   assert.equal(card.error, null);
   assert.deepEqual([card.data!.rating_count, card.data!.rating_sum], [totals.count, totals.sum]);
   assert.equal(card.data!.reviews.length, 1);
-  const newest = tables()
-    .reviews.filter((r) => r.shop_id === kemas.id && r.comment != null)
-    .sort((a, b) => Date.parse(String(b.created_at)) - Date.parse(String(a.created_at)))[0];
-  assert.equal(card.data!.reviews[0].comment, newest.comment);
+  assert.equal(card.data!.reviews[0].comment, newestComment(kemas.id));
+  // At Ali's the first review left is not the newest, so this one shows the order is kept.
+  const aliShop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+  assert.equal((await cardOf(ali, aliShop.id)).data!.reviews[0].comment, newestComment(aliShop.id));
 
   // Paused, its reviews are hidden, except from the owner and each reviewer.
   assert.equal((await hakim.rpc('rate_booking', { p_booking_id: doneAt(await myBookings(hakim), 'kemas-barber-kajang').id, p_rating: 4 })).error, null);
