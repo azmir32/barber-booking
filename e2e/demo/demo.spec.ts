@@ -178,7 +178,8 @@ test('a reminder sent from a screen that missed a move says so, and the new time
   await app.getByRole('radio', { name: /^Tomorrow/ }).click();
   await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
 
-  // Hakim moves his cut an hour later on his own phone; this screen hasn't reloaded yet.
+  // Hakim moves his cut an hour earlier on his own phone; this screen hasn't reloaded yet.
+  // (Not later: when tomorrow is a Monday, Danial is off and Wei Jie is in Ali's chair at 6 pm.)
   await page.evaluate(() => {
     const key = 'potongku.demo.v1';
     const saved = JSON.parse(localStorage.getItem(key)!);
@@ -187,8 +188,8 @@ test('a reminder sent from a screen that missed a move says so, and the new time
     const cut = (saved.tables.bookings as Row[]).find(
       (b) => b.customer_id === hakim.id && b.status === 'confirmed' && Date.parse(b.starts_at!) > Date.now(),
     )!;
-    const later = (at: string | null) => new Date(Date.parse(at!) + 3_600_000).toISOString();
-    Object.assign(cut, { starts_at: later(cut.starts_at), ends_at: later(cut.ends_at), reminded_at: null });
+    const earlier = (at: string | null) => new Date(Date.parse(at!) - 3_600_000).toISOString();
+    Object.assign(cut, { starts_at: earlier(cut.starts_at), ends_at: earlier(cut.ends_at), reminded_at: null });
     localStorage.setItem(key, JSON.stringify(saved));
   });
 
@@ -198,12 +199,12 @@ test('a reminder sent from a screen that missed a move says so, and the new time
   // The row now shows the new time, says the reminder wasn't saved, and still offers one.
   const notSaved = app.getByRole('alert');
   await expect(notSaved).toHaveText('Reminder not saved. This booking has changed. Check the new time.');
-  await expect(app.getByText('5:30 pm', { exact: true })).toBeVisible();
+  await expect(app.getByText('3:30 pm', { exact: true })).toBeVisible();
   await snap(page, 'demo-11-reminder-not-saved');
 
   const again = context.waitForEvent('page');
   await button(app, 'Remind Hakim on WhatsApp').click();
-  expect(await sent(again)).toMatch(/is tomorrow at 5:30 pm\./);
+  expect(await sent(again)).toMatch(/is tomorrow at 3:30 pm\./);
   await expect(notSaved).toHaveCount(0);
   await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
 });
