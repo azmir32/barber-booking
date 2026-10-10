@@ -58,7 +58,7 @@ test('the tab shows no number without news, and never more than 9+', () => {
   assert.equal(badgeText(250), '9+');
   assert.equal(changesLabel(1), '1 change since you last looked');
   assert.equal(changesLabel(12), '12 changes since you last looked');
-  inMalay(() => assert.equal(changesLabel(3), '3 perubahan sejak kali terakhir anda lihat'));
+  inMalay(() => assert.equal(changesLabel(3), '3 perubahan sejak anda terakhir lihat'));
 });
 
 test('each change reads as one sentence: who, what, when and whose chair', () => {

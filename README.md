@@ -23,6 +23,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Services menu with prices and durations, plus quick-add suggestions
 - Barbers (one per chair) with weekly working hours and an optional daily break (e.g. Friday prayers); a solo barber is a shop with one chair
 - Bookings by day with expected takings, refreshed every minute and by pulling down; mark done or no-show once the time has started, move a booking to another free time when the customer calls (it stays theirs, and a WhatsApp tells them the new time), cancel, WhatsApp the customer
+- What customers changed since you last looked: the Bookings tab shows how many bookings customers made, moved or cancelled (checked every minute and when the app comes back), and a card at the top lists them, e.g. "Wei Jie cancelled today at 5:30 pm with Ali, so that chair is free". Each line opens its day; new bookings say New until Got it, which each phone remembers by the newest change it was sent
 - WhatsApp reminders the day before: one tap opens WhatsApp with the message written, and every phone in the shop sees who has been reminded (moving a booking clears it; one that never went out can be taken back). Today's view says how many of tomorrow's customers are still to remind. Customers who booked today, or are coming later today, can still be reminded from More
 - Customer list from My shop: everyone who has booked or been in, online or added by the shop (walk-ins are matched by phone number however it was typed, including to an online customer with that number), with their number, visits, last cut and next booking. Customers due for a cut (their usual gap between cuts has passed and nothing is booked) come first, with a ready-written WhatsApp invite that includes the booking link, which is also there for anyone away much longer; anyone with a number can be messaged or called. Searchable by name or number
 - Add walk-in, WhatsApp or phone bookings, and block time or a whole day off (or close the whole shop for the day), so online customers can't take those times
@@ -36,6 +37,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Bookings are only created through `book_appointment` (customers) and `add_shop_booking` (owners), and moved through `reschedule_booking` (the customer, or the shop's owner), which re-check the slot is free and inside working hours
 - Customers only see their own bookings; owners only see their own shop's bookings and customers
 - Takings come from one owner-only `shop_summary` call over at most 93 days, counted at the price each booking was made at
+- What customers changed comes from one owner-only `shop_changes` call: only what customers did themselves (the booking functions note it; the shop's own changes never count), for bookings from today on, at most a week back
 - Shops are only visible while published and paid up or inside the free trial
 - Owners can't change their own trial or subscription status, or when their shop first went live (`shops.published_at`, set by the database)
 - A barber account can turn into a customer one (`become_customer`) only while it has no shop

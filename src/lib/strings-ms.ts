@@ -814,9 +814,9 @@ export const ms: Record<string, string> = {
 
   // Round 8, what customers changed since the barber last looked (barber/(tabs)/_layout.tsx,
   // barber/(tabs)/index.tsx, lib/news.ts)
-  '1 change since you last looked': '1 perubahan sejak kali terakhir anda lihat',
-  '{count} changes since you last looked': '{count} perubahan sejak kali terakhir anda lihat',
-  'Since you last looked': 'Sejak kali terakhir anda lihat',
+  '1 change since you last looked': '1 perubahan sejak anda terakhir lihat',
+  '{count} changes since you last looked': '{count} perubahan sejak anda terakhir lihat',
+  'Since you last looked': 'Sejak anda terakhir lihat',
   'Got it': 'Faham',
   New: 'Baharu',
   Moved: 'Masa ditukar',
