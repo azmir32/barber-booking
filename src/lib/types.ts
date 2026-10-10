@@ -26,6 +26,9 @@ export type Shop = {
   published_at: string | null;
   trial_ends_at: string;
   subscription_status: 'trialing' | 'active' | 'past_due' | 'cancelled';
+  /** How many reviews the shop has and their stars added up; kept by the database. */
+  rating_count: number;
+  rating_sum: number;
   created_at: string;
 };
 

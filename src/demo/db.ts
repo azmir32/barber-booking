@@ -14,7 +14,8 @@ export type TableName =
   | 'services'
   | 'working_hours'
   | 'bookings'
-  | 'shop_closures';
+  | 'shop_closures'
+  | 'reviews';
 export type Tables = Record<TableName, Row[]>;
 type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = {
@@ -104,6 +105,9 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     published_at: { ...opt('timestamptz'), backfill: (r) => (r.is_published ? r.created_at : null) },
     trial_ends_at: req('timestamptz', () => new Date(clock() + 30 * 86_400_000).toISOString()),
     subscription_status: req('text', () => 'trialing', ['trialing', 'active', 'past_due', 'cancelled']),
+    // Kept by the reviews_count trigger (countReview below).
+    rating_count: req('int', () => 0),
+    rating_sum: req('int', () => 0),
     created_at: createdAt,
   },
   barbers: {
@@ -154,11 +158,25 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     day: req('date'),
     reason: opt('text'),
   },
+  reviews: {
+    booking_id: req('uuid'),
+    shop_id: req('uuid'),
+    barber_id: req('uuid'),
+    customer_id: req('uuid'),
+    rating: req('int'),
+    comment: opt('text'),
+    first_name: req('text'),
+    reply: opt('text'),
+    replied_at: opt('timestamptz'),
+    created_at: createdAt,
+    updated_at: req('timestamptz', nowIso),
+  },
 };
 
 /** Tables keyed by something other than id. */
 const PRIMARY_KEY: Partial<Record<TableName, string[]>> = {
   shop_closures: ['shop_id', 'day'],
+  reviews: ['booking_id'],
 };
 
 /** Postgres trim(): spaces only, unlike String.prototype.trim. */
@@ -205,6 +223,13 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['bookings_check1', (r) => Boolean(r.is_block) || r.customer_id != null || r.guest_name != null],
   ],
   shop_closures: [['shop_closures_reason_check', (r) => atMost(r.reason, 80)]],
+  reviews: [
+    ['reviews_rating_check', (r) => between(r.rating as number, 1, 5)],
+    ['reviews_comment_check', (r) => atMost(r.comment, 280)],
+    ['reviews_first_name_check', (r) => atMost(r.first_name, 40)],
+    ['reviews_reply_check', (r) => atMost(r.reply, 280)],
+    ['reviews_check', (r) => (r.reply == null) === (r.replied_at == null)],
+  ],
 };
 
 const UNIQUE: Partial<Record<TableName, [string, string][]>> = {
@@ -283,6 +308,16 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     table: 'shop_closures',
     column: 'shop_id',
     references: 'shops',
+    onDelete: 'cascade',
+  },
+  { name: 'reviews_booking_id_fkey', table: 'reviews', column: 'booking_id', references: 'bookings', onDelete: 'cascade' },
+  { name: 'reviews_shop_id_fkey', table: 'reviews', column: 'shop_id', references: 'shops', onDelete: 'cascade' },
+  { name: 'reviews_barber_id_fkey', table: 'reviews', column: 'barber_id', references: 'barbers', onDelete: 'restrict' },
+  {
+    name: 'reviews_customer_id_fkey',
+    table: 'reviews',
+    column: 'customer_id',
+    references: 'profiles',
     onDelete: 'cascade',
   },
 ];
@@ -407,10 +442,12 @@ function seeded(): Tables {
  * are laid out again for the new day instead: moved by a day, Ali would have
  * worked his Sundays off and Takings would name the wrong busy days. Nobody
  * can change those bookings in the app any more, so nothing is lost.
+ * A demo saved before reviews came in is laid out again the same day, so
+ * it gets the sample ones.
  */
 function moveToToday(saved: Tables, savedOn: string) {
   const days = Math.round((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${savedOn}T00:00:00Z`)) / 86_400_000);
-  if (!Number.isFinite(days) || days === 0) return;
+  if (!Number.isFinite(days) || (days === 0 && Array.isArray(saved.reviews))) return;
   for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
     const moved = Object.keys(columns).filter((c) => columns[c].type === 'timestamptz');
     const dates = Object.keys(columns).filter((c) => columns[c].type === 'date');
@@ -427,31 +464,63 @@ function moveToToday(saved: Tables, savedOn: string) {
   const past = sampleHistory();
   const kept = saved.bookings.filter((b) => !String(b.id).startsWith(HISTORY_ID));
   const barbers = new Set((saved.barbers ?? []).map((b) => b.id));
-  const users = new Set((saved.users ?? []).map((u) => u.id));
+  // The sample customers added after the first bookings get ids that
+  // depend on the weekday, so each is found again by their email.
+  const savedIds = new Map((saved.users ?? []).map((u) => [u.email, u.id]));
+  const userIds = new Map(past.users.map((u) => [u.id, savedIds.get(u.email)]));
   const [[, clash]] = EXCLUDE.bookings!;
-  const end = Math.max(0, ...past.map((b) => ms(b.ends_at)));
+  const end = Math.max(0, ...past.bookings.map((b) => ms(b.ends_at)));
   const earlier = kept.filter((b) => ms(b.starts_at) < end);
   saved.bookings = [
     ...kept,
     // A deleted shop or barber takes its history with it, and a customer who
     // deleted their account is gone from theirs, as delete_my_account does.
-    ...past
+    ...past.bookings
       .filter((b) => barbers.has(b.barber_id) && !earlier.some((other) => clash(b, other)))
       .map((b) =>
-        b.customer_id == null || users.has(b.customer_id)
+        b.customer_id == null
           ? b
-          : { ...b, customer_id: null, guest_name: 'Deleted account', guest_phone: null, customer_note: null },
+          : userIds.get(b.customer_id)
+            ? { ...b, customer_id: userIds.get(b.customer_id) }
+            : { ...b, customer_id: null, guest_name: 'Deleted account', guest_phone: null, customer_note: null },
       ),
   ];
+
+  // A review stays while the booking it is on is still that customer's cut
+  // at that shop, so ratings and replies people wrote are kept; it follows
+  // the cut if it was laid out with the other barber. The weeks laid out
+  // again bring their sample reviews, and a demo saved before reviews came
+  // in gets every sample review that fits.
+  const byId = new Map(saved.bookings.map((b) => [b.id, b]));
+  const fits = (r: Row) => {
+    const b = byId.get(r.booking_id);
+    return b != null && b.customer_id === r.customer_id && b.shop_id === r.shop_id;
+  };
+  const had = Array.isArray(saved.reviews) ? saved.reviews : null;
+  const stays = (had ?? []).filter(fits);
+  const reviewed = new Set(stays.map((r) => r.booking_id));
+  saved.reviews = [
+    ...stays,
+    ...past.reviews
+      .map((r): Row => ({ ...r, customer_id: userIds.get(r.customer_id) }))
+      .filter(
+        (r) =>
+          !reviewed.has(r.booking_id) &&
+          (had == null || String(r.booking_id).startsWith(HISTORY_ID)) &&
+          fits(r) &&
+          byId.get(r.booking_id)!.status === 'completed',
+      ),
+  ].map((r) => ({ ...r, barber_id: byId.get(r.booking_id)!.barber_id }));
 }
 
-/** The sample bookings from before yesterday, as the seed lays them out for today. */
-function sampleHistory(): Row[] {
+/** The sample bookings from before yesterday, every sample review and their customers, as the seed lays them out for today. */
+function sampleHistory(): { bookings: Row[]; reviews: Row[]; users: Row[] } {
   const kept = current;
   current = emptyTables();
   try {
     seedFn?.();
-    return current.bookings.filter((b) => String(b.id).startsWith(HISTORY_ID));
+    const { bookings, reviews, users } = current;
+    return { bookings: bookings.filter((b) => String(b.id).startsWith(HISTORY_ID)), reviews, users };
   } finally {
     current = kept;
   }
@@ -463,6 +532,7 @@ export function tables(): Tables {
     const saved = storage()?.getItem(STORAGE_KEY);
     const parsed = saved ? (JSON.parse(saved) as { tables?: Tables; seededOn?: string }) : null;
     if (parsed?.tables && Array.isArray(parsed.tables.bookings)) {
+      const hadReviews = Array.isArray(parsed.tables.reviews);
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn);
       // A demo saved before a table was added has no list for it yet,
       // and one saved before a column was added has it empty.
@@ -474,8 +544,9 @@ export function tables(): Tables {
           }
         }
       }
+      recountReviews(current);
       seededOn = today();
-      if (parsed.seededOn !== seededOn) save();
+      if (parsed.seededOn !== seededOn || !hadReviews) save();
     }
   } catch {
     // Unreadable or blocked storage: start fresh.
@@ -582,6 +653,7 @@ export function insertRow(table: TableName, values: Row, guard?: (row: Row) => v
   checkRow(table, row);
   tables()[table].push(row);
   if (table === 'users') handleNewUser(row);
+  if (table === 'reviews') countReview(row, 1);
   return row;
 }
 
@@ -616,6 +688,10 @@ export function updateRows(table: TableName, rows: Row[], patch: Row, guard?: (r
       list.splice(index, 0, row);
     }
     list[index] = next;
+    if (table === 'reviews') {
+      countReview(row, -1);
+      countReview(next, 1);
+    }
     updated.push(next);
   }
   return updated;
@@ -655,7 +731,31 @@ export function deleteRows(table: TableName, rows: Row[]) {
       }
     }
   }
+  for (const review of doomed.get('reviews') ?? []) countReview(review, -1);
   for (const [t, set] of doomed) all[t] = all[t].filter((r) => !set.has(r));
+}
+
+/** The reviews_count trigger: adds a review to its shop's count and total, or (sign -1) takes it off. */
+function countReview(review: Row, sign: 1 | -1) {
+  const shop = findById('shops', review.shop_id);
+  if (!shop) return;
+  shop.rating_count = (shop.rating_count as number) + sign;
+  shop.rating_sum = (shop.rating_sum as number) + sign * (review.rating as number);
+}
+
+/** Every shop's count and total worked out afresh, for a saved demo whose reviews were laid out again. */
+function recountReviews(all: Tables) {
+  const byShop = new Map<unknown, Row>(all.shops.map((s) => [s.id, s]));
+  for (const shop of all.shops) {
+    shop.rating_count = 0;
+    shop.rating_sum = 0;
+  }
+  for (const review of all.reviews) {
+    const shop = byShop.get(review.shop_id);
+    if (!shop) continue;
+    shop.rating_count = (shop.rating_count as number) + 1;
+    shop.rating_sum = (shop.rating_sum as number) + (review.rating as number);
+  }
 }
 
 /** The shops_first_published trigger: notes when a shop first goes live, and keeps it while paused. */

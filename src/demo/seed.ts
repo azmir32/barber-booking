@@ -1,11 +1,12 @@
 // Sample data for the demo: four shops around Kajang, their customers, a
-// few days of bookings either side of today and eight weeks of history at
-// Ali's. Everything is placed relative to "now", so the demo always looks
-// lived in.
+// few days of bookings either side of today, eight weeks of history at
+// Ali's and the reviews customers left. Everything is placed relative to
+// "now", so the demo always looks lived in.
 
 import { WALK_IN } from '../lib/customers.ts';
+import { firstName } from '../lib/reviews.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { HISTORY_ID, insertRow, now, setSeed, tables, type Row } from './db.ts';
+import { findById, HISTORY_ID, insertRow, now, setSeed, tables, type Row } from './db.ts';
 
 export const DEMO_PASSWORD = 'demo1234';
 export const DEMO_CUSTOMER_EMAIL = 'hakim@demo.potongku.my';
@@ -106,12 +107,13 @@ function seed() {
     });
   };
 
-  const book = (shopRow: Row, b: Booked) => {
+  /** The booking, or null when the barber doesn't work then. */
+  const book = (shopRow: Row, b: Booked, id?: string) => {
     const minutes = b.block ? b.block[1] : (b.service!.duration_min as number);
-    if (!works(b.barber.hours, b.day, b.at, minutes)) return false;
+    if (!works(b.barber.hours, b.day, b.at, minutes)) return null;
     const starts = startOf(b.day, b.at);
-    insertRow('bookings', {
-      id: b.day < -1 ? pastId() : sid(),
+    return insertRow('bookings', {
+      id: id ?? (b.day < -1 ? pastId() : sid()),
       shop_id: shopRow.id,
       barber_id: b.barber.row.id,
       service_id: b.service?.id ?? null,
@@ -128,7 +130,6 @@ function seed() {
       reminded_at: b.reminded ? new Date(now() - 2 * 3_600_000).toISOString() : null,
       created_at: new Date(Math.min(now(), starts) - 2 * DAY).toISOString(),
     });
-    return true;
   };
 
   // People ---------------------------------------------------------------------
@@ -375,6 +376,105 @@ function seed() {
       }
     }
   }
+
+  // Reviews ------------------------------------------------------------------------
+  // Mostly happy, a few so-so, in English and Malay, now and then with the
+  // shop's answer. Each is left some hours after the cut, as people do.
+  // Hakim's cut at Kemas twelve days ago stays unrated, so the demo has a
+  // cut to rate.
+  const HOUR = 3_600_000;
+  const review = (booking: Row | null | undefined, rating: number, after: number, comment?: string, reply?: string) => {
+    if (!booking) return;
+    const at = Math.min(now(), Date.parse(String(booking.ends_at)) + after * HOUR);
+    insertRow('reviews', {
+      booking_id: booking.id,
+      shop_id: booking.shop_id,
+      barber_id: booking.barber_id,
+      customer_id: booking.customer_id,
+      rating,
+      comment: comment ?? null,
+      first_name: firstName(String(findById('profiles', booking.customer_id)?.full_name ?? '')),
+      reply: reply ?? null,
+      replied_at: reply ? new Date(Math.min(now(), at + 5 * HOUR)).toISOString() : null,
+      created_at: new Date(at).toISOString(),
+      updated_at: new Date(at).toISOString(),
+    });
+  };
+  /** The customer's finished cut at Ali's on that day, from the regulars above. */
+  const cutAtAli = (customer: Row, day: number) =>
+    tables().bookings.find(
+      (b) =>
+        b.shop_id === sa.id &&
+        b.customer_id === customer.id &&
+        b.status === 'completed' &&
+        Date.parse(String(b.starts_at)) >= startOf(day, '00:00') &&
+        Date.parse(String(b.starts_at)) < startOf(day + 1, '00:00'),
+    );
+  review(
+    cutAtAli(danielTan, -44),
+    5,
+    3,
+    'Best haircut I’ve had in Kajang. They take their time and really listen.',
+    'Thanks Daniel! See you next month.',
+  );
+  review(cutAtAli(amirul, -26), 5, 20, 'Potong kemas, harga berpatutan. Memang akan datang lagi.');
+  review(cutAtAli(farid, -16), 4, 2, 'Good cut. Waited about 10 minutes even with a booking.');
+  review(cutAtAli(weiJie, -7), 5, 26, 'Always consistent, and booking here is so easy.');
+  review(
+    cutAtAli(ravi, -45),
+    3,
+    4,
+    'The cut was fine but a bit shorter on the sides than I asked.',
+    'Sorry about that, Ravi. We’ve noted it for next time.',
+  );
+  review(cutAtAli(jason, -25), 5, 30);
+  review(cutAtAli(hakim, -26), 5, 6, 'Neat cut and friendly service.');
+  review(cutAtAli(aiman, -1), 5, 3, 'Pantas dan kemas. Recommended!');
+
+  // A cut at another shop for a review. Its id stays the same whichever chair
+  // or day it lands on, so a demo saved on another day keeps its review.
+  let nextRated = 0;
+  const ratedCut = (s: ReturnType<typeof shop>, chair: number, day: number, at: string, service: number, customer: Row) => {
+    const id = `${HISTORY_ID}${String(900_000 + ++nextRated).padStart(12, '0')}`;
+    const chairs = [...s.barbers.slice(chair), ...s.barbers.slice(0, chair)];
+    for (const d of [day, day - 1]) {
+      for (const barber of chairs) {
+        const cut = book(s.shop, { barber, day: d, at, service: s.services[service], customer, status: 'completed' }, id);
+        if (cut) return cut;
+      }
+    }
+    return null;
+  };
+  review(ratedCut(k, 1, -5, '12:00', 1, syafiq), 5, 5, 'Fade was spot on, and they started right on time.');
+  review(ratedCut(k, 2, -9, '14:00', 0, farid), 4, 3, 'Neat cut. Parking in town is a pain, but worth it.');
+  review(ratedCut(k, 0, -15, '17:00', 2, weiJie), 5, 22, 'The hot towel shave is the best part of my month.');
+  review(ratedCut(k, 1, -19, '11:00', 3, amirul), 4, 8);
+  review(ratedCut(k, 2, -22, '18:00', 1, ravi), 5, 2, 'Very professional. Three chairs, so the wait is short.');
+  review(
+    ratedCut(k, 0, -30, '15:30', 0, aiman),
+    5,
+    4,
+    'Tukang gunting peramah, kedai bersih. Memang puas hati.',
+    'Terima kasih Aiman! Jumpa lagi.',
+  );
+  review(ratedCut(k, 1, -38, '13:00', 0, jason), 3, 6, 'Decent cut, but it felt a bit rushed.');
+
+  review(ratedCut(f, 0, -4, '20:00', 0, farid), 5, 2, 'Irfan is a fade artist. Worth every ringgit.');
+  review(ratedCut(f, 0, -10, '16:00', 1, syafiq), 5, 20, 'Asked for a simple line design and it came out clean.');
+  review(ratedCut(f, 0, -18, '19:00', 0, ravi), 4, 3, 'Great fade. A bit pricey, but no queue at all.');
+  review(ratedCut(f, 0, -27, '13:00', 2, jason), 5, 28);
+  review(ratedCut(f, 0, -33, '18:00', 0, weiJie), 5, 5, 'Fade paling kemas di Kajang. Tak perlu tunggu lama.');
+
+  review(ratedCut(m, 0, -6, '09:30', 0, aiman), 5, 7, 'Murah, cepat dan kemas. Kedai lama yang boleh harap.');
+  review(
+    ratedCut(m, 1, -13, '10:00', 1, amirul),
+    4,
+    9,
+    'Anak saya suka. Sabar layan budak yang tak reti duduk diam.',
+    'Terima kasih! Bawa adik datang lagi ya.',
+  );
+  review(ratedCut(m, 0, -24, '11:30', 0, syafiq), 4, 4, 'Simple cut, fair price. Exactly what it says.');
+  review(ratedCut(m, 1, -40, '16:00', 2, ravi), 3, 2, 'OK for the price, but the shave could be closer.');
 }
 
 setSeed(seed);

@@ -4,6 +4,7 @@
 // decide for themselves what the caller may do.
 
 import { toWhatsAppNumber } from '../lib/phone.ts';
+import { firstName, REVIEW_WINDOW_DAYS } from '../lib/reviews.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import {
   COLUMNS,
@@ -100,6 +101,9 @@ export function findShops(args: Record<string, unknown>) {
         barber_count: barbers.length,
         ...hoursToday(s),
         next_free_at: shopNextFree(s),
+        rating_count: s.rating_count,
+        // round(sum / count, 1), null without any.
+        rating_avg: s.rating_count ? Math.round(((s.rating_sum as number) * 10) / (s.rating_count as number)) / 10 : null,
       };
     });
 }
@@ -379,7 +383,8 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
 
 /**
  * The caller's own bookings, newest first, each with its shop and barber even
- * when the shop is hidden (paused, or its trial ended), and whether it is live.
+ * when the shop is hidden (paused, or its trial ended), whether it is live,
+ * and the caller's rating of the cut with the shop's reply, or null.
  */
 export function myBookings(c: Caller, limitArg: unknown = 100) {
   const limit = Math.min(Math.max(Number(limitArg ?? 100), 1), 200);
@@ -393,11 +398,22 @@ export function myBookings(c: Caller, limitArg: unknown = 100) {
       if (!shop || !barber) return [];
       const booking = Object.fromEntries(Object.keys(COLUMNS.bookings).map((k) => [k, b[k]]));
       const { name, slug, address, area, phone, time_zone } = shop;
+      const r = tables().reviews.find((x) => x.booking_id === b.id);
       return [
         {
           ...booking,
           shops: { name, slug, address, area, phone, time_zone, is_live: shopIsLive(shop) },
           barbers: { name: barber.name },
+          review: r
+            ? {
+                rating: r.rating,
+                comment: r.comment,
+                reply: r.reply,
+                replied_at: r.replied_at,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+              }
+            : null,
         },
       ];
     });
@@ -866,6 +882,70 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
     .map(({ row }) => ({ ...row, total_count: found.length, due_count: dueCount }));
 }
 
+// Reviews -------------------------------------------------------------------
+
+const REVIEW_WINDOW_MS = REVIEW_WINDOW_DAYS * 86_400_000;
+/** btrim(text, E' \t\r\n'), null when nothing is left. */
+const trimmedText = (v: unknown) => (v == null ? null : String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '') || null);
+
+/**
+ * The booking's own customer rates their cut, 1 to 5 stars with an optional
+ * comment, once the shop has marked it done and for 14 days after it started.
+ * Rating again in that time changes the same review.
+ */
+export function rateBooking(c: Caller, bookingId: unknown, ratingArg: unknown, commentArg: unknown = null) {
+  const booking = findById('bookings', toColumnValue('bookings', 'id', bookingId));
+  if (!booking || c.uid == null || booking.customer_id !== c.uid) {
+    throw new PgError('P0002', 'Booking not found.', 500);
+  }
+  if (ownsShop(booking.shop_id, c.uid)) throw new PgError('42501', 'You can\'t rate your own shop.', 403);
+  if (booking.status !== 'completed' || now() >= ms(booking.starts_at) + REVIEW_WINDOW_MS) {
+    throw new PgError('42501', 'You can rate a cut for 14 days, once the shop marks it done.', 403);
+  }
+  const rating = ratingArg == null ? null : Number(toColumnValue('reviews', 'rating', ratingArg));
+  if (rating == null || rating < 1 || rating > 5) throw new PgError('22023', 'Pick from 1 to 5 stars.', 400);
+  const comment = trimmedText(commentArg);
+  if (comment != null && [...comment].length > 280) {
+    throw new PgError('22001', 'Please keep your comment under 280 characters.', 400);
+  }
+  // The name they go by, never a surname.
+  const name = firstName(String(findById('profiles', c.uid)?.full_name ?? ''));
+
+  const existing = tables().reviews.find((r) => r.booking_id === booking.id);
+  if (existing) {
+    return updateRows('reviews', [existing], {
+      rating,
+      comment,
+      first_name: name,
+      updated_at: new Date(now()).toISOString(),
+    })[0];
+  }
+  return insertRow('reviews', {
+    booking_id: booking.id,
+    shop_id: booking.shop_id,
+    barber_id: booking.barber_id,
+    customer_id: booking.customer_id,
+    rating,
+    comment,
+    first_name: name,
+  });
+}
+
+/** The shop's owner replies under a review, or changes their reply. An empty reply takes it away. */
+export function replyToReview(c: Caller, bookingId: unknown, replyArg: unknown) {
+  const id = toColumnValue('reviews', 'booking_id', bookingId);
+  const review = tables().reviews.find((r) => r.booking_id === id);
+  if (!review || !ownsShop(review.shop_id, c.uid)) throw new PgError('P0002', 'Review not found.', 500);
+  const reply = trimmedText(replyArg);
+  if (reply != null && [...reply].length > 280) {
+    throw new PgError('22001', 'Please keep your reply under 280 characters.', 400);
+  }
+  return updateRows('reviews', [review], {
+    reply,
+    replied_at: reply != null ? new Date(now()).toISOString() : null,
+  })[0];
+}
+
 export function deleteMyAccount(c: Caller) {
   if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
   const mine = tables().bookings.filter((b) => b.customer_id === c.uid);
@@ -907,6 +987,8 @@ const SIGNED_IN_ONLY = new Set([
   'shop_summary',
   'shop_customers',
   'my_bookings',
+  'rate_booking',
+  'reply_to_review',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -957,6 +1039,10 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: shopCustomers(c, args) };
     case 'my_bookings':
       return { status: 200, body: myBookings(c, args.p_limit) };
+    case 'rate_booking':
+      return { status: 200, body: rateBooking(c, args.p_booking_id, args.p_rating, args.p_comment ?? null) };
+    case 'reply_to_review':
+      return { status: 200, body: replyToReview(c, args.p_booking_id, args.p_reply) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };
