@@ -583,6 +583,19 @@ test('the barber sees what customers changed since they last looked, and clears 
   await expect(app.getByRole('tab', { name: 'Bookings, 1 change since you last looked', exact: true })).toBeVisible();
   await expect(lines).toHaveCount(1);
   await expect(lines.first()).toHaveAccessibleName(/^Hakim booked Haircut for tomorrow at .+ with (Ali|Danial)\. Just\snow$/);
+
+  // Starting the demo again brings back all the sample changes, though this phone saw newer ones.
+  await button(app, 'Got it').click();
+  await expect(card).toHaveCount(0);
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'Sign out').click();
+  await button(app, 'Start the demo again').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Start again', exact: true }).click();
+  await button(app, 'Try as a barber').click();
+  await expect(tab).toBeVisible();
+  await expect(lines).toHaveCount(3);
 });
 
 test.describe('on an iPhone', () => {
