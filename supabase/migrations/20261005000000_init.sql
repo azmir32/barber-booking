@@ -434,7 +434,7 @@ begin
   return null;
 end;
 $$;
--- Only find_shops uses it.
+-- Only find_shops and my_shops use it.
 revoke execute on function public.shop_next_free(uuid) from public, anon, authenticated;
 
 -- The customer's shop list: live shops whose name, area or address contains
@@ -1495,7 +1495,9 @@ $$;
 -- has them. The app decides from these whether they are due for a cut
 -- (lib/my-shops.ts). Only the caller's own online bookings, read through
 -- bookings_customer_idx: walk-ins the shop added under their number are the
--- shop's to see.
+-- shop's to see. Their shops and barbers are then looked up by id (offset
+-- 0 stops the planner reading every shop and barber on the platform
+-- instead), and only the three shops get their hours and next free time.
 create function public.my_shops()
 returns jsonb
 language sql
@@ -1512,28 +1514,36 @@ as $$
   ),
   visits as (
     -- A cut marked done, or still confirmed once it started, since not
-    -- every barber marks each cut done. The day is the shop's.
-    select m.*, (m.starts_at at time zone s.time_zone)::date as day
-    from mine m
-    join shops s on s.id = m.shop_id
-    where m.status = 'completed' or m.starts_at <= now()
+    -- every barber marks each cut done.
+    select m.* from mine m where m.status = 'completed' or m.starts_at <= now()
   ),
-  last_cuts as (
-    select distinct on (v.shop_id) v.*
-    from visits v
-    order by v.shop_id, v.starts_at desc, v.id
-  ),
-  recent as (
-    select * from last_cuts order by starts_at desc, shop_id limit 3
+  recent as materialized (
+    -- The last cut at each shop, the three latest of those.
+    select l.*, s.name, s.slug, s.time_zone, s.is_live, br.name as barber_name
+    from (
+      select * from (
+        select distinct on (v.shop_id) v.* from visits v order by v.shop_id, v.starts_at desc, v.id
+      ) c
+      order by c.starts_at desc, c.shop_id
+      limit 3
+    ) l
+    cross join lateral (
+      select x.name, x.slug, x.time_zone, public.shop_is_live(x) as is_live from shops x where x.id = l.shop_id offset 0
+    ) s
+    cross join lateral (select x.name from barbers x where x.id = l.barber_id offset 0) br
   ),
   habits as (
-    -- Two cuts on one day are one visit. Exact halves round up, as in
-    -- shop_customers.
+    -- Two cuts on one day (the shop's) are one visit. Exact halves round
+    -- up, as in shop_customers.
     select g.shop_id, count(*)::int as visits,
            round((percentile_cont(0.5) within group (order by g.gap))::numeric)::int as median_gap
     from (
       select d.shop_id, d.day - lag(d.day) over (partition by d.shop_id order by d.day) as gap
-      from (select distinct v.shop_id, v.day from visits v join recent r on r.shop_id = v.shop_id) d
+      from (
+        select distinct v.shop_id, (v.starts_at at time zone r.time_zone)::date as day
+        from visits v
+        join recent r on r.shop_id = v.shop_id
+      ) d
     ) g
     group by g.shop_id
   ),
@@ -1544,29 +1554,25 @@ as $$
     'next', (
       select jsonb_build_object('id', u.id, 'starts_at', u.starts_at, 'service_name', u.service_name,
                                 'barber_name', br.name, 'shop_name', s.name, 'time_zone', s.time_zone)
-      from upcoming u
-      join shops s on s.id = u.shop_id
-      join barbers br on br.id = u.barber_id
-      order by u.starts_at, u.id
-      limit 1
+      from (select * from upcoming order by starts_at, id limit 1) u
+      cross join lateral (select x.name, x.time_zone from shops x where x.id = u.shop_id offset 0) s
+      cross join lateral (select x.name from barbers x where x.id = u.barber_id offset 0) br
     ),
     'upcoming', (select count(*) from upcoming),
     'shops', coalesce((
       select jsonb_agg(jsonb_build_object(
-               'shop_id', s.id, 'name', s.name, 'slug', s.slug, 'time_zone', s.time_zone,
-               'is_live', public.shop_is_live(s),
+               'shop_id', r.shop_id, 'name', r.name, 'slug', r.slug, 'time_zone', r.time_zone,
+               'is_live', r.is_live,
                'opens_today', h.opens_today, 'closes_today', h.closes_today,
-               'next_free_at', public.shop_next_free(s.id),
+               'next_free_at', public.shop_next_free(r.shop_id),
                'last_visit_at', r.starts_at, 'service_id', r.service_id, 'service_name', r.service_name,
-               'barber_id', r.barber_id, 'barber_name', br.name,
+               'barber_id', r.barber_id, 'barber_name', r.barber_name,
                'visits', hb.visits,
                'usual_gap_days', case when hb.visits >= 2 then greatest(hb.median_gap, 7) else 28 end
              ) order by r.starts_at desc, r.shop_id)
       from recent r
-      join shops s on s.id = r.shop_id
-      join barbers br on br.id = r.barber_id
       join habits hb on hb.shop_id = r.shop_id
-      left join lateral public.shop_hours_today(s.id) h on true
+      left join lateral public.shop_hours_today(r.shop_id) h on true
     ), '[]'::jsonb)
   );
 $$;
