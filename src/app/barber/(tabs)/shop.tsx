@@ -135,9 +135,11 @@ export default function MyShop() {
               ? t('Customers can find you and book. Share your link everywhere.')
               : needsService
                 ? t('Add a service before you go live, so customers have something to book.')
-                : paused
-                  ? t('Customers can’t find you or book from your link. Bookings already made still stand.')
-                  : t('Go live when your services and hours are ready.')}
+                : billing.tone === 'danger' && !paused
+                  ? t('You can go live once you subscribe.')
+                  : paused
+                    ? t('Customers can’t find you or book from your link. Bookings already made still stand.')
+                    : t('Go live when your services and hours are ready.')}
         </T>
         {shop.subscription_status === 'trialing' ? (
           <T variant="small">
@@ -155,8 +157,8 @@ export default function MyShop() {
             variant={needsPlan ? 'secondary' : 'primary'}
             onPress={() => router.push('/barber/services')}
           />
-        ) : unpaid ? null : (
-          // Pausing a shop that is hidden anyway would change nothing for customers.
+        ) : billing.tone === 'danger' ? null : (
+          // While the shop is unpaid, pausing or going live changes nothing for customers.
           <Button
             title={shop.is_published ? t('Pause bookings') : paused ? t('Turn bookings back on') : t('Go live')}
             variant={shop.is_published || needsPlan ? 'secondary' : 'primary'}
@@ -183,7 +185,9 @@ export default function MyShop() {
             <T variant="label" style={{ flex: 1 }}>
               {billing.tone === 'danger'
                 ? t('Customers can’t book from this link until you subscribe.')
-                : t('Customers can’t book from this link until you go live.')}
+                : paused
+                  ? t('Customers can’t book from this link until you turn bookings back on.')
+                  : t('Customers can’t book from this link until you go live.')}
             </T>
           </View>
         )}

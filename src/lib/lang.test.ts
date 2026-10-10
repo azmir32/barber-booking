@@ -48,6 +48,7 @@ const DYNAMIC_KEYS = [
   'Booking not found.',
   'Closing time must be after opening time.',
   'Not signed in.',
+  'You have a shop, so this account stays a barber account.',
   'Pick a service, or a length between 5 minutes and 12 hours (a whole day for blocks).',
   'Please keep your note under 280 characters.',
   'Please sign in to book.',

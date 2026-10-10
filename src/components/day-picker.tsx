@@ -70,9 +70,7 @@ export function DayPicker({
             }}>
             <Chip
               label={d.label}
-              sublabel={
-                isClosed ? closedLabel : `${d.dayOfMonth} ${d.month}${notes?.[d.date] ? `\n${notes[d.date]}` : ''}`
-              }
+              sublabel={`${isClosed ? closedLabel : `${d.dayOfMonth} ${d.month}`}${notes ? `\n${notes[d.date] || NO_NOTE}` : ''}`}
               selected={selected === d.date}
               disabled={isClosed && !pickClosed}
               onPress={() => onSelect(d.date)}
@@ -83,6 +81,9 @@ export function DayPicker({
     </ScrollView>
   );
 }
+
+// With notes, every chip gets the third line, so days without one are as tall as those with.
+const NO_NOTE = '\u00a0';
 
 const styles = StyleSheet.create({
   // Without this the strip stretches to fill a parent ScrollView.

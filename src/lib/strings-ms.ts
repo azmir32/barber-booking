@@ -804,4 +804,11 @@ export const ms: Record<string, string> = {
   '{service} was deleted, so it has no free times. Cancel this booking and add a new one instead.':
     '{service} telah dipadam, jadi tiada masa kosong. Batalkan tempahan ini dan tambah yang baharu.',
   'Remove barber': 'Keluarkan barber',
+  'Customers can’t book from this poster until you turn bookings back on in My shop.':
+    'Pelanggan tidak boleh menempah melalui poster ini sehingga anda buka semula tempahan di Kedai saya.',
+  'Customers can’t book from this link until you turn bookings back on.':
+    'Pelanggan tidak boleh menempah melalui pautan ini sehingga anda buka semula tempahan.',
+  'You have a shop, so this account stays a barber account.':
+    'Anda mempunyai kedai, jadi akaun ini kekal sebagai akaun barber.',
+  'You can go live once you subscribe.': 'Anda boleh buka tempahan selepas melanggan.',
 };

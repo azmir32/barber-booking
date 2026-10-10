@@ -128,7 +128,7 @@ That is far more than a pre-Raya peak needs: if all 100,000 customers booked wit
 - A shop's free trial ends 30 days after it is created (`shops.trial_ends_at`).
 - When a barber pays, set `subscription_status = 'active'` on their shop in the Supabase table editor.
 - When a trial ends without payment, the shop disappears from search and its link stops taking bookings (it tells customers to WhatsApp the shop instead).
-- Barbers ask to subscribe from the app's "Keep my shop live" button, which WhatsApps the number in `EXPO_PUBLIC_SUPPORT_WHATSAPP` (set it in `.env` before launch; without it, WhatsApp opens with the message written and asks who to send it to).
+- Barbers ask to subscribe from the app's "Keep my shop live" button, which WhatsApps the number in `EXPO_PUBLIC_SUPPORT_WHATSAPP` (set it in `.env` before launch; without it, WhatsApp opens with the message written and asks who to send it to). An EAS build with the `production` profile stops early if this number or the Supabase settings are missing (`scripts/check-release.mjs`).
 
 ## Translations
 

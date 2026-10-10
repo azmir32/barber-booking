@@ -109,12 +109,15 @@ export default function Poster() {
                   : t('Not live yet')}
             </T>
           </View>
+          {/* Payment comes first: going live alone doesn't let customers book an unpaid shop. */}
           <T variant="muted">
-            {shop.is_published
+            {!paid
               ? t('Once your subscription is active, customers can book from this poster again.')
-              : t('Customers can’t book from this poster until you go live on My shop.')}
+              : shop.published_at
+                ? t('Customers can’t book from this poster until you turn bookings back on in My shop.')
+                : t('Customers can’t book from this poster until you go live on My shop.')}
           </T>
-          {shop.is_published ? (
+          {!paid ? (
             <KeepLiveButton shop={shop} />
           ) : (
             <Button title={t('Go to My shop')} onPress={() => router.dismissTo('/barber/shop')} />
