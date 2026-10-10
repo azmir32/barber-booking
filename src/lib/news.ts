@@ -38,8 +38,13 @@ export const NEWS_LINES = 5;
 /** The name delete_my_account leaves on a deleted customer's bookings. */
 const DELETED_ACCOUNT = 'Deleted account';
 
+const SEEN_PREFIX = 'potongku.changesSeen.';
+
 /** Where this phone keeps the newest change it has seen, per shop. */
-export const seenKey = (shopId: string) => `potongku.changesSeen.${shopId}`;
+export const seenKey = (shopId: string) => `${SEEN_PREFIX}${shopId}`;
+
+/** Whether a key on this phone is one of those, whichever the shop. */
+export const isSeenKey = (key: string) => key.startsWith(SEEN_PREFIX);
 
 /** The number on the tab: none without news, and at most "9+" so it fits on the icon. */
 export function badgeText(count: number): string | undefined {
@@ -87,12 +92,19 @@ export function seenMark(seen: string | null, news: Pick<ShopChanges, 'since'> |
   return news?.since ?? seen;
 }
 
-/** "New" on a card the customer booked since the mark, "Moved" on one they moved; else nothing. */
+/**
+ * "New" on a card the customer booked since the mark, "Moved" on one they
+ * moved; else nothing. Like the server's count, only for bookings that end
+ * after `todayStart`, when the shop's today began: a card on a day gone by
+ * that the badge never counted would keep its tag after Got it.
+ */
 export function changeTag(
-  b: { customer_change?: CustomerChange | null; customer_changed_at?: string | null; status: string },
+  b: { customer_change?: CustomerChange | null; customer_changed_at?: string | null; status: string; ends_at: string },
   mark: string | null,
+  todayStart: number,
 ): { kind: 'new' | 'moved'; label: string } | null {
   if (!mark || !b.customer_changed_at || b.status === 'cancelled' || !isAfter(b.customer_changed_at, mark)) return null;
+  if (Date.parse(b.ends_at) <= todayStart) return null;
   if (b.customer_change === 'booked') return { kind: 'new', label: t('New') };
   if (b.customer_change === 'moved') return { kind: 'moved', label: t('Moved') };
   return null;

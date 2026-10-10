@@ -435,6 +435,7 @@ export default function BarberBookings() {
   const shown = filterId ? kept.filter((b) => b.barber_id === filterId) : kept;
   const showBarber = barbers.length > 1 && !filterId;
   const isToday = day === localDateString(new Date(now), tz);
+  const todayStart = dayBounds(localDateString(new Date(now), tz), tz).start.getTime();
   const closure = loaded && day in closures ? { reason: closures[day] } : null;
   const toRemind = isToday
     ? tomorrow.filter((b) => (!filterId || b.barber_id === filterId) && needsReminder(b, phoneOf(b), now, tz)).length
@@ -509,7 +510,7 @@ export default function BarberBookings() {
           onRemind={() => remind(b)}
           onSaveReminder={() => saveReminder(b, unsaved[b.id].startsAt)}
           onUnremind={() => unremind(b)}
-          tag={changeTag(b, seenUpTo)}
+          tag={changeTag(b, seenUpTo, todayStart)}
         />
       ),
     );
@@ -518,8 +519,9 @@ export default function BarberBookings() {
 
   /** A line of the news card: its day, with that booking brought into view. */
   const openChange = async (c: ShopChange) => {
-    // A phone showing one barber's bookings switches to that booking's barber, without saving it as its choice.
-    if (filterId && filterId !== c.barber_id) setBarberId(c.barber_id);
+    // A phone set to one barber's bookings switches to that booking's barber, without saving it as its choice.
+    // Even when today shows no chips to pick from: the day it opens may.
+    if (barberId && barberId !== c.barber_id) setBarberId(c.barber_id);
     // Cancelled ones wait in the folded list at the bottom.
     if (c.change === 'cancelled') setShowFinished(true);
     const target = localDateString(new Date(c.starts_at), tz);

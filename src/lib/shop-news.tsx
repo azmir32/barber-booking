@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 
-import { NEWS_LINES, nextSeen, seenKey, type ShopChanges } from '@/lib/news';
+import { isSeenKey, NEWS_LINES, nextSeen, seenKey, type ShopChanges } from '@/lib/news';
 import { supabase } from '@/lib/supabase';
 
 type ShopNews = {
@@ -94,6 +94,19 @@ export function ShopNewsProvider({ shopId, children }: { shopId: string | null; 
       {children}
     </ShopNewsContext.Provider>
   );
+}
+
+/**
+ * Forgets what this phone has seen at every shop. For the demo's Start again:
+ * the sample shops keep their ids, so an old mark would hide the fresh sample changes.
+ */
+export async function forgetSeen() {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    await AsyncStorage.multiRemove(keys.filter(isSeenKey));
+  } catch {
+    // Nothing kept on this phone.
+  }
 }
 
 export function useShopNews(): ShopNews {

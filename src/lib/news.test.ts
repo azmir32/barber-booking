@@ -10,9 +10,11 @@ import {
   changesLabel,
   changeTag,
   isAfter,
+  isSeenKey,
   micros,
   moreText,
   nextSeen,
+  seenKey,
   seenMark,
   whenText,
   type ShopChange,
@@ -150,21 +152,37 @@ test('cards count as new after where the server started counting', () => {
   assert.equal(seenMark(seen, null), seen, 'before the first answer');
   assert.equal(seenMark(null, null), null);
 
-  const card = (customer_change: ShopChange['change'] | null, at: string | null, status = 'confirmed') => ({
-    customer_change,
-    customer_changed_at: at,
-    status,
-  });
+  // Sat 10 Oct began at midnight in Kajang.
+  const today = Date.parse('2026-10-10T00:00:00+08:00');
+  const card = (
+    customer_change: ShopChange['change'] | null,
+    at: string | null,
+    status = 'confirmed',
+    ends_at = kajang('2026-10-10T17:30:00'),
+  ) => ({ customer_change, customer_changed_at: at, status, ends_at });
   const after = '2026-10-10T04:30:00+00:00';
-  assert.deepEqual(changeTag(card('booked', after), since), { kind: 'new', label: 'New' });
-  assert.deepEqual(changeTag(card('moved', after), since), { kind: 'moved', label: 'Moved' });
-  assert.equal(changeTag(card('booked', since), since), null, 'the change seen last');
-  assert.equal(changeTag(card('booked', '2026-10-09T05:00:00+00:00'), since), null, 'before');
-  assert.equal(changeTag(card('booked', after, 'cancelled'), since), null, 'cancelled since');
-  assert.equal(changeTag(card('cancelled', after, 'cancelled'), since), null);
-  assert.equal(changeTag(card(null, null), since), null, 'added by the shop');
-  assert.equal(changeTag(card('booked', after), null), null, 'nothing to count from yet');
-  inMalay(() => assert.equal(changeTag(card('booked', after), since)?.label, 'Baharu'));
+  const tag = (b: ReturnType<typeof card>, mark: string | null = since) => changeTag(b, mark, today);
+  assert.deepEqual(tag(card('booked', after)), { kind: 'new', label: 'New' });
+  assert.deepEqual(tag(card('moved', after)), { kind: 'moved', label: 'Moved' });
+  assert.equal(tag(card('booked', since)), null, 'the change seen last');
+  assert.equal(tag(card('booked', '2026-10-09T05:00:00+00:00')), null, 'before');
+  assert.equal(tag(card('booked', after, 'cancelled')), null, 'cancelled since');
+  assert.equal(tag(card('cancelled', after, 'cancelled')), null);
+  assert.equal(tag(card(null, null)), null, 'added by the shop');
+  assert.equal(tag(card('booked', after), null), null, 'nothing to count from yet');
+  inMalay(() => assert.equal(tag(card('booked', after))?.label, 'Baharu'));
+
+  // Booked yesterday afternoon for 5 pm yesterday: the badge never counted it, so the card says nothing.
+  const yesterday = (end: string) => card('booked', '2026-10-09T07:00:00+00:00', 'confirmed', kajang(end));
+  assert.equal(tag(yesterday('2026-10-09T17:30:00')), null);
+  assert.equal(tag(yesterday('2026-10-10T00:00:00')), null, 'ended at midnight');
+  assert.deepEqual(tag(yesterday('2026-10-10T00:10:00')), { kind: 'new', label: 'New' }, 'runs past midnight');
+});
+
+test('the phone knows its marks from its other keys', () => {
+  assert.equal(seenKey('s1'), 'potongku.changesSeen.s1');
+  assert.ok(isSeenKey(seenKey('s1')));
+  assert.ok(!isSeenKey('potongku.barberFilter.s1'));
 });
 
 test('how long ago, rounded down', () => {
