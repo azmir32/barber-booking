@@ -241,7 +241,9 @@ export default function MyBookings() {
                 </T>
                 {shop && !shop.is_live ? (
                   <T variant="small">
-                    {t('Online booking is paused at this shop. Your booking still stands; WhatsApp them if unsure.')}
+                    {shop.phone
+                      ? t('Online booking is paused at this shop. Your booking still stands; WhatsApp them if unsure.')
+                      : t('Online booking is paused at this shop. Your booking still stands.')}
                   </T>
                 ) : null}
                 {/* What is needed on the day comes first. */}

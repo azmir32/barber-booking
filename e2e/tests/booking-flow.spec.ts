@@ -340,7 +340,7 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByRole('button', { name: /^Start time:/ })).toHaveCount(0);
     await field(page, 'Reason (optional)').fill('Day off');
     await button(page, 'Block the day').click();
-    await expect(page.getByText('All day', { exact: true })).toBeVisible();
+    await expect(page.getByText('Whole day', { exact: true })).toBeVisible();
     await expect(page.getByText(`Day off · ${barber.name}`)).toBeVisible();
     // The only barber is off, so the day strip says the shop is closed then.
     await expect(choice(page, closedChip(2))).toBeChecked();

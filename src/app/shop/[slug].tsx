@@ -613,7 +613,7 @@ export default function ShopPage() {
             <Button
               title={note.trim() ? t('Edit note') : t('+ Add note')}
               variant="secondary"
-              accessibilityLabel={note.trim() ? t('Edit your note for the barber') : t('Add a note for your barber')}
+              accessibilityLabel={note.trim() ? t('Edit note') : t('Add note')}
               onPress={openNote}
               style={{ paddingHorizontal: Spacing.md }}
             />

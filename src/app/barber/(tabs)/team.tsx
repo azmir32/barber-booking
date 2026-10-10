@@ -122,7 +122,7 @@ export default function Team() {
     const ok = await confirmAction(
       t('Remove {name}?', { name: b.name }),
       t('They will no longer show anywhere in the app.'),
-      t('Remove'),
+      t('Remove barber'),
     );
     if (!ok) return;
     const { error } = await supabase.from('barbers').delete().eq('id', b.id);
@@ -210,7 +210,7 @@ export default function Team() {
                     />
                     {booked ? null : (
                       <Button
-                        title={t('Remove')}
+                        title={t('Remove barber')}
                         accessibilityLabel={t('Remove {name}', { name: b.name })}
                         variant="ghost"
                         tone="danger"

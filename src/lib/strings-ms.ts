@@ -185,7 +185,7 @@ export const ms: Record<string, string> = {
   '+ Add booking or block time': '+ Tambah tempahan atau sekat masa',
   'No bookings': 'Tiada tempahan',
   'Share your booking link to fill this day.': 'Kongsi pautan tempahan anda untuk penuhkan hari tersebut.',
-  'Whole day': 'Sepanjang hari',
+  'Whole day': 'Seharian',
   Blocked: 'Disekat',
   '{name} (added by you)': '{name} (ditambah oleh anda)',
   'Remove this block?': 'Buang sekatan ini?',
@@ -689,8 +689,9 @@ export const ms: Record<string, string> = {
   'Search all areas': 'Cari di semua kawasan',
   '+ Add note': '+ Nota',
   'Edit note': 'Ubah nota',
-  'Add a note for your barber': 'Tambah nota untuk barber anda',
-  'Edit your note for the barber': 'Ubah nota anda untuk barber',
+  'Add note': 'Tambah nota',
+  'Online booking is paused at this shop. Your booking still stands.':
+    'Tempahan dalam talian di kedai ini sedang ditutup. Tempahan anda masih kekal.',
   '{service} with {barber} at {shop}': '{service} bersama {barber} di {shop}',
   'Closed now': 'Sudah tutup',
   'Wrong email or password.': 'E-mel atau kata laluan salah.',
@@ -702,7 +703,6 @@ export const ms: Record<string, string> = {
   'Send WhatsApp': 'Hantar WhatsApp',
   Close: 'Tutup',
   'Added by shop': 'Ditambah oleh kedai',
-  'All day': 'Seharian',
   Away: 'Bercuti',
   '{name} is away': '{name} bercuti',
   'Customers can’t book this day.': 'Pelanggan tidak boleh menempah pada hari ini.',
@@ -724,7 +724,7 @@ export const ms: Record<string, string> = {
   'Added {name} to your menu.': '{name} ditambah ke menu anda.',
   'Undo adding {name}': 'Buat asal tambah {name}',
   'Couldn’t load your team.': 'Tidak dapat memuatkan pasukan anda.',
-  'Remove {name}?': 'Buang {name}?',
+  'Remove {name}?': 'Keluarkan {name}?',
   'They will no longer show anywhere in the app.': 'Mereka tidak akan dipaparkan lagi di mana-mana dalam aplikasi.',
   '{name} has bookings, so stays on the team as away. Past bookings keep their barber.':
     '{name} ada tempahan, jadi kekal dalam pasukan sebagai bercuti. Tempahan lalu kekal dengan barbernya.',
@@ -739,7 +739,7 @@ export const ms: Record<string, string> = {
   'Keep editing': 'Teruskan mengubah',
   'Check {day}’s hours, marked in red.': 'Semak waktu kerja {day}, yang bertanda merah.',
   'Shows the whole note': 'Tunjukkan nota penuh',
-  'Remove {name}': 'Buang {name}',
+  'Remove {name}': 'Keluarkan {name}',
 
   // Round 7, barber's business and onboarding: subscribing when the free
   // month runs out, paused shops, the set-up screen's way out, closing over
@@ -797,4 +797,11 @@ export const ms: Record<string, string> = {
   '“{link}” is taken by another shop. Try another link.': '“{link}” sudah digunakan oleh kedai lain. Cuba pautan lain.',
   'Use {link}': 'Guna {link}',
   'Street, taman and postcode': 'Jalan, taman dan poskod',
+
+  // Round 7, after review
+  '{service} is hidden on the Services tab, so it has no free times. Show it there to move this booking.':
+    '{service} disembunyikan di tab Servis, jadi tiada masa kosong. Tunjukkannya semula di sana untuk mengubah tempahan ini.',
+  '{service} was deleted, so it has no free times. Cancel this booking and add a new one instead.':
+    '{service} telah dipadam, jadi tiada masa kosong. Batalkan tempahan ini dan tambah yang baharu.',
+  'Remove barber': 'Keluarkan barber',
 };

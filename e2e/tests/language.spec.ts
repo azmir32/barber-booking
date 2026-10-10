@@ -82,7 +82,7 @@ test.describe('on a phone set to Malay', () => {
     await page.getByRole('tab', { name: 'Tempahan' }).click();
     await button(page, '+ Tambah tempahan atau sekat masa').click();
     await choice(page, 'Sekat masa').click();
-    await choice(page, 'Sepanjang hari').click();
+    await choice(page, 'Seharian').click();
     await button(page, 'Sekat sepanjang hari').click();
     await expect(page.getByText('Seharian', { exact: true })).toBeVisible();
     await snap(page, 'ms-07-day-blocked');

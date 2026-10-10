@@ -53,6 +53,8 @@ export default function MoveBooking() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [moved, setMoved] = useState<ShopBooking | null>(null);
+  // A service hidden or deleted on the Services tab has no free times, whoever the barber.
+  const [serviceOff, setServiceOff] = useState<'hidden' | 'deleted' | null>(null);
 
   useEffect(() => {
     if (!shop || !id) return;
@@ -70,6 +72,16 @@ export default function MoveBooking() {
         return setLoadError(t('You can only change an upcoming booking.'));
       }
       const list = (team.data ?? []) as Barber[];
+      if (row.service_id) {
+        supabase
+          .from('services')
+          .select('is_active')
+          .eq('id', row.service_id)
+          .maybeSingle()
+          .then(({ data, error: failed }) => setServiceOff(failed || data?.is_active ? null : 'hidden'));
+      } else {
+        setServiceOff('deleted');
+      }
       setBooking(row);
       setBarbers(list);
       setDay(localDateString(new Date(row.starts_at), tz));
@@ -234,6 +246,16 @@ export default function MoveBooking() {
             <ErrorText message={`${t('Couldn’t load free times.')} ${fresh.error}`} />
             <Button title={t('Try again')} variant="secondary" onPress={() => setVersion((v) => v + 1)} />
           </>
+        ) : groups.length === 0 && serviceOff ? (
+          <T variant="muted">
+            {serviceOff === 'hidden'
+              ? t('{service} is hidden on the Services tab, so it has no free times. Show it there to move this booking.', {
+                  service: booking.service_name,
+                })
+              : t('{service} was deleted, so it has no free times. Cancel this booking and add a new one instead.', {
+                  service: booking.service_name,
+                })}
+          </T>
         ) : groups.length === 0 ? (
           <T variant="muted">{t('{name} has no free times this day.', { name })}</T>
         ) : (

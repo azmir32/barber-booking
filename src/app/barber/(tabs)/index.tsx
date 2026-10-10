@@ -95,10 +95,10 @@ export default function BarberBookings() {
   const [showFinished, setShowFinished] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noticeHeight, setNoticeHeight] = useState(0);
-  // The floating add button only shows once the one under the date has scrolled away, and
-  // hides while the list scrolls down, so it doesn't sit on the card the barber is heading for.
+  // The floating add button only shows once the one under the date has scrolled away.
   const [addButtonBottom, setAddButtonBottom] = useState(0);
-  const [scroll, setScroll] = useState({ y: 0, up: false });
+  // A boolean, so scrolling only re-renders the day when it crosses that line.
+  const [pastAddButton, setPastAddButton] = useState(false);
   // By booking. Reloads keep them, so the row still says so when the barber is back from WhatsApp.
   const [unsaved, setUnsaved] = useState<Record<string, Unsaved>>({});
   // Bookings cancelled from this screen, whose WhatsApp says sorry rather than just hello.
@@ -449,8 +449,7 @@ export default function BarberBookings() {
       params: { day, barber: filterId ?? '', kind: services === 0 ? 'block' : 'booking' },
     });
   // The floating button would cover the bar, and the button under the date already shows near the top.
-  // Scrolling back up a little brings it from anywhere in a long day.
-  const showFab = canAdd && !notice && scroll.y > addButtonBottom && scroll.up;
+  const showFab = canAdd && !notice && pastAddButton;
 
   const renderOpen = (b: ShopBooking) =>
     b.is_block ? (
@@ -481,7 +480,7 @@ export default function BarberBookings() {
   return (
     <Screen
       onRefresh={load}
-      onScroll={(y) => setScroll((was) => ({ y, up: y === was.y ? was.up : y < was.y }))}
+      onScroll={(y) => setPastAddButton(y > addButtonBottom)}
       overlay={
         <View style={styles.overlay}>
           <View style={styles.overlayInner}>
@@ -825,8 +824,11 @@ function LiveCard({
               {byShop ? <Badge label={t('Added by shop')} /> : null}
             </Row>
           ) : null}
-          {/* Notes can be long (up to 280 characters): a tap on it, or More, shows the whole of it. */}
-          {b.customer_note ? (
+          {/* Notes can be long (up to 280 characters): a tap on a long one, or More, shows the whole of it.
+              About 60 characters fill the two lines it gets on a small phone. */}
+          {b.customer_note && b.customer_note.length <= 60 ? (
+            <T variant="muted">“{b.customer_note}”</T>
+          ) : b.customer_note ? (
             <Pressable
               accessibilityRole="button"
               accessibilityHint={wholeNote ? undefined : t('Shows the whole note')}
@@ -926,7 +928,7 @@ function BlockRow({ booking: b, tz, onRemove }: { booking: ShopBooking; tz: stri
   return (
     <View style={styles.compactRow}>
       <View style={styles.timeCol}>
-        {isWholeDay(b) ? <T variant="label">{t('All day')}</T> : <StartTime at={b.starts_at} tz={tz} variant="label" />}
+        {isWholeDay(b) ? <T variant="label">{t('Whole day')}</T> : <StartTime at={b.starts_at} tz={tz} variant="label" />}
         {isWholeDay(b) ? null : <T variant="small">{formatDuration(minutesOf(b))}</T>}
       </View>
       <View style={styles.info}>
