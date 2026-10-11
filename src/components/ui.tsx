@@ -462,7 +462,7 @@ export function Skeleton({ label, children, style }: { label: string; children: 
         easing: Easing.inOut(Easing.quad),
         useNativeDriver: Platform.OS !== 'web',
       });
-    const loop = Animated.loop(Animated.sequence([step(0.45), step(1)]));
+    const loop = Animated.loop(Animated.sequence([step(0.55), step(1)]));
     loop.start();
     return () => loop.stop();
   }, [pulse, reduceMotion]);
@@ -483,7 +483,7 @@ export function Skeleton({ label, children, style }: { label: string; children: 
 /** One grey shape in a Skeleton: a line of text (as tall as the text), a button or a chip. */
 export function Bone({ width = '100%', height = 14, style }: { width?: DimensionValue; height?: number; style?: ViewStyle }) {
   const theme = useTheme();
-  return <View style={[styles.bone, { width, height, backgroundColor: theme.chip }, style]} />;
+  return <View style={[styles.bone, { width, height, backgroundColor: theme.skeleton }, style]} />;
 }
 
 /**

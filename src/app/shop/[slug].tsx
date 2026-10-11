@@ -683,7 +683,9 @@ export default function ShopPage() {
     : barbers.length > 1 ? t('3. Pick a time') : t('2. Pick a time');
 
   return (
-    <Screen edges={[]} scrollRef={scrollRef} footer={footer}>
+    // Its own key, so the page starts a new scroll view rather than taking over the
+    // loading one: on the web a scroll view only fills in scrollRef when it first appears.
+    <Screen key="shop" edges={[]} scrollRef={scrollRef} footer={footer}>
       {header}
       <ShopHeading
         shop={shop}

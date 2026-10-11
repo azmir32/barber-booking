@@ -913,8 +913,8 @@ export const ms: Record<string, string> = {
   'Barbers in {area}': 'Barber di {area}',
 
   // Round 8, screens that open at once: last time's answers while the server's
-  // come, the line when a refresh fails, the loading shapes and actions that
-  // wait for fresh data (lib/cache.ts, components/ui.tsx and the screens)
+  // come, the line when a refresh fails and the grey shapes of what is loading
+  // (lib/cache.ts, components/ui.tsx and the screens)
   'Couldn’t refresh. Showing what you saw at {time}.': 'Tidak dapat dikemas kini. Ini yang anda lihat pada {time}.',
   'Couldn’t refresh. Showing what you saw yesterday at {time}.':
     'Tidak dapat dikemas kini. Ini yang anda lihat semalam pada {time}.',
@@ -927,5 +927,4 @@ export const ms: Record<string, string> = {
   'Loading the shop': 'Memuatkan kedai',
   'Loading services': 'Memuatkan servis',
   'Loading free times': 'Memuatkan masa kosong',
-  'This booking has just changed. Check it and try again.': 'Tempahan ini baru sahaja berubah. Semak dan cuba lagi.',
 };

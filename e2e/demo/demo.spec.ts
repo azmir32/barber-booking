@@ -708,7 +708,7 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
   // With a service picked the steps open above the reviews, and See reviews still lands on them.
   await app.getByRole('radio', { name: /^Haircut RM/ }).click();
   await expect(app.getByRole('heading', { name: /Pick a time$/ })).toBeVisible();
-  await expect(app.getByText('Checking free times…')).toHaveCount(0);
+  await expect(app.getByRole('progressbar', { name: 'Loading free times' })).toHaveCount(0);
   await summary.click();
   const reviews = app.getByRole('heading', { name: 'Reviews', exact: true });
   await expect(reviews).toBeVisible();
@@ -736,6 +736,89 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
   await expect(app.getByText(`Thanks ${name}, see you next time!`, { exact: true })).toBeVisible();
   await expect(button(app, `Edit your reply to ${name}`)).toBeVisible();
   await snap(page, 'demo-23-owner-reviews');
+});
+
+/**
+ * Slows the demo's server down, or cuts it off, the way a weak signal does
+ * (see DEMO_NETWORK_KEY in src/demo/server.ts); null puts it back.
+ */
+const network = (page: Page, value: { delayMs?: number; offline?: boolean } | null) =>
+  page.evaluate(
+    (value) =>
+      value
+        ? localStorage.setItem('potongku.demo.network', JSON.stringify(value))
+        : localStorage.removeItem('potongku.demo.network'),
+    value,
+  );
+
+test('My bookings opens with what it showed last time, and keeps it when a refresh fails', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  const booking = app.getByText(/^Skin fade with (Ali|Danial) · RM25$/);
+  await expect(booking).toBeVisible();
+
+  // On a slow line, opening the app again shows his booking at once, with a
+  // small spinner by the title while the server answers.
+  await network(page, { delayMs: 4000 });
+  await page.reload();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(booking).toBeVisible();
+  const refreshing = app.getByRole('progressbar', { name: 'Refreshing' });
+  await expect(refreshing).toBeVisible();
+  // Cancelling waits for the server's list, so it never acts on an old one.
+  const cancel = button(app, /^Cancel booking on /);
+  await expect(cancel).toBeDisabled();
+  await snap(page, 'demo-24-bookings-refreshing');
+  await expect(refreshing).toHaveCount(0, { timeout: 20_000 });
+  await expect(cancel).toBeEnabled();
+  await expect(booking).toBeVisible();
+
+  // With no connection, what he saw stays, with when it is from and a way to try again.
+  await network(page, { offline: true });
+  await page.reload();
+  const stale = app
+    .getByRole('status')
+    .filter({ hasText: /Couldn’t refresh\. Showing what you saw (yesterday )?at \d{1,2}:\d{2}\s?(am|pm)\./i });
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await expect(stale).toBeVisible();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(booking).toBeVisible();
+  await expect(stale).toBeVisible();
+  await expect(button(app, 'Add to calendar')).toBeDisabled();
+  await expect(cancel).toBeDisabled();
+  await snap(page, 'demo-25-bookings-offline');
+
+  // Back online, Try again brings the server's list, and the buttons work again.
+  await network(page, null);
+  await stale.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(stale).toHaveCount(0);
+  await expect(booking).toBeVisible();
+  await expect(cancel).toBeEnabled();
+  await expect(button(app, 'Add to calendar')).toBeEnabled();
+});
+
+test('on a slow line the barbers’ cards show their shape first, and a shop opens with what the list knew', async ({
+  page,
+}) => {
+  const app = await open(page);
+  await network(page, { delayMs: 2500 });
+  await button(app, 'Try as a customer').click();
+  await expect(app.getByRole('progressbar', { name: 'Loading barbers' })).toBeVisible({ timeout: 15_000 });
+  await snap(page, 'demo-26-barbers-loading');
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible({ timeout: 20_000 });
+  await expect(app.getByRole('progressbar', { name: 'Loading barbers' })).toHaveCount(0);
+
+  // Its name, rating and address come straight from the list, while its services load.
+  await listed(app, 'Kemas Barber Kajang').click();
+  const services = app.getByRole('progressbar', { name: 'Loading services' });
+  await expect(services).toBeVisible();
+  await expect(app.getByRole('link', { name: /^Rated \d\.\d out of 5 from \d+ reviews\. See reviews$/ })).toBeVisible();
+  await snap(page, 'demo-27-shop-opening');
+  await network(page, null);
+  await expect(app.getByRole('radio', { name: /^Haircut RM/ })).toBeVisible({ timeout: 15_000 });
+  await expect(services).toHaveCount(0);
 });
 
 test.describe('on an iPhone', () => {
