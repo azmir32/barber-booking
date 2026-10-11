@@ -180,15 +180,36 @@ function handleAuth(method: string, route: string, url: URL, headers: Headers, b
 
 // The fetch the Supabase client uses --------------------------------------------
 
+/**
+ * A slow or lost connection, for trying what the app shows then (e2e/demo):
+ * `{"delayMs": 3000}` answers every request 3 seconds late, `{"offline": true}`
+ * fails them the way a phone with no signal does. Read on each request, so it
+ * can change while the page is open and holds across a reload.
+ */
+export const DEMO_NETWORK_KEY = 'potongku.demo.network';
+
+function network(): { delayMs?: number; offline?: boolean } {
+  try {
+    const saved = typeof localStorage === 'undefined' ? null : localStorage.getItem(DEMO_NETWORK_KEY);
+    return saved ? JSON.parse(saved) : {};
+  } catch {
+    return {};
+  }
+}
+
 /** In the browser, pause briefly like a real network so loading states show. */
-const latency = () =>
-  new Promise((resolve) => setTimeout(resolve, typeof window === 'undefined' ? 0 : 80 + Math.random() * 120));
+const latency = (delayMs?: number) =>
+  new Promise((resolve) =>
+    setTimeout(resolve, delayMs ?? (typeof window === 'undefined' ? 0 : 80 + Math.random() * 120)),
+  );
 
 export async function demoFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
   const method = (init.method ?? 'GET').toUpperCase();
   const headers = new Headers(init.headers);
-  await latency();
+  const net = network();
+  await latency(net.delayMs);
+  if (net.offline) throw new TypeError('Failed to fetch');
   let body: unknown;
   try {
     body = typeof init.body === 'string' && init.body !== '' ? JSON.parse(init.body) : undefined;
