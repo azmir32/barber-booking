@@ -4,6 +4,7 @@ import { beforeEach, test } from 'node:test';
 
 import { createClient } from '@supabase/supabase-js';
 
+import { distanceText, kmBetween } from '../lib/distance.ts';
 import { firstName } from '../lib/reviews.ts';
 import type { MyShops } from '../lib/my-shops.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
@@ -188,6 +189,119 @@ test('the shop list shows when a shop is next free, today or else tomorrow', asy
   }
 });
 
+test('Near me lists the nearest shops first, with how far each is', async () => {
+  const c = client();
+  const sungaiChua = { p_lat: 2.9833, p_lng: 101.7667 };
+  const listed = async (args: Record<string, unknown>) => {
+    const { data, error } = await c.rpc('find_shops', { p_search: null, p_area: null, p_limit: 20, p_offset: 0, ...args });
+    assert.equal(error, null);
+    return data as { slug: string; distance_km: number | null }[];
+  };
+  const slugs = (list: { slug: string }[]) => list.map((s) => s.slug);
+  const near = await listed(sungaiChua);
+  assert.deepEqual(slugs(near), ['ali-barber', 'kemas-barber-kajang', 'gunting-pak-mat', 'the-fade-room']);
+  assert.deepEqual(
+    near.map((s) => distanceText(s.distance_km!)),
+    ['500 m', '2.6 km', '3.2 km', '4.2 km'],
+  );
+  const ali = await shopBySlug(c, 'ali-barber');
+  assert.equal(near[0].distance_km, kmBetween({ latitude: 2.9833, longitude: 101.7667 }, ali));
+
+  // A page at a time, every shop once.
+  const paged = [];
+  for (let offset = 0; offset < 4; offset++) paged.push(...(await listed({ ...sungaiChua, p_limit: 1, p_offset: offset })));
+  assert.deepEqual(slugs(paged), slugs(near));
+  // Search and areas still filter, nearest first.
+  assert.deepEqual(slugs(await listed({ ...sungaiChua, p_search: 'barber' })), ['ali-barber', 'kemas-barber-kajang']);
+  const town = await listed({ ...sungaiChua, p_area: 'kajang town' });
+  assert.deepEqual([slugs(town), distanceText(town[0].distance_km!)], [['kemas-barber-kajang'], '2.6 km']);
+
+  // Without a whole position on the map, by name as before.
+  const byName = ['ali-barber', 'gunting-pak-mat', 'kemas-barber-kajang', 'the-fade-room'];
+  for (const args of [{}, { p_lat: 2.9833 }, { p_lat: 95, p_lng: 101.7667 }, { p_lat: 2.9833, p_lng: -200 }]) {
+    const list = await listed(args);
+    assert.deepEqual(slugs(list), byName, JSON.stringify(args));
+    assert.ok(list.every((s) => s.distance_km === null), JSON.stringify(args));
+  }
+  const nonsense = await c.rpc('find_shops', { p_lat: 'here', p_lng: 101.7667 });
+  assert.equal(nonsense.error?.code, '22P02');
+
+  // A shop without a location comes after the rest.
+  const owner = await signedIn(DEMO_BARBER_EMAIL);
+  assert.equal((await owner.from('shops').update({ latitude: null, longitude: null }).eq('id', ali.id)).error, null);
+  const after = await listed(sungaiChua);
+  assert.deepEqual(slugs(after), ['kemas-barber-kajang', 'gunting-pak-mat', 'the-fade-room', 'ali-barber']);
+  assert.equal(after[3].distance_km, null);
+});
+
+test('owners set where their shop is, both halves and on the map, and nobody else can', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const set = (patch: Record<string, unknown>, id = shop.id) => ali.from('shops').update(patch).eq('id', id);
+  assert.equal((await set({ latitude: 2.98461, longitude: 101.77125 })).error, null);
+  assert.deepEqual(
+    [(await shopBySlug(ali, 'ali-barber')).latitude, (await shopBySlug(ali, 'ali-barber')).longitude],
+    [2.98461, 101.77125],
+  );
+  for (const patch of [{ latitude: null }, { longitude: null }, { latitude: 91 }, { latitude: -90.5 }, { longitude: 181 }]) {
+    assert.equal((await set(patch)).error?.code, '23514', JSON.stringify(patch));
+  }
+  assert.equal((await set({ latitude: null, longitude: null })).error, null);
+  assert.equal((await shopBySlug(ali, 'ali-barber')).latitude, null);
+
+  // Another owner's update finds no shop to change, and guests can't write at all.
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  const kemas = await shopBySlug(rahman, 'kemas-barber-kajang');
+  assert.equal((await set({ latitude: 0, longitude: 0 }, kemas.id)).error, null);
+  assert.deepEqual([(await shopBySlug(rahman, 'kemas-barber-kajang')).latitude], [2.9925]);
+  assert.equal((await client().from('shops').update({ latitude: 0, longitude: 0 }).eq('id', kemas.id)).error?.code, '42501');
+
+  // A new shop can say where it is from the start.
+  const c = client();
+  const signUp = await c.auth.signUp({
+    email: 'near@shop.my',
+    password: 'password123',
+    options: { data: { role: 'barber', full_name: 'Amin' } },
+  });
+  const created = await c
+    .from('shops')
+    .insert({ name: 'Amin Cuts', slug: 'amin-cuts', owner_id: signUp.data.user!.id, latitude: 2.9637, longitude: 101.7681 })
+    .select()
+    .single();
+  assert.equal(created.error, null);
+  assert.deepEqual([created.data.latitude, created.data.longitude], [2.9637, 101.7681]);
+});
+
+test('a demo saved before shops had a location gets the sample shops’ own, and none for the rest', () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  try {
+    resetDemo();
+    const where = () => Object.fromEntries(tables().shops.map((s) => [s.slug, [s.latitude, s.longitude]]));
+    const sample = where();
+    insertRow('shops', { owner_id: tables().profiles.find((p) => p.full_name === 'Hakim')!.id, name: 'Mine', slug: 'mine' });
+    save();
+    const [key, json] = [...saved.entries()][0];
+    const old = JSON.parse(json);
+    for (const s of old.tables.shops) {
+      delete s.latitude;
+      delete s.longitude;
+    }
+    saved.set(key, JSON.stringify(old));
+    reloadTables();
+    assert.deepEqual(where(), { ...sample, mine: [null, null] });
+    assert.deepEqual(sample['ali-barber'], [2.9846, 101.7712]);
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});
+
 test('a paused shop\'s link still says whose shop it is', async () => {
   const ali = await signedIn(DEMO_BARBER_EMAIL);
   const shop = await shopBySlug(ali, 'ali-barber');
@@ -231,6 +345,8 @@ test('My bookings keeps the shop and barber when the shop pauses, and shows only
     slug: 'ali-barber',
     address: 'No. 12, Jalan Sungai Chua 3/1, 43000 Kajang',
     area: 'Sungai Chua',
+    latitude: 2.9846,
+    longitude: 101.7712,
     phone: '012-345 6789',
     time_zone: TZ,
     is_live: true,

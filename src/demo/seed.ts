@@ -154,6 +154,9 @@ function seed() {
   const jason = user('jason@demo.potongku.my', 'customer', 'Jason', '012-901 3344');
 
   // Shops ----------------------------------------------------------------------
+  // Each at its own spot in its part of Kajang: from Sungai Chua, Near me
+  // lists Ali's first, about 500 m away, then town, Prima Saujana and
+  // Saujana Impian, 2 to 4 km off.
   const a = shop({
     owner: ali,
     shop: {
@@ -162,6 +165,8 @@ function seed() {
       about: 'Fades, beard trims and kids cuts since 2015. Air-conditioned, parking right in front.',
       address: 'No. 12, Jalan Sungai Chua 3/1, 43000 Kajang',
       area: 'Sungai Chua',
+      latitude: 2.9846,
+      longitude: 101.7712,
       phone: '012-345 6789',
       instagram: '@alibarber.kajang',
       // On the app since before its eight weeks of history, so Takings
@@ -189,6 +194,8 @@ function seed() {
       about: 'Classic cuts and hot towel shaves in the middle of town. Three chairs, short waits.',
       address: '23, Jalan Mendaling, 43000 Kajang',
       area: 'Kajang town',
+      latitude: 2.9925,
+      longitude: 101.7884,
       phone: '013-220 4411',
       subscription_status: 'active',
     },
@@ -212,6 +219,8 @@ function seed() {
       about: 'Skin fades, tapers and hair designs. Booking only, so there is no queue.',
       address: 'G-08, Jalan Saujana Impian 2/6, 43000 Kajang',
       area: 'Saujana Impian',
+      latitude: 2.9822,
+      longitude: 101.8045,
       phone: '017-302 8890',
       instagram: '@thefaderoom.kj',
       subscription_status: 'active',
@@ -231,6 +240,8 @@ function seed() {
       about: 'Simple cuts at fair prices. Schoolkids RM8 on weekdays.',
       address: '5, Jalan Prima Saujana 1/2, 43000 Kajang',
       area: 'Taman Prima Saujana',
+      latitude: 3.0102,
+      longitude: 101.7781,
       phone: '019-388 1020',
       subscription_status: 'active',
     },

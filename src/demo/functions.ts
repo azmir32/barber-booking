@@ -3,6 +3,7 @@
 // Like the originals they run with full access (security definer) and
 // decide for themselves what the caller may do.
 
+import { kmBetween, shopPoint } from '../lib/distance.ts';
 import { toWhatsAppNumber } from '../lib/phone.ts';
 import { firstName, REVIEW_WINDOW_DAYS, reviewName } from '../lib/reviews.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
@@ -67,11 +68,35 @@ function guarded<T>(fn: () => T, overlapMessage: string, checkMessage?: string):
 const blank = (v: unknown) => v == null || pgTrim(String(v)) === '';
 const sortKey = (v: unknown) => String(v).toLowerCase();
 
+/** A double precision argument, as PostgREST reads it: null, or a number. */
+function float(value: unknown): number | null {
+  if (value == null) return null;
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  if (typeof n !== 'number' || Number.isNaN(n)) {
+    throw new PgError('22P02', `invalid input syntax for type double precision: "${String(value)}"`, 400);
+  }
+  return n;
+}
+
+/**
+ * Live shops matching the search and area, a page at a time. Given the
+ * customer's position (both halves, on the map), nearest first with each
+ * one's distance, and those without a location after the rest by name.
+ */
 export function findShops(args: Record<string, unknown>) {
   const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
   const area = blank(args.p_area) ? null : pgTrim(String(args.p_area)).toLowerCase();
   const limit = Math.min(Math.max(Number(args.p_limit ?? 20), 1), 50);
   const offset = Math.max(Number(args.p_offset ?? 0), 0);
+  const [lat, lng] = [float(args.p_lat), float(args.p_lng)];
+  const here =
+    lat != null && lng != null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+      ? { latitude: lat, longitude: lng }
+      : null;
+  const distance = (s: Row) => {
+    const point = here && shopPoint(s as { latitude: number | null; longitude: number | null });
+    return here && point ? kmBetween(here, point) : null;
+  };
   return tables()
     .shops.filter(
       (s) =>
@@ -79,13 +104,16 @@ export function findShops(args: Record<string, unknown>) {
         (area == null || sortKey(s.area) === area) &&
         (search == null || `${s.name} ${s.area} ${s.address ?? ''}`.toLowerCase().includes(search)),
     )
-    .sort((a, b) =>
-      sortKey(a.name) !== sortKey(b.name)
-        ? sortKey(a.name) < sortKey(b.name) ? -1 : 1
-        : String(a.id) < String(b.id) ? -1 : 1,
+    .map((s) => ({ s, km: distance(s) }))
+    .sort(
+      (a, b) =>
+        Number(a.km == null) - Number(b.km == null) ||
+        (a.km ?? 0) - (b.km ?? 0) ||
+        (sortKey(a.s.name) < sortKey(b.s.name) ? -1 : sortKey(a.s.name) > sortKey(b.s.name) ? 1 : 0) ||
+        (String(a.s.id) < String(b.s.id) ? -1 : 1),
     )
     .slice(offset, offset + limit)
-    .map((s) => {
+    .map(({ s, km }) => {
       const prices = tables()
         .services.filter((v) => v.shop_id === s.id && v.is_active)
         .map((v) => Number(v.price));
@@ -104,6 +132,7 @@ export function findShops(args: Record<string, unknown>) {
         rating_count: s.rating_count,
         // round(sum / count, 1), null without any.
         rating_avg: s.rating_count ? Math.round(((s.rating_sum as number) * 10) / (s.rating_count as number)) / 10 : null,
+        distance_km: km,
       };
     });
 }
@@ -407,12 +436,12 @@ export function myBookings(c: Caller, limitArg: unknown = 100) {
       const barber = findById('barbers', b.barber_id);
       if (!shop || !barber) return [];
       const booking = Object.fromEntries(Object.keys(COLUMNS.bookings).map((k) => [k, b[k]]));
-      const { name, slug, address, area, phone, time_zone } = shop;
+      const { name, slug, address, area, latitude, longitude, phone, time_zone } = shop;
       const r = tables().reviews.find((x) => x.booking_id === b.id);
       return [
         {
           ...booking,
-          shops: { name, slug, address, area, phone, time_zone, is_live: shopIsLive(shop) },
+          shops: { name, slug, address, area, latitude, longitude, phone, time_zone, is_live: shopIsLive(shop) },
           barbers: { name: barber.name },
           review: r
             ? {
