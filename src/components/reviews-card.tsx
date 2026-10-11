@@ -1,6 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { Card, T } from '@/components/ui';
@@ -8,42 +7,17 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { t } from '@/lib/lang';
 import { averageText, ratingAverage, ratingLabel, reviewCount } from '@/lib/reviews';
-import { supabase } from '@/lib/supabase';
+import type { ShopCardNumbers } from '@/lib/shop-cards';
 
-type Newest = { rating: number; comment: string; first_name: string };
-
-/** My shop's way into the reviews: the average, how many, and what the newest comment says. */
-export function ReviewsCard({ shopId }: { shopId: string }) {
+/**
+ * My shop's way into the reviews (see useShopCards): the average, how many,
+ * and what the newest comment says. Without the numbers it still opens the
+ * list, which says what went wrong.
+ */
+export function ReviewsCard({ reviews }: { reviews?: ShopCardNumbers['reviews'] }) {
   const theme = useTheme();
-  const [totals, setTotals] = useState<{ count: number; sum: number } | null>(null);
-  const [newest, setNewest] = useState<Newest | null>(null);
-
-  // The shop row keeps the count and total, and the newest comment comes
-  // with it, so this is one small answer. On focus, so a reply or a new
-  // review shows when coming back.
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      supabase
-        .from('shops')
-        .select('rating_count, rating_sum, reviews(rating, comment, first_name)')
-        .eq('id', shopId)
-        .not('reviews.comment', 'is', null)
-        .order('created_at', { referencedTable: 'reviews', ascending: false })
-        .limit(1, { referencedTable: 'reviews' })
-        .maybeSingle()
-        .then(({ data, error }) => {
-          // Without the numbers the card still opens the list, which says what went wrong.
-          if (!active || error || !data) return;
-          setTotals({ count: data.rating_count, sum: data.rating_sum });
-          setNewest(((data.reviews ?? []) as Newest[])[0] ?? null);
-        });
-      return () => {
-        active = false;
-      };
-    }, [shopId]),
-  );
-
+  const totals = reviews ?? null;
+  const newest = reviews?.newest ?? null;
   const average = totals ? ratingAverage(totals.sum, totals.count) : null;
   const summary =
     totals == null

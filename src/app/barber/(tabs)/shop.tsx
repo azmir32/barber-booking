@@ -11,7 +11,7 @@ import { KeepLiveButton } from '@/components/keep-live-button';
 import { ReviewsCard } from '@/components/reviews-card';
 import { ShopForm } from '@/components/shop-form';
 import { TakingsCard } from '@/components/takings-card';
-import { Badge, Button, Card, ErrorText, Row, Screen, Section, T } from '@/components/ui';
+import { Badge, Button, Card, ErrorText, Row, Screen, ScreenTitle, Section, StaleNote, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
@@ -19,6 +19,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
+import { useShopCards } from '@/lib/shop-cards';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -43,7 +44,9 @@ function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' |
 }
 
 export default function MyShop() {
-  const { shop, reload } = useMyShop();
+  const { shop, fresh, reload } = useMyShop();
+  // Takings, customers and reviews: last time's numbers at once, then the server's.
+  const cards = useShopCards(shop);
   const theme = useTheme();
   const now = useNow();
   const [busy, setBusy] = useState(false);
@@ -114,7 +117,7 @@ export default function MyShop() {
 
   return (
     <Screen>
-      <T variant="title">{t('My shop')}</T>
+      <ScreenTitle title={t('My shop')} refreshing={cards.refreshing} />
 
       <Card>
         <Row style={{ justifyContent: 'space-between' }}>
@@ -169,11 +172,15 @@ export default function MyShop() {
         )}
       </Card>
 
-      <TakingsCard shop={shop} />
+      {cards.staleSince ? (
+        <StaleNote savedAt={cards.staleSince} onRetry={cards.reload} retrying={cards.loading} timeZone={shop.time_zone} />
+      ) : null}
 
-      <CustomersCard />
+      <TakingsCard totals={cards.takings} />
 
-      <ReviewsCard shopId={shop.id} />
+      <CustomersCard counts={cards.customers} />
+
+      <ReviewsCard reviews={cards.reviews} />
 
       <ClosedDaysCard shop={shop} />
 
@@ -231,7 +238,8 @@ export default function MyShop() {
       </Card>
 
       <Section title={t('Shop details')}>
-        <ShopForm key={shop.id} shop={shop} onSaved={reload} />
+        {/* Starts again from the server's details once they arrive, so saving never puts back last visit's. */}
+        <ShopForm key={fresh ? shop.id : `${shop.id}-kept`} shop={shop} onSaved={reload} />
       </Section>
 
       <Section title={t('Account')}>

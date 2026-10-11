@@ -2,15 +2,34 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { DayPicker } from '@/components/day-picker';
-import { Badge, Button, Card, Chip, Empty, ErrorText, IconButton, Row, Screen, Section, T } from '@/components/ui';
+import {
+  Badge,
+  Bone,
+  Button,
+  Card,
+  Chip,
+  Empty,
+  ErrorText,
+  IconButton,
+  Row,
+  Screen,
+  ScreenTitle,
+  Section,
+  Skeleton,
+  StaleNote,
+  T,
+} from '@/components/ui';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
+import { appCache } from '@/lib/app-cache';
+import { useAuth } from '@/lib/auth';
+import { cacheKey } from '@/lib/cache';
 import { dateRange } from '@/lib/closures';
 import { confirmAction } from '@/lib/confirm';
 import { WALK_IN } from '@/lib/customers';
@@ -54,6 +73,24 @@ type Unsaved = { startsAt: string; reason: string };
 
 type BarberWithHours = Barber & { working_hours: WorkingHours[] };
 
+type ClosedDay = { day: string; reason: string | null; is_closure: boolean };
+
+/** Everything a day's screen asks for, as kept for next time; null for a part whose request failed. */
+type DayAnswer = {
+  bookings: ShopBooking[];
+  services: number;
+  barbers: BarberWithHours[] | null;
+  closed: ClosedDay[] | null;
+  tomorrow: ToRemind[] | null;
+};
+
+/**
+ * Buttons that change a customer's booking, while the day on screen is last
+ * visit's: off until the server's list arrives (busy while it is on its way),
+ * so nothing is done to a booking that has since moved or been cancelled.
+ */
+type Held = { loading: boolean; disabled: boolean } | null;
+
 /**
  * The bar at the bottom: what just happened and one thing to do about it (undo, or message the
  * customer). A closable one stays until the barber acts on it or closes it.
@@ -69,6 +106,7 @@ const hoursCheckedKey = (shopId: string) => `potongku.hoursChecked.${shopId}`;
 
 export default function BarberBookings() {
   const { shop } = useMyShop();
+  const uid = useAuth().session?.user.id;
   const theme = useTheme();
   const now = useNow();
   const tz = shop!.time_zone;
@@ -84,7 +122,14 @@ export default function BarberBookings() {
   const [tomorrow, setTomorrow] = useState<ToRemind[]>([]);
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
   const [services, setServices] = useState<number | null>(null);
+  // Why an action failed.
   const [error, setError] = useState<string | null>(null);
+  // Why the last refresh failed; the day on screen stays.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  // When the server gave the day on screen, and the day it last answered for on this visit.
+  const [savedAt, setSavedAt] = useState(0);
+  const [freshFor, setFreshFor] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
   const [barberId, setBarberId] = useState<string | null>(params.barber ?? null);
   // Each "See bookings" tap carries a new `at`, so tapping it again goes back to that barber's day.
   const [seenAt, setSeenAt] = useState(params.at);
@@ -93,6 +138,7 @@ export default function BarberBookings() {
     if (params.day) setDay(params.day);
     if (params.barber) setBarberId(params.barber);
     setError(null);
+    setRefreshError(null);
   }
   const [hoursChecked, setHoursChecked] = useState(false);
   const [hoursOpen, setHoursOpen] = useState(false);
@@ -138,10 +184,35 @@ export default function BarberBookings() {
 
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
 
+  const showDay = useCallback((a: DayAnswer, forDay: string) => {
+    setBookings(a.bookings);
+    setLoadedDay(forDay);
+    setServices(a.services);
+    if (a.barbers) setBarbers(a.barbers);
+    if (a.closed) {
+      setClosures(Object.fromEntries(a.closed.filter((d) => d.is_closure).map((d) => [d.day, d.reason])));
+      setAllOff(new Set(a.closed.filter((d) => !d.is_closure).map((d) => d.day)));
+    }
+    if (a.tomorrow) setTomorrow(a.tomorrow);
+  }, []);
+
+  // A day kept from before (last visit, or earlier on this one) shows at once while it is asked for again.
+  const dayKey = uid && shopId ? cacheKey(uid, 'day', shopId, day) : null;
+  const [peeked, setPeeked] = useState<string | null>(null);
+  if (dayKey && peeked !== dayKey) {
+    setPeeked(dayKey);
+    const kept = appCache.peek<DayAnswer>(dayKey);
+    if (kept && loadedDay !== day) {
+      showDay(kept.data, day);
+      setSavedAt(kept.at);
+    }
+  }
+
   const load = useCallback(async () => {
     if (!shop) return;
     // Only the newest load fills the screen, so a slow answer for the day before can't replace it.
     const request = ++latest.current;
+    setAsking(true);
     const { start, end } = dayBounds(day, tz);
     const today = localDateString(new Date(), tz);
     // On today, tomorrow's bookings nobody has reminded yet, for the card at the top.
@@ -179,26 +250,27 @@ export default function BarberBookings() {
         : null,
     ]);
     if (request !== latest.current) return;
+    setAsking(false);
     if (list.error) {
-      setError(errorMessage(list.error));
+      setRefreshError(errorMessage(list.error));
       return;
     }
+    const answer: DayAnswer = {
+      bookings: (list.data ?? []) as ShopBooking[],
+      services: active.count ?? 0,
+      barbers: team.error ? null : ((team.data ?? []) as BarberWithHours[]),
+      closed: closed.error ? null : ((closed.data ?? []) as ClosedDay[]),
+      // The client can't tell that the customer is one profile rather than a list.
+      tomorrow: !unreminded ? [] : unreminded.error ? null : ((unreminded.data ?? []) as unknown as ToRemind[]),
+    };
+    setRefreshError(null);
     setError(null);
-    const fresh = (list.data ?? []) as ShopBooking[];
-    setBookings(fresh);
-    setLoadedDay(day);
-    setServices(active.count ?? 0);
-    if (!team.error) setBarbers((team.data ?? []) as BarberWithHours[]);
-    if (!closed.error) {
-      const rows = (closed.data ?? []) as { day: string; reason: string | null; is_closure: boolean }[];
-      setClosures(Object.fromEntries(rows.filter((d) => d.is_closure).map((d) => [d.day, d.reason])));
-      setAllOff(new Set(rows.filter((d) => !d.is_closure).map((d) => d.day)));
-    }
-    if (!unreminded) setTomorrow([]);
-    // The client can't tell that the customer is one profile rather than a list.
-    else if (!unreminded.error) setTomorrow((unreminded.data ?? []) as unknown as ToRemind[]);
-    return fresh;
-  }, [shop, day, tz, days]);
+    showDay(answer, day);
+    setSavedAt(Date.now());
+    setFreshFor(day);
+    if (uid) appCache.write(cacheKey(uid, 'day', shop.id, day), answer);
+    return answer.bookings;
+  }, [shop, day, tz, days, uid, showDay]);
 
   // Reloads after a status change use the day on screen by then, not the day the button was tapped on.
   const loadRef = useRef(load);
@@ -402,6 +474,7 @@ export default function BarberBookings() {
     if (next === day) return;
     setDay(next);
     setError(null);
+    setRefreshError(null);
   };
 
   const pickBarber = (id: string | null) => {
@@ -423,6 +496,9 @@ export default function BarberBookings() {
 
   // The day's list ---------------------------------------------------------
   const loaded = loadedDay === day;
+  // Last visit's list for this day, until the server answers for it.
+  const fromCache = loaded && freshFor !== day;
+  const held: Held = fromCache ? { loading: asking, disabled: true } : null;
   // A removed block is gone from the barber's point of view.
   const kept = loaded ? bookings.filter((b) => !(b.is_block && b.status === 'cancelled')) : [];
   // A barber marked away keeps a chip on days they still have customers booked.
@@ -502,6 +578,7 @@ export default function BarberBookings() {
           now={now}
           showBarber={showBarber}
           away={awayIds.has(b.barber_id)}
+          held={held}
           onMark={(status) => mark([b], status)}
           onCancel={() => cancel(b)}
           onMove={() => router.push({ pathname: '/barber/move-booking', params: { id: b.id } })}
@@ -574,7 +651,10 @@ export default function BarberBookings() {
           </View>
         </View>
       }>
-      <T variant="title">{t('Bookings')}</T>
+      <ScreenTitle title={t('Bookings')} refreshing={fromCache && asking} />
+      {loaded && refreshError ? (
+        <StaleNote savedAt={savedAt} onRetry={load} retrying={asking} timeZone={tz} />
+      ) : null}
 
       {news && news.count > 0 ? (
         <NewsCard
@@ -665,26 +745,22 @@ export default function BarberBookings() {
       ) : null}
 
       {!loaded ? (
-        error ? (
+        refreshError ? (
           // This day never loaded, so there is nothing to show under its date but the reason and a retry.
           <View style={styles.list}>
-            <ErrorText message={error} />
+            <ErrorText message={refreshError} />
             <Button
               title={t('Try again')}
               variant="secondary"
               onPress={() => {
-                // Back to the spinner while it tries.
-                setError(null);
+                // Back to the shapes while it tries.
+                setRefreshError(null);
                 load();
               }}
             />
           </View>
         ) : (
-          <ActivityIndicator
-            color={theme.tint}
-            accessibilityLabel={t('Loading bookings…')}
-            style={styles.loading}
-          />
+          <DaySkeleton />
         )
       ) : closure ? (
         <Card>
@@ -710,7 +786,12 @@ export default function BarberBookings() {
           title={t('Needs marking')}
           action={
             needsMarking.length > 1 ? (
-              <Button title={t('Mark all as done')} variant="secondary" onPress={() => mark(needsMarking, 'completed')} />
+              <Button
+                title={t('Mark all as done')}
+                variant="secondary"
+                {...held}
+                onPress={() => mark(needsMarking, 'completed')}
+              />
             ) : undefined
           }>
           {needsMarking.map(renderOpen)}
@@ -756,6 +837,7 @@ export default function BarberBookings() {
                       booking={b}
                       tz={tz}
                       showBarber={showBarber}
+                      held={held}
                       onRestore={() => restore([b])}
                       onWhatsApp={() => (b.status === 'cancelled' && cancelledHere.has(b.id) ? sorry(b) : whatsapp(b))}
                     />,
@@ -823,6 +905,7 @@ function LiveCard({
   showBarber,
   away,
   unsaved,
+  held,
   onMark,
   onCancel,
   onMove,
@@ -839,6 +922,7 @@ function LiveCard({
   /** The barber is marked away, so someone has to see to this customer. */
   away: boolean;
   unsaved?: Unsaved;
+  held: Held;
   onMark: (status: 'completed' | 'no_show') => void;
   onCancel: () => void;
   onMove: () => void;
@@ -945,15 +1029,16 @@ function LiveCard({
       ) : null}
       {started ? (
         <Row style={styles.noWrap}>
-          <Button title={t('Done')} variant="secondary" style={{ flex: 1 }} onPress={() => onMark('completed')} />
-          <Button title={t('No-show')} variant="ghost" onPress={() => onMark('no_show')} />
+          <Button title={t('Done')} variant="secondary" style={{ flex: 1 }} {...held} onPress={() => onMark('completed')} />
+          <Button title={t('No-show')} variant="ghost" {...held} onPress={() => onMark('no_show')} />
         </Row>
       ) : resave ? (
         <Button
           title={t('Mark as reminded')}
           accessibilityLabel={t('Mark {name} as reminded', { name: who })}
           variant="secondary"
-          loading={reminding}
+          loading={reminding || held?.loading}
+          disabled={held?.disabled}
           onPress={busy(onSaveReminder)}
         />
       ) : due ? (
@@ -961,7 +1046,8 @@ function LiveCard({
           title={t('Remind on WhatsApp')}
           accessibilityLabel={t('Remind {name} on WhatsApp', { name: who })}
           variant="secondary"
-          loading={reminding}
+          loading={reminding || held?.loading}
+          disabled={held?.disabled}
           onPress={busy(onRemind)}
         />
       ) : null}
@@ -971,7 +1057,8 @@ function LiveCard({
             <Button
               title={b.reminded_at ? t('Remind again') : t('Remind on WhatsApp')}
               variant="secondary"
-              loading={reminding}
+              loading={reminding || held?.loading}
+              disabled={held?.disabled}
               onPress={busy(onRemind)}
             />
           ) : null}
@@ -979,7 +1066,8 @@ function LiveCard({
             <Button
               title={t('Undo “{status}”', { status: t('Reminded') })}
               variant="secondary"
-              loading={reminding}
+              loading={reminding || held?.loading}
+              disabled={held?.disabled}
               onPress={busy(onUnremind)}
             />
           ) : null}
@@ -993,7 +1081,7 @@ function LiveCard({
             />
           )}
           {phone ? <Button title={t('Call')} variant="secondary" onPress={() => call(phone)} /> : null}
-          <Button title={t('Cancel booking')} variant="danger" onPress={onCancel} />
+          <Button title={t('Cancel booking')} variant="danger" {...held} onPress={onCancel} />
         </Row>
       ) : null}
     </Card>
@@ -1090,12 +1178,14 @@ function FinishedRow({
   booking: b,
   tz,
   showBarber,
+  held,
   onRestore,
   onWhatsApp,
 }: {
   booking: ShopBooking;
   tz: string;
   showBarber: boolean;
+  held: Held;
   onRestore: () => void;
   onWhatsApp: () => void;
 }) {
@@ -1142,12 +1232,36 @@ function FinishedRow({
           <Button
             title={t('Undo “{status}”', { status: b.status === 'completed' ? t('Done') : t('No-show') })}
             variant="secondary"
+            {...held}
             onPress={onRestore}
           />
           {phone ? <Button title={t('Call')} variant="secondary" onPress={() => call(phone)} /> : null}
         </Row>
       ) : null}
     </View>
+  );
+}
+
+/** The shape of a few bookings, while a day with nothing kept from before loads. */
+function DaySkeleton() {
+  return (
+    <Skeleton label={t('Loading bookings')} style={styles.list}>
+      {[0, 1, 2].map((i) => (
+        <Card key={i}>
+          <View style={styles.cardRow}>
+            <View style={[styles.timeCol, styles.list]}>
+              <Bone width={72} height={20} />
+              <Bone width={48} height={12} />
+            </View>
+            <View style={[styles.info, styles.list]}>
+              <Bone width="55%" />
+              <Bone width="80%" />
+            </View>
+          </View>
+          <Bone height={48} style={{ borderRadius: Radius.md }} />
+        </Card>
+      ))}
+    </Skeleton>
   );
 }
 
@@ -1221,7 +1335,6 @@ const styles = StyleSheet.create({
   info: { flex: 1, gap: 2 },
   fold: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 48 },
   hoursCheck: { gap: Spacing.sm, paddingLeft: Spacing.lg },
-  loading: { paddingVertical: Spacing.xxl },
   overlay: { position: 'absolute', left: 0, right: 0, bottom: 0, pointerEvents: 'box-none' },
   overlayInner: {
     width: '100%',
