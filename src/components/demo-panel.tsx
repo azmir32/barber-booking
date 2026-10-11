@@ -7,6 +7,7 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
+import { forgetSeen } from '@/lib/shop-news';
 import { demo, errorMessage, supabase } from '@/lib/supabase';
 
 type Side = 'customer' | 'barber';
@@ -47,6 +48,7 @@ export function DemoPanel() {
     if (!ok || !demo) return;
     await supabase.auth.signOut();
     demo.resetDemo();
+    await forgetSeen();
     setError(null);
   }
 

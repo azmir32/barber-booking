@@ -178,8 +178,8 @@ test('a reminder sent from a screen that missed a move says so, and the new time
   await app.getByRole('radio', { name: /^Tomorrow/ }).click();
   await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
 
-  // Hakim moves his cut an hour earlier on his own phone; this screen hasn't reloaded yet. (An hour
-  // later can run into Wei Jie's beard trim on a day Danial is off and Hakim is with Ali.)
+  // Hakim moves his cut an hour earlier on his own phone; this screen hasn't reloaded yet.
+  // (Not later: when tomorrow is a Monday, Danial is off and Wei Jie is in Ali's chair at 6 pm.)
   await page.evaluate(() => {
     const key = 'potongku.demo.v1';
     const saved = JSON.parse(localStorage.getItem(key)!);
@@ -584,6 +584,19 @@ test('the barber sees what customers changed since they last looked, and clears 
   await expect(app.getByRole('tab', { name: 'Bookings, 1 change since you last looked', exact: true })).toBeVisible();
   await expect(lines).toHaveCount(1);
   await expect(lines.first()).toHaveAccessibleName(/^Hakim booked Haircut for tomorrow at .+ with (Ali|Danial)\. Just\snow$/);
+
+  // Starting the demo again brings back all the sample changes, though this phone saw newer ones.
+  await button(app, 'Got it').click();
+  await expect(card).toHaveCount(0);
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'Sign out').click();
+  await button(app, 'Start the demo again').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Start again', exact: true }).click();
+  await button(app, 'Try as a barber').click();
+  await expect(tab).toBeVisible();
+  await expect(lines).toHaveCount(3);
 });
 
 test('a customer rates their cut, it shows on the shop’s page, and the owner replies', async ({ page }) => {
