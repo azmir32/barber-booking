@@ -17,7 +17,14 @@ import type { LatLng } from '@/lib/distance';
 import { nextFreeLine, openStatus } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import type { MyShops } from '@/lib/my-shops';
-import { locate, nearMePosition, nearMeWasOn, rememberNearMe, setNearMePosition } from '@/lib/near-me';
+import {
+  locate,
+  nearMePosition,
+  nearMeWasOn,
+  rememberNearMe,
+  setNearMePosition,
+  type LocateProblem,
+} from '@/lib/near-me';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice, localDateString } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -44,7 +51,6 @@ type Area = { area: string; shops: number };
  * on, and what it finds stays nearest first.
  */
 type Near = 'off' | 'finding' | 'on';
-type NearProblem = 'denied' | 'unavailable';
 
 /** Shops per page. One more is asked for, to know whether there are more. */
 const PAGE = 20;
@@ -79,10 +85,11 @@ export default function Explore() {
   // A returning customer's next cut and their barbers, and whose they are.
   const [mine, setMine] = useState<(MyShops & { uid: string }) | null>(null);
   const latestMine = useRef(0);
+  const mineSent = useRef(false);
   const [near, setNear] = useState<Near>('off');
   // Where the customer is, to about 100 m, while Near me is on. Never saved.
   const [here, setHere] = useState<LatLng | null>(null);
-  const [nearProblem, setNearProblem] = useState<NearProblem | null>(null);
+  const [nearProblem, setNearProblem] = useState<LocateProblem | null>(null);
   // Near me tapped on this visit, rather than kept on from the last.
   const [nearPicked, setNearPicked] = useState(false);
   // Only the newest tap of Near me counts; turning it off drops a position still on its way.
@@ -121,8 +128,23 @@ export default function Explore() {
     rememberNearMe(false);
   }
 
+  const loadMine = useCallback(async () => {
+    const request = ++latestMine.current;
+    // Asked of the client rather than taken from the screen's state, so the
+    // session arriving after the first load doesn't send the list again.
+    const who = (await supabase.auth.getSession()).data.session?.user.id;
+    if (!who) return setMine(null);
+    const { data, error } = await supabase.rpc('my_shops');
+    // Nothing to say on failure: the list below is what matters, and the cards come back on the next load.
+    if (request !== latestMine.current || error || !data) return;
+    setMine({ ...(data as MyShops), uid: who });
+  }, []);
+
   const restore = useEffectEvent(async (saved: string | null, wasNear: boolean) => {
     if (wasNear) {
+      // Their next cut and barbers don't need the position, so they don't wait for it.
+      mineSent.current = true;
+      loadMine();
       // They may have moved since, so it asks for where they are now. The
       // list waits a moment for it rather than jumping, but not for long.
       const release = setTimeout(() => setAreaRestored(true), 4000);
@@ -155,25 +177,15 @@ export default function Explore() {
     [query, area, at],
   );
 
-  const loadMine = useCallback(async () => {
-    const request = ++latestMine.current;
-    // Asked of the client rather than taken from the screen's state, so the
-    // session arriving after the first load doesn't send the list again.
-    const who = (await supabase.auth.getSession()).data.session?.user.id;
-    if (!who) return setMine(null);
-    const { data, error } = await supabase.rpc('my_shops');
-    // Nothing to say on failure: the list below is what matters, and the cards come back on the next load.
-    if (request !== latestMine.current || error || !data) return;
-    setMine({ ...(data as MyShops), uid: who });
-  }, []);
-
   const load = useCallback(async () => {
     const request = ++latest.current;
     setLoading(true);
     // then() sends the list's request now, so the cards' one goes alongside it, never ahead.
     const page = fetchPage(0).then((res) => res);
     // Searching, picking an area or tapping Near me hides the cards, so they wait until those are cleared.
-    if (!query.trim() && !areaPicked && !nearPicked) loadMine();
+    // On opening with Near me kept they were sent already, while the list waited for the position.
+    if (mineSent.current) mineSent.current = false;
+    else if (!query.trim() && !areaPicked && !nearPicked) loadMine();
     const { data, error } = await page;
     if (request !== latest.current) return;
     setLoading(false);
@@ -342,7 +354,7 @@ export default function Explore() {
             mine={returning}
             now={now}
             listTitle={
-              near === 'on'
+              near !== 'off'
                 ? t('Barbers near you')
                 : areaShown
                   ? t('Barbers in {area}', { area: areaShown })
@@ -433,16 +445,18 @@ export default function Explore() {
 }
 
 /** Why Near me couldn't turn on, and how to let it: one line, with the phone's Settings a tap away. */
-function NearMeProblem({ problem }: { problem: NearProblem }) {
+function NearMeProblem({ problem }: { problem: LocateProblem }) {
   const settings = problem === 'denied' && Platform.OS !== 'web';
   return (
     <Row style={{ flexWrap: 'nowrap', marginVertical: settings ? -Spacing.sm : 0 }}>
       <T variant="small" role="alert" accessibilityLiveRegion="polite" style={{ flex: 1 }}>
-        {problem === 'unavailable'
-          ? t('Couldn’t find where you are. Check that location is on, then tap Near me again.')
-          : Platform.OS === 'web'
-            ? t('Your browser is blocking location. Allow it for this site, then tap Near me again.')
-            : t('Location is off for {app}. Allow it in Settings to see barbers near you.', { app: APP_NAME })}
+        {problem === 'blocked'
+          ? t('Location isn’t available on this page. Pick your area instead.')
+          : problem === 'unavailable'
+            ? t('Couldn’t find where you are. Check that location is on, then tap Near me again.')
+            : Platform.OS === 'web'
+              ? t('Your browser is blocking location. Allow it for this site, then tap Near me again.')
+              : t('Location is off for {app}. Allow it in Settings to see barbers near you.', { app: APP_NAME })}
       </T>
       {settings ? <Button title={t('Settings')} variant="ghost" onPress={() => Linking.openSettings()} /> : null}
     </Row>

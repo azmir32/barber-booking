@@ -2,8 +2,10 @@
 // might: in a sandboxed iframe, from a sub-path, under a strict
 // Content-Security-Policy with no network access and no browser dialogs.
 //
-//   /host  a page holding the iframe
-//   *      the demo page itself (like a host's catch-all)
+//   /host   a page holding the iframe
+//   /embed  another site holding it, under the other loopback name
+//           (localhost or 127.0.0.1), without passing on location
+//   *       the demo page itself (like a host's catch-all)
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -32,11 +34,23 @@ const host = `<!doctype html>
   sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
 </body></html>`;
 
+// A cross-origin frame with no allow="geolocation": the browser gives it no location, whatever the visitor allows.
+const embed = (otherSite) => `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html, body { margin: 0; height: 100%; } iframe { border: 0; width: 100%; height: 100%; display: block; }</style>
+</head><body>
+<iframe id="app" title="PotongKu demo" src="http://${otherSite}:${PORT}/artifact/demo-page/index.html"></iframe>
+</body></html>`;
+
 http
   .createServer((req, res) => {
     if (req.url === '/host') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       return res.end(host);
+    }
+    if (req.url === '/embed') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      return res.end(embed(req.headers.host?.startsWith('localhost') ? '127.0.0.1' : 'localhost'));
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': CSP });
     res.end(page);

@@ -939,4 +939,12 @@ export const ms: Record<string, string> = {
     'Pelayar anda menyekat lokasi. Benarkan untuk laman ini, kemudian cuba lagi.',
   'Location is off for {app}. Allow it in Settings, then try again.':
     'Lokasi dimatikan untuk {app}. Benarkan dalam Tetapan, kemudian cuba lagi.',
+  'Location isn’t available on this page. Pick your area instead.':
+    'Lokasi tidak tersedia di halaman ini. Sila pilih kawasan anda.',
+  'Location isn’t available on this page. Customers can still find you by your address.':
+    'Lokasi tidak tersedia di halaman ini. Pelanggan masih boleh mencari anda melalui alamat.',
+  '{app} only has your approximate location. Turn on Precise location in Settings, then try again.':
+    '{app} hanya mendapat lokasi anggaran anda. Hidupkan Lokasi tepat dalam Tetapan, kemudian cuba lagi.',
+  'Couldn’t get your exact spot. Try again near the door or just outside.':
+    'Lokasi tepat anda tidak dapat dikesan. Cuba lagi berhampiran pintu atau di luar kedai.',
 };

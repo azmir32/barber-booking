@@ -1,5 +1,4 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import * as Location from 'expo-location';
 import { useRef, useState } from 'react';
 import { Linking, Platform, View, type TextInput } from 'react-native';
 
@@ -13,7 +12,7 @@ import { shopPoint, type LatLng } from '@/lib/distance';
 import { t } from '@/lib/lang';
 import { directionsUrl } from '@/lib/maps';
 import { addBarber } from '@/lib/my-shop';
-import { locate } from '@/lib/near-me';
+import { locateShop, type ShopLocateProblem } from '@/lib/near-me';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { slugify, suggestSlug } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -62,7 +61,7 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   // Where the shop is, from the owner's phone while they stand in it.
   const [point, setPoint] = useState<LatLng | null>(shop ? shopPoint(shop) : null);
   const [locating, setLocating] = useState(false);
-  const [placeProblem, setPlaceProblem] = useState<'denied' | 'unavailable' | null>(null);
+  const [placeProblem, setPlaceProblem] = useState<ShopLocateProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The link another shop turned out to have, said at the link field with one to try instead.
@@ -96,8 +95,7 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   async function setPointHere() {
     setLocating(true);
     setPlaceProblem(null);
-    // As close as the phone can tell, to find the door rather than the street.
-    const found = await locate(Location.Accuracy.High);
+    const found = await locateShop();
     setLocating(false);
     if ('problem' in found) return setPlaceProblem(found.problem);
     setPoint({ latitude: sixPlaces(found.position.latitude), longitude: sixPlaces(found.position.longitude) });
@@ -260,17 +258,9 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
         {placeProblem ? (
           <Row style={{ flexWrap: 'nowrap' }}>
             <View style={{ flex: 1 }}>
-              <ErrorText
-                message={
-                  placeProblem === 'unavailable'
-                    ? t('Couldn’t find where you are. Check that location is on, then try again.')
-                    : Platform.OS === 'web'
-                      ? t('Your browser is blocking location. Allow it for this site, then try again.')
-                      : t('Location is off for {app}. Allow it in Settings, then try again.', { app: APP_NAME })
-                }
-              />
+              <ErrorText message={placeProblemText(placeProblem)} />
             </View>
-            {placeProblem === 'denied' && Platform.OS !== 'web' ? (
+            {(placeProblem === 'denied' || placeProblem === 'approximate') && Platform.OS !== 'web' ? (
               <Button title={t('Settings')} variant="ghost" onPress={() => Linking.openSettings()} />
             ) : null}
           </Row>
@@ -309,4 +299,24 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
       ) : null}
     </>
   );
+}
+
+/** Why "Use my location here" didn't set it, and what to do about it. */
+function placeProblemText(problem: ShopLocateProblem) {
+  switch (problem) {
+    case 'approximate':
+      return t('{app} only has your approximate location. Turn on Precise location in Settings, then try again.', {
+        app: APP_NAME,
+      });
+    case 'rough':
+      return t('Couldn’t get your exact spot. Try again near the door or just outside.');
+    case 'blocked':
+      return t('Location isn’t available on this page. Customers can still find you by your address.');
+    case 'unavailable':
+      return t('Couldn’t find where you are. Check that location is on, then try again.');
+    case 'denied':
+      return Platform.OS === 'web'
+        ? t('Your browser is blocking location. Allow it for this site, then try again.')
+        : t('Location is off for {app}. Allow it in Settings, then try again.', { app: APP_NAME });
+  }
 }

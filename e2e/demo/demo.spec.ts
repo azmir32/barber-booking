@@ -791,10 +791,20 @@ test('Near me puts the closest barbers first, says how far each is, and is kept 
 
   // Opening the app again in Kajang town, Near me asks afresh: Kemas is now the closest.
   await context.setGeolocation({ latitude: 2.993, longitude: 101.788 });
+  // The position is slow to come, as indoors.
+  await page.addInitScript(() => {
+    const geo = navigator.geolocation;
+    const now = geo.getCurrentPosition.bind(geo);
+    geo.getCurrentPosition = (found, failed, options) => void setTimeout(() => now(found, failed, options), 3000);
+  });
   await page.reload();
+  // Kept from last time, so his next cut and barbers are back on top at once, not after the position.
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
+  await expect(app.getByText('Finding where you are…')).toBeVisible();
   await expect(nearMe).toBeChecked();
-  // Kept from last time, so his next cut and barbers are back on top, with the list nearest first under them.
+  // Then the list, nearest first under them.
   await expect(app.getByRole('heading', { name: 'Barbers near you' })).toBeVisible();
+  await expect(app.getByText('Finding where you are…')).toHaveCount(0);
   await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
   await expect(distances.first()).toHaveAccessibleName('100 m away');
   await expect(app.getByRole('link', { name: /^Kemas Barber Kajang\s*100 m away/ })).toBeVisible();
@@ -846,11 +856,21 @@ test('the owner sets where the shop is from inside it, and checks it on the map'
   await location.getByRole('button', { name: 'Remove the shop location' }).click();
   await expect(location.getByText('Not saved yet. Tap Save changes below.')).toBeVisible();
 
-  // At the shop's door, a few metres from where it was.
+  // Deep inside, the phone only knows the spot to within 1.5 km: not good enough for every customer's Directions.
   await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 2.97, longitude: 101.76, accuracy: 1500 });
+  await button(location, 'Use my location here').click();
+  await expect(
+    location.getByText('Couldn’t get your exact spot. Try again near the door or just outside.'),
+  ).toBeVisible();
+  await expect(location.getByText('Location set')).toHaveCount(0);
+  await snap(page, 'demo-28-shop-location-rough');
+
+  // At the shop's door, a few metres from where it was.
   await context.setGeolocation({ latitude: 2.98463, longitude: 101.77125 });
   await button(location, 'Use my location here').click();
   await expect(location.getByText('Location set')).toBeVisible();
+  await expect(location.getByText(/exact spot/)).toHaveCount(0);
   await expect(location.getByText('Not saved yet. Tap Save changes below.')).toBeVisible();
   await snap(page, 'demo-27-shop-location');
   await button(app, 'Save changes').click();
@@ -862,6 +882,38 @@ test('the owner sets where the shop is from inside it, and checks it on the map'
   await button(app, 'See the customer side').click();
   await listed(app, 'Ali Barber Sungai Chua').click();
   expect(await opensGoogleMaps(page, () => button(app, 'Directions').click())).toBe('2.98463,101.77125');
+});
+
+test('framed by another site that doesn’t share location, Near me and the shop location say it isn’t available there', async ({
+  page,
+  context,
+}) => {
+  // Allowed for the browser, but the site holding the demo doesn't pass it on (no allow="geolocation").
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 2.9833, longitude: 101.7667 });
+  await page.goto('/embed');
+  const app = page.frameLocator('#app');
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  const nearMe = app.getByRole('radio', { name: 'Near me', exact: true });
+  await nearMe.click();
+  // Not "allow it for this site": nothing the visitor can allow would help here.
+  await expect(app.getByText('Location isn’t available on this page. Pick your area instead.')).toBeVisible();
+  await expect(app.getByText(/blocking location/)).toHaveCount(0);
+  await expect(nearMe).not.toBeChecked();
+  await expect(app.getByRole('img', { name: / away$/ })).toHaveCount(0);
+  await snap(page, 'demo-29-near-me-framed');
+
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  const location = app.getByRole('group', { name: 'Shop location' });
+  await location.getByRole('button', { name: 'Remove the shop location' }).click();
+  await button(location, 'Use my location here').click();
+  await expect(
+    location.getByText('Location isn’t available on this page. Customers can still find you by your address.'),
+  ).toBeVisible();
+  await expect(location.getByText('Location set')).toHaveCount(0);
 });
 
 test.describe('on an iPhone', () => {
