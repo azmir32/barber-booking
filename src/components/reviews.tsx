@@ -5,8 +5,19 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Button, ErrorText, Field, Row, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useAuth } from '@/lib/auth';
 import { t } from '@/lib/lang';
-import { ratingSummary, reviewAge, REVIEW_MAX_LENGTH, starsLabel, type MyReview, type ShopReview } from '@/lib/reviews';
+import {
+  firstName,
+  ratingSummary,
+  reviewAge,
+  REVIEW_MAX_LENGTH,
+  REVIEW_NAME_MAX_LENGTH,
+  reviewName,
+  starsLabel,
+  type MyReview,
+  type ShopReview,
+} from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay } from '@/lib/time';
 
@@ -66,8 +77,6 @@ export function RatingSummary({
       role="link"
       accessibilityLabel={`${summary.label}. ${t('See reviews')}`}
       onPress={onPress}
-      // The line is 18pt tall; the slop makes it a 44pt target without spacing out the header.
-      hitSlop={{ top: 13, bottom: 13 }}
       style={({ pressed }) => [styles.summaryLink, pressed && { opacity: 0.6 }]}>
       {text}
     </Pressable>
@@ -100,8 +109,8 @@ export function StarPicker({ value, onChange }: { value: number; onChange: (star
 }
 
 /**
- * The stars, then once one is picked an optional comment and Send. Also
- * changes a rating already given, starting from it.
+ * The stars, then once one is picked an optional comment, the name the
+ * review shows and Send. Also changes a rating already given, starting from it.
  */
 export function RateForm({
   bookingId,
@@ -110,15 +119,21 @@ export function RateForm({
   onCancel,
 }: {
   bookingId: string;
-  initial?: Pick<MyReview, 'rating' | 'comment'>;
+  initial?: Pick<MyReview, 'rating' | 'comment' | 'first_name'>;
   onSaved: (review: MyReview) => void;
   /** For a change to a rating already given: leaves it as it was. */
   onCancel?: () => void;
 }) {
+  const { profile } = useAuth();
   const [stars, setStars] = useState(initial?.rating ?? 0);
   const [comment, setComment] = useState(initial?.comment ?? '');
+  const [typedName, setTypedName] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // As they typed it, else as it was, else worked out from their name as the database would.
+  // Shown before it goes up, since no rule gets every name right.
+  const shownAs = reviewName(typedName ?? '') ?? initial?.first_name ?? firstName(profile?.full_name ?? '');
 
   async function send() {
     setSaving(true);
@@ -127,6 +142,7 @@ export function RateForm({
       p_booking_id: bookingId,
       p_rating: stars,
       p_comment: comment,
+      p_name: shownAs,
     });
     setSaving(false);
     if (error) return setError(errorMessage(error));
@@ -146,13 +162,31 @@ export function RateForm({
         <>
           <Field
             label={t('Comment (optional)')}
-            hint={t('Shown on the shop’s page with your first name.')}
             value={comment}
             onChangeText={setComment}
             placeholder={t('What did you like? What could be better?')}
             multiline
             maxLength={REVIEW_MAX_LENGTH}
           />
+          {editingName ? (
+            <Field
+              label={t('Name on your review')}
+              hint={t('Shown on the shop’s page. A first name or nickname is enough.')}
+              value={typedName ?? shownAs}
+              onChangeText={setTypedName}
+              onBlur={() => setTypedName(shownAs)}
+              maxLength={REVIEW_NAME_MAX_LENGTH}
+              autoCapitalize="words"
+              autoFocus
+            />
+          ) : (
+            <Row style={{ flexWrap: 'nowrap' }}>
+              <T variant="small" style={{ flex: 1 }}>
+                {t('Shown on the shop’s page as “{name}”.', { name: shownAs })}
+              </T>
+              <Button title={t('Change name')} variant="ghost" onPress={() => setEditingName(true)} />
+            </Row>
+          )}
           <ErrorText message={error} />
           <Row style={{ flexWrap: 'nowrap' }}>
             {onCancel ? <Button title={t('Cancel')} variant="secondary" onPress={onCancel} /> : null}
@@ -178,7 +212,7 @@ export function ShopReply({ text, title = t('Reply from the shop') }: { text: st
 }
 
 /**
- * One review as a shop page shows it: a first name, the stars, how long ago,
+ * One review as a shop page shows it: the reviewer's name, the stars, how long ago,
  * the barber, what they wrote and the shop's reply. For the shop's owner it
  * also says which cut it was. `children` go underneath, e.g. Reply.
  */
@@ -222,7 +256,10 @@ export function ReviewItem({
 
 const styles = StyleSheet.create({
   stars: { flexDirection: 'row', gap: 2 },
-  summaryLink: { alignSelf: 'flex-start' },
+  // A 44pt target round an 18pt line, without spacing out the header. On the web
+  // a Pressable ignores hitSlop, so the target is its own size. Above the lines
+  // it overlaps, so they don't take its taps.
+  summaryLink: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', marginVertical: -13, zIndex: 1 },
   picker: { gap: Spacing.xs },
   starButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
   form: { gap: Spacing.md },

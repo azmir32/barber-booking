@@ -7,10 +7,12 @@ import {
   canRate,
   firstName,
   rateUntil,
+  ratingLabel,
   ratingAverage,
   ratingSummary,
   reviewAge,
   reviewCount,
+  reviewName,
   starsLabel,
 } from './reviews.ts';
 
@@ -34,18 +36,47 @@ test('a cut can be rated once it is marked done, for 14 days after it started', 
   assert.equal(rateUntil('2026-10-01T02:00:00Z').toISOString(), '2026-10-15T02:00:00.000Z');
 });
 
-test('a review shows the name people go by, never a surname', () => {
-  assert.equal(firstName('Hakim'), 'Hakim');
-  assert.equal(firstName('  Daniel   Tan '), 'Daniel');
-  assert.equal(firstName('Mohd Hakim bin Ali'), 'Hakim');
-  assert.equal(firstName('MUHAMMAD Aiman'), 'Aiman');
-  assert.equal(firstName('Mohd. Faiz'), 'Faiz');
-  assert.equal(firstName('\tMd Rizal\n'), 'Rizal');
-  // Someone named only Muhammad, or whose name only starts the same, keeps it.
-  assert.equal(firstName('Muhammad'), 'Muhammad');
-  assert.equal(firstName('Mohdzan Ali'), 'Mohdzan');
-  assert.equal(firstName('x'.repeat(50)), 'x'.repeat(40));
-  assert.equal(firstName('\t'), 'Customer');
+test('a review shows the name people go by, never a surname or their father’s name', () => {
+  // The same names as review_first_name's test in booking_test.sql.
+  const names: [string, string][] = [
+    ['Hakim', 'Hakim'],
+    ['  Ben   Lee ', 'Ben'],
+    ['\tMohd. Ben bin Hassan', 'Ben'],
+    ['MUHAMMAD Aiman', 'Aiman'],
+    ['Muhammad', 'Muhammad'],
+    ['Muhammad bin Abdullah', 'Muhammad'],
+    ['Mohd bin Ali', 'Mohd'],
+    ['Mohdzan Ali', 'Mohdzan'],
+    ['Abdul Rahman bin Ismail', 'Abdul Rahman'],
+    ['Muhammad Abd. Aziz', 'Abd. Aziz'],
+    ['Nur Aisyah binti Ahmad', 'Nur'],
+    ['Wan Faizal', 'Faizal'],
+    ['Syed Ahmad bin Syed Ali', 'Ahmad'],
+    ['Wan Abdul Rahman', 'Abdul Rahman'],
+    ['Haji Mohd Ali b. Abu', 'Ali'],
+    ["Dato' Rahim", 'Rahim'],
+    ['Wan', 'Wan'],
+    ['Ravi a/l Kumar', 'Ravi'],
+    ['Kavitha A/P Raju', 'Kavitha'],
+    ['Tan Wei Jie', 'Wei Jie'],
+    ['Dr Lim Kit Siang', 'Kit Siang'],
+    ['Daniel Tan', 'Daniel'],
+    ['Daniel Tan Wei Jie', 'Daniel'],
+    // No rule tells a given name from a surname here, so the form shows it.
+    ['Wei Jie', 'Wei'],
+    ['x'.repeat(50), 'x'.repeat(40)],
+    ['\t', 'Customer'],
+  ];
+  assert.deepEqual(
+    names.map(([full]) => [full, firstName(full)]),
+    names,
+  );
+});
+
+test('a name the customer types for their review is tidied and cut to 40 characters', () => {
+  assert.equal(reviewName('  Benny \n Boy '), 'Benny Boy');
+  assert.equal(reviewName('Ben '.repeat(15)), 'Ben '.repeat(10).trimEnd());
+  assert.equal(reviewName(' \t '), null);
 });
 
 test('a shop shows its stars once it has three reviews', () => {
@@ -58,9 +89,13 @@ test('a shop shows its stars once it has three reviews', () => {
   // A whole number still has its decimal, so the list lines up.
   assert.equal(ratingSummary(5, 3)?.text, '5.0 ★ (3)');
   assert.equal(ratingSummary(4.1, 1250)?.text, '4.1 ★ (1,250)');
+  // My shop says it for any number, one too.
+  assert.equal(ratingLabel(5, 1), 'Rated 5.0 out of 5 from 1 review');
+  assert.equal(ratingLabel(4.5, 2), 'Rated 4.5 out of 5 from 2 reviews');
   setCurrentLang('ms');
   try {
     assert.deepEqual(ratingSummary(4.8, 23), { text: '4.8 ★ (23)', label: 'Penilaian 4.8 daripada 5, dari 23 ulasan' });
+    assert.equal(ratingLabel(5, 1), 'Penilaian 5.0 daripada 5, dari 1 ulasan');
     assert.equal(starsLabel(4), '4 bintang');
     assert.equal(reviewCount(1), '1 ulasan');
   } finally {

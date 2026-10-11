@@ -18,7 +18,7 @@ import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
 import { canRate, rateUntil, starsLabel, type MyReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
-import { formatDay, formatPrice, formatTime } from '@/lib/time';
+import { formatDay, formatPrice, formatTime, noBreak } from '@/lib/time';
 import type { Booking } from '@/lib/types';
 
 /** One of the customer's bookings, from my_bookings(): its shop and barber come even when the shop is paused. */
@@ -456,6 +456,8 @@ function YourRating({
   }
   if (!review) return null;
   const tz = b.shops?.time_zone;
+  // The window shuts at the cut's own time of day, so the time is said too.
+  const until = rateUntil(b.starts_at);
   return (
     <View style={styles.rating}>
       {saved ? (
@@ -474,7 +476,10 @@ function YourRating({
       {open ? (
         <Row style={{ flexWrap: 'nowrap' }}>
           <T variant="small" style={{ flex: 1 }}>
-            {t('You can change it until {day}.', { day: formatDay(rateUntil(b.starts_at), tz) })}
+            {t('You can change it until {day} at {time}.', {
+              day: noBreak(formatDay(until, tz)),
+              time: noBreak(formatTime(until, tz)),
+            })}
           </T>
           <Button
             title={t('Edit')}

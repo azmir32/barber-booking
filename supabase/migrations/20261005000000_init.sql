@@ -1638,7 +1638,8 @@ $$;
 -- moment it paused: the booking still stood, but the customer no longer knew
 -- where to go or how to reach the shop. is_live says whether it still takes
 -- online bookings, so the app can hide Change time and say why. review is
--- the customer's rating of that cut and the shop's reply, or null.
+-- the customer's rating of that cut, the name it shows and the shop's reply,
+-- or null.
 create function public.my_bookings(p_limit int default 100)
 returns jsonb
 language sql
@@ -1655,8 +1656,8 @@ as $$
                'phone', s.phone, 'time_zone', s.time_zone, 'is_live', public.shop_is_live(s)),
              'barbers', jsonb_build_object('name', br.name),
              'review', case when r.booking_id is not null then jsonb_build_object(
-               'rating', r.rating, 'comment', r.comment, 'reply', r.reply, 'replied_at', r.replied_at,
-               'created_at', r.created_at, 'updated_at', r.updated_at) end) as item
+               'rating', r.rating, 'comment', r.comment, 'first_name', r.first_name, 'reply', r.reply,
+               'replied_at', r.replied_at, 'created_at', r.created_at, 'updated_at', r.updated_at) end) as item
     from bookings b
     join shops s on s.id = b.shop_id
     join barbers br on br.id = b.barber_id
@@ -1669,11 +1670,59 @@ $$;
 
 -- Reviews ----------------------------------------------------------------------
 
+-- The name a review shows unless the customer picks another: the name they
+-- go by, never a surname or their father's name. "Mohd Hakim bin Ali" is
+-- Hakim, "Muhammad bin Abdullah" is Muhammad, "Wan Abdul Rahman" is Abdul
+-- Rahman and "Tan Wei Jie" is Wei Jie. src/lib/reviews.ts (firstName) does
+-- the same for the app's form and the demo, with the same word lists.
+create function public.review_first_name(p_full_name text)
+returns text
+language plpgsql
+immutable
+set search_path = public
+as $$
+declare
+  v_words text[] := regexp_split_to_array(btrim(coalesce(p_full_name, ''), E' \t\r\n'), '\s+');
+  v_name text;
+begin
+  -- What follows bin, binti or a/l is the father's name.
+  for i in 2 .. array_length(v_words, 1) loop
+    if rtrim(lower(v_words[i]), '.''’') in ('bin', 'binti', 'binte', 'bte', 'bt', 'b', 'a/l', 'a/p', 's/o', 'd/o') then
+      v_words := v_words[1:i - 1];
+      exit;
+    end if;
+  end loop;
+  -- Muhammad and Mohd, titles, and hereditary names like Wan or Syed, while another word follows.
+  while array_length(v_words, 1) > 1 and rtrim(lower(v_words[1]), '.''’') in (
+    'muhammad', 'muhamad', 'mohammad', 'mohamad', 'mohammed', 'mohamed', 'mohd', 'muhd', 'mhd', 'md',
+    'wan', 'nik', 'syed', 'sayed', 'sharifah', 'syarifah', 'tengku', 'tunku', 'raja', 'megat', 'che',
+    'dr', 'haji', 'hj', 'hajah', 'hjh', 'encik', 'en', 'tuan', 'puan', 'cik', 'dato', 'datuk', 'datin') loop
+    v_words := v_words[2:];
+  end loop;
+  -- Three words after a common Chinese surname are surname first; Abdul goes with the next word.
+  if array_length(v_words, 1) = 3 and rtrim(lower(v_words[1]), '.''’') in (
+    'tan', 'lim', 'lee', 'ng', 'wong', 'chan', 'ong', 'teh', 'goh', 'leong', 'lau', 'yap', 'low', 'cheah', 'khoo',
+    'koh', 'chua', 'foo', 'loh', 'liew', 'yeoh', 'ooi', 'tay', 'chew', 'ang', 'soh', 'teo', 'toh', 'phang', 'choong',
+    'lam', 'chai', 'chia', 'gan', 'mah', 'mak', 'quek', 'seow', 'woo', 'yeo', 'yip', 'choy', 'hii', 'ho') then
+    v_name := v_words[2] || ' ' || v_words[3];
+  elsif array_length(v_words, 1) > 1 and rtrim(lower(v_words[1]), '.''’') in ('abdul', 'abd') then
+    v_name := v_words[1] || ' ' || v_words[2];
+  else
+    v_name := v_words[1];
+  end if;
+  return coalesce(nullif(rtrim(left(v_name, 40), ' '), ''), 'Customer');
+end;
+$$;
+
 -- The booking's own customer rates their cut, 1 to 5 stars with an optional
 -- comment, once the shop has marked it done and for 14 days after it started
 -- (src/lib/reviews.ts shows the same window). Rating again in that time
--- changes the same review. Owners can't rate their own shop.
-create function public.rate_booking(p_booking_id uuid, p_rating int, p_comment text default null)
+-- changes the same review. Owners can't rate their own shop. p_name is the
+-- name the review shows, as the customer saw or changed it on the form;
+-- without it a new review takes review_first_name and a changed one keeps
+-- its name.
+create function public.rate_booking(p_booking_id uuid, p_rating int, p_comment text default null,
+                                    p_name text default null)
 returns public.reviews
 language plpgsql
 security definer
@@ -1682,7 +1731,7 @@ as $$
 declare
   v_booking bookings;
   v_comment text := nullif(btrim(p_comment, E' \t\r\n'), '');
-  v_words text[];
+  v_name text := nullif(rtrim(left(btrim(regexp_replace(p_name, '\s+', ' ', 'g'), ' '), 40), ' '), '');
   v_review reviews;
 begin
   select * into v_booking from bookings where id = p_booking_id;
@@ -1693,7 +1742,7 @@ begin
     raise exception 'You can''t rate your own shop.' using errcode = '42501';
   end if;
   if v_booking.status <> 'completed' or now() >= v_booking.starts_at + interval '14 days' then
-    raise exception 'You can rate a cut for 14 days, once the shop marks it done.' using errcode = '42501';
+    raise exception 'You can rate a cut once the shop marks it done, until 14 days after it.' using errcode = '42501';
   end if;
   if p_rating is null or p_rating not between 1 and 5 then
     raise exception 'Pick from 1 to 5 stars.' using errcode = '22023';
@@ -1702,24 +1751,13 @@ begin
     raise exception 'Please keep your comment under 280 characters.' using errcode = '22001';
   end if;
 
-  -- The name they go by, for a public page: the first word, or the next one
-  -- after Muhammad or Mohd ("Mohd Hakim bin Ali" is Hakim). Never a surname.
-  -- src/lib/reviews.ts (firstName) does the same for the demo.
-  select regexp_split_to_array(btrim(full_name, E' \t\r\n'), '\s+') into v_words
-  from profiles where id = auth.uid();
-  if lower(rtrim(v_words[1], '.')) in ('muhammad', 'muhamad', 'mohammad', 'mohamad', 'mohammed', 'mohamed',
-                                       'mohd', 'muhd', 'mhd', 'md')
-     and coalesce(v_words[2], '') <> '' then
-    v_words := v_words[2:];
-  end if;
-
   insert into reviews (booking_id, shop_id, barber_id, customer_id, rating, comment, first_name)
   values (v_booking.id, v_booking.shop_id, v_booking.barber_id, v_booking.customer_id, p_rating, v_comment,
-          coalesce(left(nullif(v_words[1], ''), 40), 'Customer'))
+          coalesce(v_name, (select public.review_first_name(full_name) from profiles where id = auth.uid()), 'Customer'))
   on conflict (booking_id) do update set
     rating = excluded.rating,
     comment = excluded.comment,
-    first_name = excluded.first_name,
+    first_name = coalesce(v_name, reviews.first_name),
     updated_at = now()
   returning * into v_review;
   return v_review;
@@ -1847,8 +1885,9 @@ revoke execute on function public.shop_customers(text, int, int) from public, an
 grant execute on function public.shop_customers(text, int, int) to authenticated;
 revoke execute on function public.shop_changes(timestamptz, int) from public, anon;
 grant execute on function public.shop_changes(timestamptz, int) to authenticated;
-revoke execute on function public.rate_booking(uuid, int, text) from public, anon;
-grant execute on function public.rate_booking(uuid, int, text) to authenticated;
+revoke execute on function public.review_first_name(text) from public, anon, authenticated;
+revoke execute on function public.rate_booking(uuid, int, text, text) from public, anon;
+grant execute on function public.rate_booking(uuid, int, text, text) to authenticated;
 revoke execute on function public.reply_to_review(uuid, text) from public, anon;
 grant execute on function public.reply_to_review(uuid, text) to authenticated;
 -- Booking links are opened by guests too.

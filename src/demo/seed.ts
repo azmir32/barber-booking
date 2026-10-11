@@ -147,7 +147,7 @@ function seed() {
   const mat = user('mat@demo.potongku.my', 'barber', 'Pak Mat', '019-388 1020');
   const hakim = user(DEMO_CUSTOMER_EMAIL, 'customer', 'Hakim', '011-2233 4455');
   const farid = user('farid@demo.potongku.my', 'customer', 'Farid', '012-778 9012');
-  const weiJie = user('weijie@demo.potongku.my', 'customer', 'Wei Jie', '016-332 1145');
+  const weiJie = user('weijie@demo.potongku.my', 'customer', 'Tan Wei Jie', '016-332 1145');
   const ravi = user('ravi@demo.potongku.my', 'customer', 'Ravi', '017-665 0021');
   const aiman = user('aiman@demo.potongku.my', 'customer', 'Aiman', '019-224 8890');
   const syafiq = user('syafiq@demo.potongku.my', 'customer', 'Syafiq', '011-1098 7766');

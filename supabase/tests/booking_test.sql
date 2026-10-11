@@ -1743,6 +1743,46 @@ from (values
    '00000000-0000-0000-0000-0000000000b1', null, now() - interval '7 days', 'completed')
 ) x(id, shop, barber, customer, guest, at, status);
 
+-- The name a review shows: the name people go by, never a surname or their
+-- father's name. src/lib/reviews.test.ts checks firstName with the same list.
+do $$
+declare
+  c text[];
+begin
+  foreach c slice 1 in array array[
+    ['Hakim', 'Hakim'],
+    ['  Ben   Lee ', 'Ben'],
+    [E'\tMohd. Ben bin Hassan', 'Ben'],
+    ['MUHAMMAD Aiman', 'Aiman'],
+    ['Muhammad', 'Muhammad'],
+    ['Muhammad bin Abdullah', 'Muhammad'],
+    ['Mohd bin Ali', 'Mohd'],
+    ['Mohdzan Ali', 'Mohdzan'],
+    ['Abdul Rahman bin Ismail', 'Abdul Rahman'],
+    ['Muhammad Abd. Aziz', 'Abd. Aziz'],
+    ['Nur Aisyah binti Ahmad', 'Nur'],
+    ['Wan Faizal', 'Faizal'],
+    ['Syed Ahmad bin Syed Ali', 'Ahmad'],
+    ['Wan Abdul Rahman', 'Abdul Rahman'],
+    ['Haji Mohd Ali b. Abu', 'Ali'],
+    ['Dato'' Rahim', 'Rahim'],
+    ['Wan', 'Wan'],
+    ['Ravi a/l Kumar', 'Ravi'],
+    ['Kavitha A/P Raju', 'Kavitha'],
+    ['Tan Wei Jie', 'Wei Jie'],
+    ['Dr Lim Kit Siang', 'Kit Siang'],
+    ['Daniel Tan', 'Daniel'],
+    ['Daniel Tan Wei Jie', 'Daniel'],
+    -- No rule tells a given name from a surname here, so the form shows it.
+    ['Wei Jie', 'Wei'],
+    [repeat('x', 50), repeat('x', 40)],
+    [E'\t', 'Customer'],
+    [null, 'Customer']
+  ] loop
+    assert review_first_name(c[1]) = c[2], format('%L should show as %L, not %L', c[1], c[2], review_first_name(c[1]));
+  end loop;
+end $$;
+
 set role authenticated;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
 do $$
@@ -1759,21 +1799,31 @@ begin
      and r.reply is null and r.created_at = now(), 'a rating, with only the first name: ' || row(r.*)::text;
   assert (select rating_count = 1 and rating_sum = 5 from shops where id = ali), 'the shop counts it';
 
-  -- The name they go by: the word after Muhammad or Mohd, but someone named
-  -- only Muhammad stays Muhammad. Each rating takes the name as it is then.
-  update profiles set full_name = E'\tMohd. Ben bin Hassan' where id = auth.uid();
-  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5)).first_name = 'Ben', 'Mohd is passed over';
-  update profiles set full_name = 'Muhammad' where id = auth.uid();
-  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5)).first_name = 'Muhammad', 'a lone Muhammad stays';
+  -- The customer can change the name it shows, which then stays until they
+  -- change it again. It is tidied and cut to 40 characters; a blank one is none.
+  r := rate_booking('00000000-0000-0000-0000-0000000000f1', 5, null, E'  Benny \n Boy ');
+  assert r.first_name = 'Benny Boy', 'a name of their own: ' || r.first_name;
+  update profiles set full_name = 'Muhammad bin Abdullah' where id = auth.uid();
+  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5)).first_name = 'Benny Boy', 'kept on a change';
+  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5, null, '   ')).first_name = 'Benny Boy', 'blank is no change';
+  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5, null, repeat('Ben ', 15))).first_name
+         = rtrim(left(repeat('Ben ', 15), 40)), 'at most 40 characters';
+  assert (rate_booking('00000000-0000-0000-0000-0000000000f1', 5, null, 'Ben')).first_name = 'Ben', 'and back';
   update profiles set full_name = '  Ben   Lee ' where id = auth.uid();
+  begin
+    perform review_first_name('Ben');
+    raise exception 'customers should not call review_first_name';
+  exception when insufficient_privilege then null;
+  end;
 
   -- Rating again inside the window changes the same review.
   r := rate_booking('00000000-0000-0000-0000-0000000000f1', 3, '   ');
   assert r.rating = 3 and r.comment is null, 'rating again changes it, and a blank comment is none';
   assert (select count(*) from reviews where booking_id = '00000000-0000-0000-0000-0000000000f1') = 1, 'still one review';
   assert (select rating_count = 1 and rating_sum = 3 from shops where id = ali), 'the total follows the change';
-  r := rate_booking('00000000-0000-0000-0000-0000000000f2', 4);
+  r := rate_booking('00000000-0000-0000-0000-0000000000f2', 4, null, 'Ben L');
   assert (select rating_count = 2 and rating_sum = 7 from shops where id = ali), 'a minute inside 14 days still counts';
+  assert r.first_name = 'Ben L', 'a new review takes the name given';
   r := rate_booking('00000000-0000-0000-0000-0000000000f9', 5, 'Kemas!');
   assert (select rating_count = 1 and rating_sum = 5 from shops where id = kemas)
      and (select rating_count = 2 from shops where id = ali), 'each shop counts its own';
@@ -1796,7 +1846,7 @@ begin
       perform rate_booking(b, 5);
       raise exception 'booking % should not be rated', b;
     exception when sqlstate '42501' then
-      assert sqlerrm = 'You can rate a cut for 14 days, once the shop marks it done.', 'unexpected message: ' || sqlerrm;
+      assert sqlerrm = 'You can rate a cut once the shop marks it done, until 14 days after it.', 'unexpected message: ' || sqlerrm;
     end;
   end loop;
   foreach n in array array[0, 6, null]::int[] loop
@@ -1938,7 +1988,7 @@ end $$;
 do $$ begin
   assert (select count(*) from reviews) = 4, 'guests read live shops'' reviews';
   assert (select array_agg(first_name order by first_name) from reviews where shop_id = '00000000-0000-0000-0000-00000000005a')
-         = array['Ben', 'Ben', 'Chong'], 'with the first name only';
+         = array['Ben', 'Ben L', 'Chong'], 'with the name each shows only';
   assert (select reply from reviews where booking_id = '00000000-0000-0000-0000-0000000000f7') = 'Thanks Chong!',
     'and the shop''s reply';
   begin

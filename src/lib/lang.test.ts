@@ -72,7 +72,7 @@ const DYNAMIC_KEYS = [
   'New password should be different from the old password.',
   'Unable to validate email address: invalid format',
   'You can\'t rate your own shop.',
-  'You can rate a cut for 14 days, once the shop marks it done.',
+  'You can rate a cut once the shop marks it done, until 14 days after it.',
   'Pick from 1 to 5 stars.',
   'Please keep your comment under 280 characters.',
   'Please keep your reply under 280 characters.',

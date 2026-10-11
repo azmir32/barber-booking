@@ -619,20 +619,34 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
   await picker.getByRole('radio', { name: '5 stars', exact: true }).click();
   await expect(picker.getByRole('radio', { name: '5 stars', exact: true })).toBeChecked();
   await app.getByLabel('Comment (optional)', { exact: true }).fill('Clean fade, and no wait at all.');
+  // Before it goes up, the form says which name it shows, and that can be changed.
+  await expect(app.getByText('Shown on the shop’s page as “Hakim”.', { exact: true })).toBeVisible();
   await snap(page, 'demo-21-rate-cut');
+  await button(app, 'Change name').click();
+  await expect(app.getByLabel('Name on your review', { exact: true })).toHaveValue('Hakim');
   await button(app, 'Send').click();
   await expect(app.getByText('Thanks! Your rating is saved.')).toBeVisible();
   await expect(app.getByText('“Clean fade, and no wait at all.”')).toBeVisible();
-  // It can still be changed for a while.
+  // It can still be changed for a while, up to the cut's own time 14 days on.
   await expect(button(app, /^Change your rating for /)).toBeVisible();
+  await expect(app.getByText(/^You can change it until .+ at \d{1,2}:\d\d\s[ap]m\.$/)).toBeVisible();
 
-  // On the shop's page it is the newest review, with his first name.
+  // On the shop's page it is the newest review, with his name.
   await app.getByRole('tab', { name: /Barbers/ }).click();
   await app.getByRole('link', { name: /^Kemas Barber Kajang/ }).click();
   const summary = app.getByRole('link', { name: new RegExp(`^Rated \\d\\.\\d out of 5 from ${count + 1} reviews\\. See reviews$`) });
   await expect(summary).toBeVisible();
+  // A 44pt target, though its line is shorter.
+  expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  // With a service picked the steps open above the reviews, and See reviews still lands on them.
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await expect(app.getByRole('heading', { name: /Pick a time$/ })).toBeVisible();
+  await expect(app.getByText('Checking free times…')).toHaveCount(0);
   await summary.click();
-  await expect(app.getByRole('heading', { name: 'Reviews', exact: true })).toBeVisible();
+  const reviews = app.getByRole('heading', { name: 'Reviews', exact: true });
+  await expect(reviews).toBeVisible();
+  await expect.poll(async () => (await reviews.boundingBox())?.y).toBeLessThan(200);
+  await expect.poll(async () => (await reviews.boundingBox())?.y).toBeGreaterThan(0);
   await expect(app.getByText('Clean fade, and no wait at all.', { exact: true })).toBeVisible();
   await expect(app.getByText('Hakim', { exact: true })).toBeVisible();
   await snap(page, 'demo-22-shop-reviews');

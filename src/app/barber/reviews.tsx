@@ -115,7 +115,9 @@ export default function Reviews() {
       {!loading && !error && rows.length === 0 ? (
         <Empty
           title={t('No reviews yet')}
-          body={t('Customers can rate a cut for 14 days once you mark it done on the Bookings tab.')}
+          body={t(
+            'Customers can rate a cut once you mark it as Done on the Bookings tab, up to 14 days after the cut. Mark cuts Done on the day.',
+          )}
         />
       ) : null}
 

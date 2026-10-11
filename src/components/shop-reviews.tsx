@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { View, type LayoutChangeEvent } from 'react-native';
+import { useCallback, useEffect, useRef, useState, type Ref } from 'react';
+import { View } from 'react-native';
 
 import { RatingSummary, ReviewItem } from '@/components/reviews';
 import { Button, Card, ErrorText, Section, T } from '@/components/ui';
@@ -12,7 +12,7 @@ import { errorMessage, supabase } from '@/lib/supabase';
 const FIRST = 3;
 const MORE = 10;
 
-/** A first name and no account: the database lets nobody read who wrote a review. */
+/** The name it shows and no account: the database lets nobody read who wrote a review. */
 export const REVIEW_COLUMNS = 'booking_id, rating, comment, first_name, reply, replied_at, created_at, barbers(name)';
 
 /**
@@ -23,12 +23,12 @@ export const REVIEW_COLUMNS = 'booking_id, rating, comment, first_name, reply, r
 export function ShopReviews({
   shop,
   now,
-  onLayout,
+  ref,
 }: {
   shop: { id: string; time_zone: string; rating_count: number; rating_sum: number };
   now: number;
-  /** Where the section sits, so "See reviews" by the shop's name can scroll to it. */
-  onLayout?: (e: LayoutChangeEvent) => void;
+  /** The section, so "See reviews" by the shop's name can find it and scroll there. */
+  ref?: Ref<View>;
 }) {
   const [reviews, setReviews] = useState<ShopReview[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -92,7 +92,7 @@ export function ShopReviews({
   // A new shop has nothing to show yet, and no stars to explain.
   if (count === 0) return null;
   return (
-    <View onLayout={onLayout}>
+    <View ref={ref}>
       <Section title={t('Reviews')}>
         <RatingSummary average={ratingAverage(shop.rating_sum, count)} count={count} />
         {/* With only one or two the stars are left out, but the reviews are still worth reading. */}
