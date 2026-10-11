@@ -4,13 +4,15 @@ import { Linking, StyleSheet, View } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { RateForm, ShopReply, Stars } from '@/components/reviews';
-import { Button, Card, Empty, ErrorText, Row, Screen, Section, T } from '@/components/ui';
+import { Bone, Button, Card, Empty, ErrorText, Row, Screen, ScreenTitle, Section, Skeleton, StaleNote, T } from '@/components/ui';
 import { APP_NAME, bookingLink } from '@/constants/brand';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
 import { addToCalendar } from '@/lib/add-to-calendar';
+import { appCache } from '@/lib/app-cache';
 import { useAuth } from '@/lib/auth';
+import { cacheKey } from '@/lib/cache';
 import { bookingEvent } from '@/lib/calendar';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
@@ -44,14 +46,28 @@ type Notice = { message: string; whatsapp?: string };
 /** How long the bar stays up: time to decide whether to message the shop. */
 const NOTICE_MS = 10_000;
 
-export default function MyBookings() {
+export default function MyBookingsScreen() {
+  const uid = useAuth().session?.user.id;
+  // One per account, so nobody's bookings ever show while someone else's load.
+  return <MyBookings key={uid ?? 'guest'} />;
+}
+
+function MyBookings() {
   const { session, profile } = useAuth();
   const theme = useTheme();
   const now = useNow();
-  const [bookings, setBookings] = useState<MyBooking[]>([]);
-  // Set once the list has come back, so a load that failed never reads as "No bookings yet".
-  const [loaded, setLoaded] = useState(false);
+  // Last visit's list shows at once, while the server is asked again.
+  const [kept] = useState(() => (session ? appCache.peek<MyBooking[]>(cacheKey(session.user.id, 'my-bookings')) : null));
+  const [bookings, setBookings] = useState<MyBooking[]>(kept?.data ?? []);
+  // Set once there is a list, so a load that failed never reads as "No bookings yet".
+  const [loaded, setLoaded] = useState(Boolean(kept));
+  // When the server gave the list on screen, and whether that was before this visit.
+  const [savedAt, setSavedAt] = useState(kept?.at ?? 0);
+  const [fromCache, setFromCache] = useState(Boolean(kept));
   const [loading, setLoading] = useState(true);
+  // Why the last refresh failed; the list on screen stays.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  // Why an action failed.
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -68,13 +84,18 @@ export default function MyBookings() {
     const { data, error } = await supabase.rpc('my_bookings');
     setLoading(false);
     // A refresh that fails keeps the bookings already on screen.
-    if (error) return setError(errorMessage(error));
+    if (error) return setRefreshError(errorMessage(error));
+    const list = (data ?? []) as MyBooking[];
+    setRefreshError(null);
     setError(null);
-    setBookings((data ?? []) as MyBooking[]);
+    setBookings(list);
     setJustRated(new Set());
     setSavedId(null);
     setEditingId(null);
     setLoaded(true);
+    setSavedAt(Date.now());
+    setFromCache(false);
+    appCache.write(cacheKey(session.user.id, 'my-bookings'), list);
   }, [session]);
 
   useFocusEffect(
@@ -186,7 +207,11 @@ export default function MyBookings() {
     );
     if (!ok) return;
     const { error } = await supabase.rpc('set_booking_status', { p_booking_id: b.id, p_status: 'cancelled' });
-    if (error) return setError(errorMessage(error));
+    if (error) {
+      // The list may be behind the server (moved or cancelled elsewhere): show it as it is now, then why.
+      await load();
+      return setError(errorMessage(error));
+    }
     // A late cancel only reaches the barber if they look at the app, so offer to tell them.
     const shop = b.shops;
     const message =
@@ -229,17 +254,22 @@ export default function MyBookings() {
     </View>
   ) : null;
 
+  // Cancel and Add to calendar wait for the server's list rather than act on last visit's,
+  // where the time may have moved: off until it comes, with a spinner while it is on its way.
+  const hold = fromCache ? { loading, disabled: true } : {};
+
   return (
     <Screen onRefresh={load} overlay={overlay}>
-      <T variant="title">{t('My bookings')}</T>
+      <ScreenTitle title={t('My bookings')} refreshing={fromCache && loading} />
+      {loaded && refreshError ? <StaleNote savedAt={savedAt} onRetry={load} retrying={loading} /> : null}
       {loaded ? <ErrorText message={error} /> : null}
       {!loaded ? (
-        error ? (
+        refreshError ? (
           <Empty title={t('Couldn’t load your bookings')} body={t('Check your connection and try again.')}>
             <Button title={t('Try again')} variant="secondary" loading={loading} onPress={load} />
           </Empty>
         ) : (
-          <T variant="muted">{t('Loading your bookings…')}</T>
+          <BookingsSkeleton />
         )
       ) : bookings.length === 0 ? (
         <Empty title={t('No bookings yet')} body={t('Find a barber and grab a slot.')}>
@@ -306,6 +336,7 @@ export default function MyBookings() {
                       title={t('Add to calendar')}
                       variant="secondary"
                       style={styles.action}
+                      {...hold}
                       onPress={() =>
                         addToCalendar(
                           bookingEvent({
@@ -335,6 +366,7 @@ export default function MyBookings() {
                   variant="ghost"
                   tone="danger"
                   accessibilityLabel={t('Cancel booking on {day}', { day })}
+                  {...hold}
                   onPress={() => cancel(b)}
                 />
               </Card>
@@ -424,6 +456,27 @@ export default function MyBookings() {
   );
 }
 
+/** The shape of two upcoming bookings, while the first list loads. */
+function BookingsSkeleton() {
+  return (
+    <Skeleton label={t('Loading your bookings')}>
+      <Bone width="35%" height={20} />
+      {[0, 1].map((i) => (
+        <Card key={i}>
+          <Bone width="55%" height={20} />
+          <Bone width="80%" />
+          <Bone width="65%" />
+          <View style={styles.actions}>
+            {[0, 1, 2, 3].map((j) => (
+              <Bone key={j} height={48} style={styles.actionBone} />
+            ))}
+          </View>
+        </Card>
+      ))}
+    </Skeleton>
+  );
+}
+
 /**
  * A cut's rating: the stars to give while there are none, or the stars given
  * with the comment, the shop's reply, and Edit while it can still change.
@@ -499,6 +552,7 @@ const styles = StyleSheet.create({
   // Two even columns, so the card stays short and the buttons line up.
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   action: { flexGrow: 1, flexBasis: '40%', paddingHorizontal: Spacing.sm },
+  actionBone: { flexGrow: 1, flexBasis: '40%', width: 'auto', borderRadius: Radius.md },
   overlay: { position: 'absolute', left: 0, right: 0, bottom: 0, pointerEvents: 'box-none' },
   overlayInner: {
     width: '100%',

@@ -9,8 +9,10 @@ import {
   cacheKey,
   createCache,
   GUEST,
+  staleLine,
   type KeyValueStore,
 } from './cache.ts';
+import { setCurrentLang } from './lang.ts';
 
 /** AsyncStorage as a Map, with a clock the test moves. */
 function phone() {
@@ -145,6 +147,29 @@ test('signing out forgets everything, in memory and on the phone', async () => {
   const reopened = createCache(store, clock.now);
   await reopened.load(HAKIM);
   assert.equal(reopened.peek(cacheKey(HAKIM, 'my-bookings')), null);
+});
+
+test('a failed refresh says when the screen is from, on the shop’s clock', () => {
+  const TZ = 'Asia/Kuala_Lumpur';
+  const kajang = (at: string) => Date.parse(`${at}+08:00`);
+  // Without the non-breaking spaces that keep a day or a time on one line.
+  const line = (at: string, now: string) => staleLine(kajang(at), kajang(now), TZ).replace(/ /g, ' ');
+  assert.equal(line('2026-10-11T15:05', '2026-10-11T15:40'), 'Couldn’t refresh. Showing what you saw at 3:05 pm.');
+  // Just before midnight is yesterday from just after it.
+  assert.equal(
+    line('2026-10-10T23:55', '2026-10-11T00:10'),
+    'Couldn’t refresh. Showing what you saw yesterday at 11:55 pm.',
+  );
+  assert.equal(
+    line('2026-10-08T09:00', '2026-10-11T09:00'),
+    'Couldn’t refresh. Showing what you saw on Thu, 8 Oct at 9:00 am.',
+  );
+  setCurrentLang('ms');
+  try {
+    assert.equal(line('2026-10-11T15:05', '2026-10-11T15:40'), 'Tidak dapat dikemas kini. Ini yang anda lihat pada 3.05 petang.');
+  } finally {
+    setCurrentLang('en');
+  }
 });
 
 test('a phone whose storage fails still works, just without last time’s answers', async () => {

@@ -911,4 +911,21 @@ export const ms: Record<string, string> = {
   'Book again at {shop}': 'Tempah lagi di {shop}',
   'Not taking online bookings right now': 'Tidak menerima tempahan dalam talian buat masa ini',
   'Barbers in {area}': 'Barber di {area}',
+
+  // Round 8, screens that open at once: last time's answers while the server's
+  // come, the line when a refresh fails, the loading shapes and actions that
+  // wait for fresh data (lib/cache.ts, components/ui.tsx and the screens)
+  'Couldn’t refresh. Showing what you saw at {time}.': 'Tidak dapat dikemas kini. Ini yang anda lihat pada {time}.',
+  'Couldn’t refresh. Showing what you saw yesterday at {time}.':
+    'Tidak dapat dikemas kini. Ini yang anda lihat semalam pada {time}.',
+  'Couldn’t refresh. Showing what you saw on {day} at {time}.':
+    'Tidak dapat dikemas kini. Ini yang anda lihat pada {day}, {time}.',
+  Refreshing: 'Mengemas kini',
+  'Loading barbers': 'Memuatkan barber',
+  'Loading your bookings': 'Memuatkan tempahan anda',
+  'Loading bookings': 'Memuatkan tempahan',
+  'Loading the shop': 'Memuatkan kedai',
+  'Loading services': 'Memuatkan servis',
+  'Loading free times': 'Memuatkan masa kosong',
+  'This booking has just changed. Check it and try again.': 'Tempahan ini baru sahaja berubah. Semak dan cuba lagi.',
 };

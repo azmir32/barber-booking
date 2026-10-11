@@ -3,6 +3,9 @@
 // the signed-in account (and the shop, day, search or area they were for),
 // in memory and on the phone, for a day at most, and all go on sign out.
 
+import { t } from './lang.ts';
+import { addDays, DEFAULT_TIME_ZONE, formatDay, formatTime, localDateString, noBreak } from './time.ts';
+
 /** Bump whenever the shape of anything kept here changes, so an update never shows an old one. */
 export const CACHE_VERSION = 1;
 /** Older than this, an answer would mislead more than help. */
@@ -121,3 +124,19 @@ export function createCache(store: KeyValueStore, clock: () => number = Date.now
 }
 
 export type AppCache = ReturnType<typeof createCache>;
+
+/**
+ * Said over what a screen kept from earlier when asking again failed:
+ * "Couldn’t refresh. Showing what you saw at 3:05 pm.", or yesterday's, or a day's.
+ */
+export function staleLine(at: number, now: number, timeZone = DEFAULT_TIME_ZONE): string {
+  const day = localDateString(new Date(at), timeZone);
+  const today = localDateString(new Date(now), timeZone);
+  const time = noBreak(formatTime(new Date(at), timeZone));
+  if (day === today) return t('Couldn’t refresh. Showing what you saw at {time}.', { time });
+  if (day === addDays(today, -1)) return t('Couldn’t refresh. Showing what you saw yesterday at {time}.', { time });
+  return t('Couldn’t refresh. Showing what you saw on {day} at {time}.', {
+    day: noBreak(formatDay(new Date(at), timeZone)),
+    time,
+  });
+}
