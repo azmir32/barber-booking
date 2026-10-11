@@ -110,23 +110,25 @@ GitHub Actions runs all of these on every push (`.github/workflows/ci.yml`) exce
 
 ## How many users it handles
 
-`npm run test:load` fills a local Postgres with 1,000 live shops (three chairs each), 100,000 customers and about 2.7 million bookings (90 days of history and the next 30 days), sends each screen's own requests 50 at a time for 15 seconds, then has 300 customers try to book the same shop's Saturday evening at once. On a 4-core machine that also runs the load generator:
+`npm run test:load` fills a local Postgres with 1,000 live shops (three chairs each), 100,000 customers, about 2.9 million bookings (90 days of history and the next 30 days) and 280,000 reviews, sends each screen's own requests 50 at a time for 15 seconds, then has 300 customers try to book the same shop's Saturday evening at once. On a 4-core machine that also runs the load generator:
 
 | Screen | Requests a second | Typical (p50) | Slow (p95) |
 | --- | --- | --- | --- |
-| Find a barber (with open now and next free time) | 225 | 185 ms | 519 ms |
-| Search for a barber | 272 | 137 ms | 488 ms |
-| Shop page (with closed days and today's hours) | 240 | 180 ms | 403 ms |
-| Free times for a day | 1,145 | 42 ms | 59 ms |
-| Book a cut (free times, then book) | 558 | 92 ms | 127 ms |
-| My bookings | 997 | 49 ms | 72 ms |
-| Barber's day | 324 | 152 ms | 200 ms |
+| Find a barber, signed in (open now, next free time, your next cut and your barbers) | 134 | 328 ms | 805 ms |
+| Search for a barber | 240 | 152 ms | 572 ms |
+| Shop page (with closed days, today's hours and the newest reviews) | 263 | 187 ms | 247 ms |
+| Free times for a day | 1,237 | 39 ms | 54 ms |
+| Book a cut (free times, then book) | 586 | 87 ms | 126 ms |
+| My bookings (with ratings) | 672 | 67 ms | 144 ms |
+| Barber's day (with what customers changed) | 285 | 173 ms | 223 ms |
 
-In the rush, four customers got the last evening times and the other 296 were told the time was just taken, all within half a second and with no errors.
+In the rush, six customers got the last evening times and the other 294 were told the time was just taken, all within half a second and with no errors.
+
+Find a barber is the slowest screen because it works out each listed shop's next free time, and for a signed-in customer also their own barbers' (about 4 ms of database time on top of the list's 12 ms). Even so, one such machine serves it close to half a million times an hour.
 
 That is far more than a pre-Raya peak needs: if all 100,000 customers booked within the same hour, it would be under 30 bookings a second. What it changes is the bill, not the code:
 
-- The data above takes about 1.2 GB, and grows by roughly 3.5 GB a year at that size. Supabase's free plan stops at 500 MB, so a Malaysia-wide launch needs a paid plan; a Kajang launch with a few dozen shops stays under it for its first few years.
+- The data above takes about 1.5 GB, and grows by roughly 4.5 GB a year at that size. Supabase's free plan stops at 500 MB, so a Malaysia-wide launch needs a paid plan; a Kajang launch with a few dozen shops stays under it for its first few years.
 - Supabase's built-in email only sends a few messages an hour, so password reset needs your own email provider (custom SMTP) before launch, whatever the size.
 - More than 50,000 monthly active sign-ins also needs a paid plan.
 
