@@ -18,7 +18,8 @@ export default function BarberLayout() {
   if (!session) return <Redirect href="/welcome" />;
   if (profile?.role !== 'barber') return <Redirect href="/customer" />;
   return (
-    <MyShopProvider>
+    // One per account, so another barber signing in on this phone never sees the last one's shop.
+    <MyShopProvider key={session.user.id}>
       <BarberStack />
     </MyShopProvider>
   );
