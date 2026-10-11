@@ -391,7 +391,8 @@ export default function Explore() {
                 <T variant="heading" style={{ flex: 1 }}>
                   {shop.name}
                 </T>
-                {shop.distance_km != null ? <Distance km={Number(shop.distance_km)} /> : null}
+                {/* Level with the name's first line. */}
+                {shop.distance_km != null ? <Distance km={Number(shop.distance_km)} style={{ marginTop: 3 }} /> : null}
               </Row>
               <T variant="muted">{shop.address || shop.area}</T>
               {shop.about ? (

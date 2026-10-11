@@ -669,7 +669,7 @@ export default function ShopPage() {
           <T variant="muted" style={{ flex: 1 }}>
             {shop.address || shop.area}
           </T>
-          {away != null ? <Distance km={away} /> : null}
+          {away != null ? <Distance km={away} style={{ marginTop: 2 }} /> : null}
         </Row>
         {moving ? null : (
           <RatingSummary
