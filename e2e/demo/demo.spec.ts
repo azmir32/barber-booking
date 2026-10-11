@@ -638,8 +638,8 @@ test('the barber sees what customers changed since they last looked, and clears 
   // Hakim books: this phone counts from the newest change it saw, which it keeps.
   await app.getByRole('tab', { name: /My shop/ }).click();
   await button(app, 'See the customer side').click();
-  await expect(app.getByText('Kemas Barber Kajang')).toBeVisible();
-  await app.getByText('Ali Barber Sungai Chua').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await listed(app, 'Ali Barber Sungai Chua').click();
   await app.getByRole('radio', { name: /^Haircut RM/ }).click();
   await app.getByRole('radio', { name: /^Tomorrow/ }).click();
   await app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first().click();
