@@ -13,6 +13,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 
 **Customers**
 - Browse live barbershops, see which are open now and when each can next take you, and search by name or area
+- Near me: the first chip on Find a barber asks for the phone's location (only while the app is open, never in the background) and lists shops nearest first, each with how far it is ("800 m", "1.2 km", "12 km"); shops that haven't set their location come after, by name. It is that or an area, not both; a search still filters, and what it finds stays nearest first. It is remembered for next time and asks for a fresh position then. If location is refused or can't be found, one line says so and how to allow it, and the list stays as it was. The shop's page shows the distance by its address
 - Coming back is one tap: Find a barber starts with their next cut and up to three of their barbers, each with the last cut there, when it is next free and Book again with the same service and barber already picked (or that it isn't taking bookings). The one they went to last says "Due for a cut" once their usual gap there has passed with nothing booked
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
@@ -23,6 +24,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 
 **Barbers and shop owners**
 - Create a shop with a booking link (`/shop/your-shop`); a link another shop already has is flagged at the field, with a free one to try (e.g. with the area added). Someone who picked "Barber / shop owner" by mistake can carry on as a customer from the set-up screen, or sign out
+- Shop location, optional, on the new-shop form and in My shop's details: "Use my location here", tapped while in the shop, sets it from the phone; then "Check on the map" opens Google Maps at that point, and Remove clears it. With it set, Near me can list the shop, and Directions (on the shop's page, after booking and in My bookings) go to that point instead of searching for the address
 - Services menu with prices and durations, plus quick-add suggestions
 - Barbers (one per chair) with weekly working hours and an optional daily break (e.g. Friday prayers); a solo barber is a shop with one chair
 - Bookings by day with expected takings, refreshed every minute and by pulling down; mark done or no-show once the time has started, move a booking to another free time when the customer calls (it stays theirs, and a WhatsApp tells them the new time), cancel, WhatsApp the customer
@@ -43,6 +45,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Takings come from one owner-only `shop_summary` call over at most 93 days, counted at the price each booking was made at
 - What customers changed comes from one owner-only `shop_changes` call: only what customers did themselves (the booking functions note it; the shop's own changes never count), for bookings from today on, at most a week back
 - Shops are only visible while published and paid up or inside the free trial
+- A shop's location is both latitude and longitude or neither, and on the map; only its owner sets it. Distances are worked out inside `find_shops` (great-circle, with `km_between`, which nobody can call on its own). The customer's position is never stored or logged: the app rounds it to about 100 m, keeps it in memory only, and sends it in the request's body, never in the URL that access logs keep. Don't turn on logging of every statement with its values (`log_statement = 'all'`, or `log_min_duration_statement` low enough to catch `find_shops`), as that would log it
 - Owners can't change their own trial or subscription status, or when their shop first went live (`shops.published_at`, set by the database)
 - A barber account can turn into a customer one (`become_customer`) only while it has no shop
 - Limits against abuse: bookings at most 60 days ahead, at most 4 upcoming bookings per customer per shop, notes, review comments and replies up to 280 characters
@@ -95,7 +98,7 @@ Tip for testing: in Supabase under Authentication > Sign In / Providers > Email,
 ```bash
 npm run typecheck   # TypeScript
 npm run lint        # ESLint
-npm test            # date, money, phone, reminder and language helpers, and the demo backend
+npm test            # date, money, phone, reminder, distance and language helpers, and the demo backend
 npm run test:db     # schema + booking rules against a throwaway local Postgres 16+
 npm run test:e2e    # the whole app in a browser: barber sets up, customers book
 npm run test:demo   # the one-file demo, in a locked-down iframe with no network
@@ -126,6 +129,8 @@ In the rush, six customers got the last evening times and the other 294 were tol
 
 Find a barber is the slowest screen because it works out each listed shop's next free time, and for a signed-in customer also their own barbers' (about 4 ms of database time on top of the list's 12 ms). Even so, one such machine serves it close to half a million times an hour.
 
+Near me measures the distance to every live shop with a location and keeps the nearest page, with no index. On the 1,000 load-test shops that adds about 1 ms of database time to the list (median of 50 calls from random points around Kajang: 14.9 ms nearest first against 14.0 ms by name; picking the nearest 21 alone takes about 1.3 ms). `npm run test:load` has a "Barbers near me" scenario for it. That is fine for thousands of shops. Past tens of thousands, give the shops a spatial index and search by box or nearest-neighbour instead: Postgres's `earthdistance` extension (a GiST index on `ll_to_earth(latitude, longitude)` and `earth_box` around the customer), or PostGIS (a `geography` column with a GiST index and `ORDER BY location <-> point`). Either needs only `find_shops` changed, not the app.
+
 That is far more than a pre-Raya peak needs: if all 100,000 customers booked within the same hour, it would be under 30 bookings a second. What it changes is the bill, not the code:
 
 - The data above takes about 1.5 GB, and grows by roughly 4.5 GB a year at that size. Supabase's free plan stops at 500 MB, so a Malaysia-wide launch needs a paid plan; a Kajang launch with a few dozen shops stays under it for its first few years.
@@ -154,5 +159,5 @@ The name shown in the app comes from `name` in `app.json`. Also update `slug`, `
 - Optional deposits at booking
 - A photo gallery of cuts
 - Reporting unfair reviews
-- "Find a barber near me" with a map
+- A map of the barbers near you (Near me lists them nearest first already)
 - Walk-in queue mode

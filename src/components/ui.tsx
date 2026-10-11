@@ -348,7 +348,8 @@ export function Chip({
       {...state}
       aria-disabled={disabled}
       accessibilityState={{ checked: choice && mode === 'radio' ? selected : undefined, selected, disabled }}
-      accessibilityLabel={accessibilityLabel}
+      // An icon's glyph would otherwise be read as part of the name.
+      accessibilityLabel={accessibilityLabel ?? (icon ? label : undefined)}
       disabled={disabled}
       onPress={onPress}
       style={[styles.chip, look.box, style]}>

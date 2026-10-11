@@ -1,4 +1,4 @@
-import { devices, expect, test, type FrameLocator, type Page } from '@playwright/test';
+import { devices, expect, test, type FrameLocator, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 
 // The demo build runs the whole app in the page, with sample Kajang shops.
@@ -37,7 +37,7 @@ async function snap(page: Page, name: string) {
   await page.screenshot({ path: `${dir}/${name}.png` });
 }
 
-const button = (app: FrameLocator | Page, name: string | RegExp) =>
+const button = (app: FrameLocator | Page | Locator, name: string | RegExp) =>
   app.getByRole('button', { name, exact: typeof name === 'string' });
 /** A shop in Find a barber's list, by the name heading its card; Hakim's own barbers above it say the names too. */
 const listed = (app: FrameLocator | Page, name: string) => app.getByRole('heading', { name, exact: true });
@@ -736,6 +736,132 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
   await expect(app.getByText(`Thanks ${name}, see you next time!`, { exact: true })).toBeVisible();
   await expect(button(app, `Edit your reply to ${name}`)).toBeVisible();
   await snap(page, 'demo-23-owner-reviews');
+});
+
+/** Answers Google Maps here, so the tests stay offline, and returns what a press of `press` opened it at. */
+async function opensGoogleMaps(page: Page, press: () => Promise<void>) {
+  await page.context().route('https://www.google.com/maps/**', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<title>Google Maps</title>' }),
+  );
+  const [tab] = await Promise.all([page.context().waitForEvent('page'), press()]);
+  await tab.waitForLoadState();
+  const url = new URL(tab.url());
+  await tab.close();
+  expect(`${url.origin}${url.pathname}`).toBe('https://www.google.com/maps/search/');
+  return url.searchParams.get('query');
+}
+
+test('Near me puts the closest barbers first, says how far each is, and is kept for next time', async ({
+  page,
+  context,
+}) => {
+  // Standing in Sungai Chua, about 500 m from Ali's.
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 2.9833, longitude: 101.7667 });
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  const nearMe = app.getByRole('radio', { name: 'Near me', exact: true });
+  await expect(nearMe).not.toBeChecked();
+
+  await nearMe.click();
+  await expect(nearMe).toBeChecked();
+  await expect(app.getByRole('radio', { name: 'All areas', exact: true })).not.toBeChecked();
+  // Tapped on this visit, so it's the list alone, like picking an area.
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toHaveCount(0);
+  const shopNames = app.getByRole('heading', { level: 2 });
+  await expect(shopNames).toHaveText(['Ali Barber Sungai Chua', 'Kemas Barber Kajang', 'Gunting Pak Mat', 'The Fade Room']);
+  const distances = app.getByRole('img', { name: / away$/ });
+  await expect(distances).toHaveCount(4);
+  await expect(distances.first()).toHaveAccessibleName('500 m away');
+  await expect(distances.nth(1)).toHaveAccessibleName('2.6 km away');
+  await snap(page, 'demo-24-near-me');
+
+  // A search still filters, and what it finds stays nearest first.
+  await app.getByLabel('Search', { exact: true }).fill('barber');
+  await expect(shopNames).toHaveText(['Ali Barber Sungai Chua', 'Kemas Barber Kajang']);
+  await app.getByLabel('Search', { exact: true }).fill('');
+  await expect(shopNames).toHaveCount(4);
+
+  // The shop's page says how far it is too, and Directions go to the point its owner set.
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  await expect(app.getByRole('img', { name: '500 m away', exact: true })).toBeVisible();
+  await snap(page, 'demo-25-near-me-shop');
+  expect(await opensGoogleMaps(page, () => button(app, 'Directions').click())).toBe('2.9846,101.7712');
+
+  // Opening the app again in Kajang town, Near me asks afresh: Kemas is now the closest.
+  await context.setGeolocation({ latitude: 2.993, longitude: 101.788 });
+  await page.reload();
+  await expect(nearMe).toBeChecked();
+  // Kept from last time, so his next cut and barbers are back on top, with the list nearest first under them.
+  await expect(app.getByRole('heading', { name: 'Barbers near you' })).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
+  await expect(distances.first()).toHaveAccessibleName('100 m away');
+  await expect(app.getByRole('link', { name: /^Kemas Barber Kajang\s*100 m away/ })).toBeVisible();
+
+  // An area is the other choice: picking one turns Near me off, and that is what is kept.
+  await app.getByRole('radio', { name: 'Sungai Chua', exact: true }).click();
+  await expect(nearMe).not.toBeChecked();
+  await expect(app.getByText('Showing barbers in Sungai Chua')).toBeVisible();
+  await expect(distances).toHaveCount(0);
+  await page.reload();
+  await expect(app.getByText('Showing barbers in Sungai Chua')).toBeVisible();
+  await expect(nearMe).not.toBeChecked();
+});
+
+test('Near me says how to allow location when the browser blocks it, and the list stays as it was', async ({
+  page,
+  context,
+}) => {
+  await context.clearPermissions();
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await app.getByRole('radio', { name: 'Near me', exact: true }).click();
+  await expect(
+    app.getByText('Your browser is blocking location. Allow it for this site, then tap Near me again.'),
+  ).toBeVisible();
+  await expect(app.getByRole('radio', { name: 'Near me', exact: true })).not.toBeChecked();
+  await expect(app.getByRole('radio', { name: 'All areas', exact: true })).toBeChecked();
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await expect(app.getByRole('img', { name: / away$/ })).toHaveCount(0);
+  await snap(page, 'demo-26-near-me-blocked');
+  // Nothing was kept: the next visit is the usual list, without asking.
+  await page.reload();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await expect(app.getByRole('radio', { name: 'Near me', exact: true })).not.toBeChecked();
+  await expect(app.getByText(/blocking location/)).toHaveCount(0);
+});
+
+test('the owner sets where the shop is from inside it, and checks it on the map', async ({ page, context }) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+
+  const location = app.getByRole('group', { name: 'Shop location' });
+  await expect(location.getByText('Location set')).toBeVisible();
+  await location.getByRole('button', { name: 'Remove the shop location' }).click();
+  await expect(location.getByText('Not saved yet. Tap Save changes below.')).toBeVisible();
+
+  // At the shop's door, a few metres from where it was.
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 2.98463, longitude: 101.77125 });
+  await button(location, 'Use my location here').click();
+  await expect(location.getByText('Location set')).toBeVisible();
+  await expect(location.getByText('Not saved yet. Tap Save changes below.')).toBeVisible();
+  await snap(page, 'demo-27-shop-location');
+  await button(app, 'Save changes').click();
+  await expect(app.getByText('Saved.')).toBeVisible();
+  await expect(location.getByText('Not saved yet. Tap Save changes below.')).toHaveCount(0);
+  expect(await opensGoogleMaps(page, () => button(location, 'Check on the map').click())).toBe('2.98463,101.77125');
+
+  // Customers' Directions now go there.
+  await button(app, 'See the customer side').click();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  expect(await opensGoogleMaps(page, () => button(app, 'Directions').click())).toBe('2.98463,101.77125');
 });
 
 test.describe('on an iPhone', () => {
