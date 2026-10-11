@@ -63,6 +63,12 @@ create table public.shops (
   about text check (length(about) <= 500),
   address text check (length(address) <= 200),
   area text not null default 'Kajang' check (length(area) between 1 and 60),
+  -- Where the shop is, which the owner sets from their phone while standing
+  -- in it: Near me lists the closest shops first, and Directions go to the
+  -- door rather than wherever the address search lands. Both or neither.
+  latitude double precision check (latitude between -90 and 90),
+  longitude double precision check (longitude between -180 and 180),
+  constraint shops_location_pair check ((latitude is null) = (longitude is null)),
   phone text check (length(phone) <= 20),
   instagram text check (length(instagram) <= 60),
   time_zone text not null default 'Asia/Kuala_Lumpur',
@@ -371,9 +377,9 @@ create policy "read reviews of visible shops, and your own" on public.reviews
 revoke update on public.profiles from anon, authenticated;
 grant update (full_name, phone) on public.profiles to authenticated;
 revoke insert, update on public.shops from anon, authenticated;
-grant insert (owner_id, name, slug, about, address, area, phone, instagram, is_published)
+grant insert (owner_id, name, slug, about, address, area, latitude, longitude, phone, instagram, is_published)
   on public.shops to authenticated;
-grant update (name, slug, about, address, area, phone, instagram, is_published)
+grant update (name, slug, about, address, area, latitude, longitude, phone, instagram, is_published)
   on public.shops to authenticated;
 revoke insert, update, delete on public.bookings from anon, authenticated;
 revoke insert, update, delete on public.shop_closures from anon, authenticated;
@@ -522,6 +528,28 @@ $$;
 -- Only find_shops and my_shops use it.
 revoke execute on function public.shop_next_free(uuid) from public, anon, authenticated;
 
+-- How far apart two points are in km, over the earth's surface (the
+-- haversine formula on a round earth: well within the 100 m the app shows).
+-- Plain SQL, so it needs no extension, and with no settings or strictness,
+-- so Postgres inlines it into find_shops. Null when either point is. The
+-- atan2 form, as asin fails on a rounding error past 1 for points on
+-- opposite sides of the earth; src/lib/distance.ts does the same.
+create function public.km_between(p_lat1 double precision, p_lng1 double precision,
+                                  p_lat2 double precision, p_lng2 double precision)
+returns double precision
+language sql
+immutable
+parallel safe
+as $$
+  select 2 * 6371.0088 * atan2(
+    sqrt(sin(radians(p_lat2 - p_lat1) / 2) ^ 2
+         + cos(radians(p_lat1)) * cos(radians(p_lat2)) * sin(radians(p_lng2 - p_lng1) / 2) ^ 2),
+    sqrt(greatest(0, 1 - sin(radians(p_lat2 - p_lat1) / 2) ^ 2
+                    - cos(radians(p_lat1)) * cos(radians(p_lat2)) * sin(radians(p_lng2 - p_lng1) / 2) ^ 2)));
+$$;
+revoke execute on function public.km_between(double precision, double precision, double precision, double precision)
+  from public, anon, authenticated;
+
 -- The customer's shop list: live shops whose name, area or address contains
 -- the search, a page at a time, with each shop's lowest price, number of
 -- chairs, today's hours (first barber in to last one out, in the shop's
@@ -530,11 +558,19 @@ revoke execute on function public.shop_next_free(uuid) from public, anon, authen
 -- has with their average to one decimal (null without any). Sending every
 -- shop with all its services and barbers came to 570 KB for 1,000 shops
 -- (e2e/load).
+-- Given the customer's position (Near me), each shop also says how far it
+-- is, and the list goes nearest first, with shops that haven't set their
+-- location after the rest by name. A position off the map, or half of one,
+-- is left out. The position is only used here: nothing stores it. This
+-- measures every live shop, which takes about a millisecond for a thousand;
+-- the README says what to switch to for tens of thousands.
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
   p_limit int default 20,
-  p_offset int default 0
+  p_offset int default 0,
+  p_lat double precision default null,
+  p_lng double precision default null
 )
 returns table (
   id uuid,
@@ -549,7 +585,8 @@ returns table (
   closes_today time,
   next_free_at timestamptz,
   rating_count int,
-  rating_avg numeric
+  rating_avg numeric,
+  distance_km double precision
 )
 language sql
 stable
@@ -557,14 +594,19 @@ security definer
 set search_path = public
 as $$
   -- The page is picked first, so today's hours and the next free time are
-  -- only worked out for the shops sent back.
+  -- only worked out for the shops sent back. Without a position every
+  -- distance is null, so the order is by name as before; the id last keeps
+  -- the pages from overlapping either way.
   select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
          h.opens_today, h.closes_today, public.shop_next_free(p.id),
-         p.rating_count, round(p.rating_sum::numeric / nullif(p.rating_count, 0), 1)
+         p.rating_count, round(p.rating_sum::numeric / nullif(p.rating_count, 0), 1),
+         p.distance_km
   from (
     select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone, s.rating_count, s.rating_sum,
            (select min(v.price) from services v where v.shop_id = s.id and v.is_active) as from_price,
-           (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active) as barber_count
+           (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active) as barber_count,
+           case when p_lat between -90 and 90 and p_lng between -180 and 180
+                then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end as distance_km
     from shops s
     where public.shop_is_live(s)
       and (coalesce(trim(p_area), '') = '' or lower(s.area) = lower(trim(p_area)))
@@ -572,12 +614,12 @@ as $$
         coalesce(trim(p_search), '') = ''
         or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), lower(trim(p_search))) > 0
       )
-    order by lower(s.name), s.id
+    order by distance_km nulls last, lower(s.name), s.id
     limit least(greatest(coalesce(p_limit, 20), 1), 50)
     offset greatest(coalesce(p_offset, 0), 0)
   ) p
   left join lateral public.shop_hours_today(p.id) h on true
-  order by lower(p.name), p.id;
+  order by p.distance_km nulls last, lower(p.name), p.id;
 $$;
 
 -- What a booking link should say when the shop is hidden (paused, or its
@@ -1653,6 +1695,7 @@ as $$
            to_jsonb(b) || jsonb_build_object(
              'shops', jsonb_build_object(
                'name', s.name, 'slug', s.slug, 'address', s.address, 'area', s.area,
+               'latitude', s.latitude, 'longitude', s.longitude,
                'phone', s.phone, 'time_zone', s.time_zone, 'is_live', public.shop_is_live(s)),
              'barbers', jsonb_build_object('name', br.name),
              'review', case when r.booking_id is not null then jsonb_build_object(

@@ -20,16 +20,28 @@ select md5('customer' || i)::uuid, 'customer' || i || '@load.my',
 from generate_series(1, :customers) i;
 
 \echo › shops, chairs, services and hours
-insert into public.shops (id, owner_id, name, slug, about, address, area, phone, is_published, subscription_status)
+-- Each shop sits within about 3 km of its town's centre; one in ten hasn't
+-- set its location, as some won't.
+insert into public.shops (id, owner_id, name, slug, about, address, area, latitude, longitude, phone,
+                          is_published, subscription_status)
 select md5('shop' || i)::uuid, md5('owner' || i)::uuid,
        'Kedai Gunting ' || i, 'kedai-gunting-' || i,
        'Fades, beard trims and kids cuts. Walk-ins welcome.',
-       i || ', Jalan Utama, ' || area,
-       area, '012-' || lpad(i::text, 7, '0'), true, 'active'
-from generate_series(1, :shops) i,
-     lateral (select (array['Kajang', 'Sungai Chua', 'Bangi', 'Semenyih', 'Cheras', 'Kuala Lumpur', 'Petaling Jaya',
-                            'Shah Alam', 'Subang Jaya', 'Puchong', 'Klang', 'Seremban', 'Ipoh', 'Johor Bahru',
-                            'George Town', 'Kota Bharu', 'Kuantan', 'Melaka', 'Alor Setar', 'Kuching'])[1 + i % 20] as area) a;
+       i || ', Jalan Utama, ' || t.area,
+       t.area,
+       case when i % 10 <> 7 then t.lat + ((i * 7919) % 600 - 300) / 10000.0 end,
+       case when i % 10 <> 7 then t.lng + ((i * 6271) % 600 - 300) / 10000.0 end,
+       '012-' || lpad(i::text, 7, '0'), true, 'active'
+from generate_series(1, :shops) i
+join (values
+  (0, 'Kajang', 2.9931, 101.7889), (1, 'Sungai Chua', 2.9846, 101.7712), (2, 'Bangi', 2.9637, 101.7681),
+  (3, 'Semenyih', 2.9500, 101.8430), (4, 'Cheras', 3.0790, 101.7380), (5, 'Kuala Lumpur', 3.1390, 101.6869),
+  (6, 'Petaling Jaya', 3.1073, 101.6067), (7, 'Shah Alam', 3.0733, 101.5185), (8, 'Subang Jaya', 3.0565, 101.5851),
+  (9, 'Puchong', 3.0250, 101.6170), (10, 'Klang', 3.0449, 101.4456), (11, 'Seremban', 2.7259, 101.9378),
+  (12, 'Ipoh', 4.5975, 101.0901), (13, 'Johor Bahru', 1.4927, 103.7414), (14, 'George Town', 5.4141, 100.3288),
+  (15, 'Kota Bharu', 6.1254, 102.2381), (16, 'Kuantan', 3.8077, 103.3260), (17, 'Melaka', 2.1896, 102.2501),
+  (18, 'Alor Setar', 6.1248, 100.3678), (19, 'Kuching', 1.5535, 110.3593)
+) t(n, area, lat, lng) on t.n = i % 20;
 
 insert into public.barbers (id, shop_id, name, sort_order)
 select md5('barber' || i || '-' || j)::uuid, md5('shop' || i)::uuid, 'Barber ' || j, j
