@@ -28,6 +28,9 @@ type MyBooking = Booking & {
     slug: string;
     address: string | null;
     area: string;
+    /** Where the shop is, when its owner has set it: Directions go straight there. */
+    latitude: number | null;
+    longitude: number | null;
     phone: string | null;
     time_zone: string;
     /** False while the shop is paused or its trial has ended: no online changes, but the booking stands. */

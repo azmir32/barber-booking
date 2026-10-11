@@ -307,9 +307,12 @@ export function Chip({
   accessibilityLabel,
   onPress,
   style,
+  icon,
 }: {
   label: string;
   sublabel?: string;
+  /** Shown before the label, e.g. a pin on Near me so it reads as more than one more area. */
+  icon?: ComponentProps<typeof Ionicons>['name'];
   selected?: boolean;
   /**
    * Can't be tapped, e.g. a day the shop is closed: unfilled with a dashed
@@ -349,7 +352,14 @@ export function Chip({
       disabled={disabled}
       onPress={onPress}
       style={[styles.chip, look.box, style]}>
-      <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+      {icon ? (
+        <View style={styles.buttonInner}>
+          <Ionicons name={icon} size={18} color={look.text} />
+          <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+        </View>
+      ) : (
+        <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+      )}
       {sublabel ? <Text style={[styles.chipSub, { color: look.sub }]}>{sublabel}</Text> : null}
     </Pressable>
   );
