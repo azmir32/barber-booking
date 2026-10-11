@@ -897,4 +897,18 @@ export const ms: Record<string, string> = {
   'Remove reply': 'Buang balasan',
   'Reply saved.': 'Balasan disimpan.',
   'Reply removed.': 'Balasan dibuang.',
+
+  // Round 8: Find a barber for returning customers, their next cut and their
+  // barbers (customer/index.tsx, components/returning-cards.tsx, lib/my-shops.ts)
+  'Your next cut': 'Potong rambut seterusnya',
+  'Your barbers': 'Barber anda',
+  'All barbers': 'Semua barber',
+  '+ {count} more': '+ {count} lagi',
+  'Your next cut: {when}, {what} at {shop}': 'Potong rambut seterusnya: {when}, {what} di {shop}',
+  '{service} with {barber}, today': '{service} bersama {barber}, hari ini',
+  '{service} with {barber}, yesterday': '{service} bersama {barber}, semalam',
+  '{service} with {barber}, {time} ago': '{service} bersama {barber}, {time} lalu',
+  'Book again at {shop}': 'Tempah lagi di {shop}',
+  'Not taking online bookings right now': 'Tidak menerima tempahan dalam talian buat masa ini',
+  'Barbers in {area}': 'Barber di {area}',
 };

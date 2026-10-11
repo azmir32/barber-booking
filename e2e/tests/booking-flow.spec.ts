@@ -244,6 +244,14 @@ test.describe.serial('booking flow', () => {
     await button(page, 'See my bookings').click();
     await expect(page.getByText(new RegExp(`, ${bookedTime}$`))).toBeVisible();
     await expect(page.getByText('“Low fade please”')).toBeVisible();
+
+    // Find a barber now starts with it. No cut yet, so no barbers to go back to.
+    await page.getByRole('tab', { name: /Barbers/ }).click();
+    await expect(
+      page.getByRole('link', { name: new RegExp(`^Your next cut: .*, Haircut with ${barber.name} at ${shopName}$`) }),
+    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your barbers' })).toHaveCount(0);
+    await snap(page, '12c-next-cut');
     await signOut(page);
   });
 

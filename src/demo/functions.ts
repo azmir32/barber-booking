@@ -110,9 +110,10 @@ export function findShops(args: Record<string, unknown>) {
 
 /**
  * The earliest free start for the shop's shortest service with any barber,
- * today by its own clock or else tomorrow; null when neither has one.
+ * today by its own clock or else tomorrow; null when neither has one, or the
+ * shop is hidden from the caller.
  */
-function shopNextFree(shop: Row): string | null {
+function shopNextFree(shop: Row, caller: Caller = { uid: null }): string | null {
   const [service] = tables()
     .services.filter((v) => v.shop_id === shop.id && v.is_active)
     .sort(
@@ -123,11 +124,9 @@ function shopNextFree(shop: Row): string | null {
     );
   if (!service) return null;
   const today = localDateString(new Date(now()), String(shop.time_zone));
-  // Only live shops are listed, so it is the same whoever asks.
-  const anyone: Caller = { uid: null };
   // Tomorrow is only worked out when today has nothing left.
   for (const day of [today, addDays(today, 1)]) {
-    const [first] = availableSlots(anyone, service.id, day);
+    const [first] = availableSlots(caller, service.id, day);
     if (first) return first.starts_at;
   }
   return null;
@@ -431,6 +430,85 @@ export function myBookings(c: Caller, limitArg: unknown = 100) {
     });
 }
 
+/**
+ * my_shops: Find a barber's cards for a returning customer. Their soonest
+ * upcoming booking and how many they have, and up to three shops they had
+ * cuts at in the last two years, most recent first, each with the last cut
+ * there, their visits and usual gap (as shopCustomers works them out), and
+ * today's hours and next free time as the shop list has them.
+ */
+export function myShops(c: Caller) {
+  const from = yearsFromNow(-2);
+  const mine = tables().bookings.filter(
+    (b) =>
+      c.uid != null &&
+      b.customer_id === c.uid &&
+      ms(b.starts_at) >= from &&
+      (b.status === 'confirmed' || b.status === 'completed'),
+  );
+  // A cut marked done, or still confirmed once it started.
+  const visits = mine.filter((b) => b.status === 'completed' || ms(b.starts_at) <= now());
+  const byId = (a: Row, b: Row) => (String(a.id) < String(b.id) ? -1 : 1);
+  const lastCuts = new Map<unknown, Row>();
+  for (const b of [...visits].sort((a, b) => ms(b.starts_at) - ms(a.starts_at) || byId(a, b))) {
+    if (!lastCuts.has(b.shop_id)) lastCuts.set(b.shop_id, b);
+  }
+  const recent = [...lastCuts.values()]
+    .sort((a, b) => ms(b.starts_at) - ms(a.starts_at) || (String(a.shop_id) < String(b.shop_id) ? -1 : 1))
+    .slice(0, 3);
+  const upcoming = mine
+    .filter((b) => b.status === 'confirmed' && ms(b.starts_at) > now())
+    .sort((a, b) => ms(a.starts_at) - ms(b.starts_at) || byId(a, b));
+  const next = upcoming[0];
+  const nextShop = next && findById('shops', next.shop_id);
+
+  return {
+    next:
+      next && nextShop
+        ? {
+            id: next.id,
+            starts_at: next.starts_at,
+            service_name: next.service_name,
+            barber_name: findById('barbers', next.barber_id)?.name ?? null,
+            shop_name: nextShop.name,
+            time_zone: nextShop.time_zone,
+          }
+        : null,
+    upcoming: upcoming.length,
+    shops: recent.flatMap((cut) => {
+      const shop = findById('shops', cut.shop_id);
+      const barber = findById('barbers', cut.barber_id);
+      if (!shop || !barber) return [];
+      const tz = String(shop.time_zone);
+      // A visit is a day they had a cut, however many bookings it took.
+      const days = [
+        ...new Set(
+          visits.filter((v) => v.shop_id === shop.id).map((v) => localDateString(new Date(ms(v.starts_at)), tz)),
+        ),
+      ].sort();
+      const visible = shopIsLive(shop) || shop.owner_id === c.uid;
+      return [
+        {
+          shop_id: shop.id,
+          name: shop.name,
+          slug: shop.slug,
+          time_zone: shop.time_zone,
+          is_live: shopIsLive(shop),
+          ...(visible ? hoursToday(shop) : { opens_today: null, closes_today: null }),
+          next_free_at: visible ? shopNextFree(shop, c) : null,
+          last_visit_at: cut.starts_at,
+          service_id: cut.service_id,
+          service_name: cut.service_name,
+          barber_id: barber.id,
+          barber_name: barber.name,
+          visits: days.length,
+          usual_gap_days: usualGapDays(days),
+        },
+      ];
+    }),
+  };
+}
+
 export function setBarberHours(c: Caller, barberId: unknown, hours: unknown) {
   const barber = findById('barbers', barberId);
   if (!barber || !ownsShop(barber.shop_id, c.uid)) throw new PgError('P0002', 'Barber not found.', 500);
@@ -638,6 +716,22 @@ export function shopClosedDays(c: Caller, shopId: unknown, fromArg: unknown, toA
 const money = (n: number) => Math.round(n * 100) / 100;
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
 
+/**
+ * The usual days between visits, from the days of each visit in order: the
+ * median gap, rounded (halves up) and at least a week, or four weeks after
+ * a single visit.
+ */
+function usualGapDays(days: string[]): number {
+  if (days.length < 2) return 28;
+  const gaps = days
+    .slice(1)
+    .map((day, i) => daysBetween(days[i], day))
+    .sort((a, b) => a - b);
+  const mid = gaps.length >> 1;
+  const median = gaps.length % 2 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
+  return Math.max(Math.round(median), 7);
+}
+
 /** shop_summary: the owner's takings for p_from to p_to on the shop's clock, and the period before. */
 export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
   const shop = myShop(c);
@@ -831,13 +925,7 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
     const visited = bookings.filter((b) => b.status === 'completed' || (b.status === 'confirmed' && ms(b.starts_at) <= now()));
     // A visit is a day they had a cut, however many bookings it took.
     const days = [...new Set(visited.map((b) => localDateString(new Date(ms(b.starts_at)), tz)))];
-    const gaps = days
-      .slice(1)
-      .map((day, i) => daysBetween(days[i], day))
-      .sort((a, b) => a - b);
-    const mid = gaps.length >> 1;
-    const median = gaps.length % 2 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
-    const gap = days.length >= 2 ? Math.max(Math.round(median), 7) : 28;
+    const gap = usualGapDays(days);
     const upcoming = bookings.filter((b) => b.status === 'confirmed' && ms(b.starts_at) > now());
 
     // The name a guest last gave (not 'Walk-in') and their number as last typed.
@@ -1063,6 +1151,7 @@ const SIGNED_IN_ONLY = new Set([
   'my_bookings',
   'rate_booking',
   'reply_to_review',
+  'my_shops',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -1122,6 +1211,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       };
     case 'reply_to_review':
       return { status: 200, body: replyToReview(c, args.p_booking_id, args.p_reply) };
+    case 'my_shops':
+      return { status: 200, body: myShops(c) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };

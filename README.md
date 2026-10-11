@@ -13,6 +13,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 
 **Customers**
 - Browse live barbershops, see which are open now and when each can next take you, and search by name or area
+- Coming back is one tap: Find a barber starts with their next cut and up to three of their barbers, each with the last cut there, when it is next free and Book again with the same service and barber already picked (or that it isn't taking bookings). The one they went to last says "Due for a cut" once their usual gap there has passed with nothing booked
 - Book a service with a chosen barber or "any barber", from free 15-minute slots over the next 14 days, with an optional note for the barber
 - Pick a time first and sign up after; the chosen slot is kept
 - See upcoming and past bookings, move one to another time, cancel, WhatsApp the shop, book again

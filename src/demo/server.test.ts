@@ -5,6 +5,7 @@ import { beforeEach, test } from 'node:test';
 import { createClient } from '@supabase/supabase-js';
 
 import { firstName } from '../lib/reviews.ts';
+import type { MyShops } from '../lib/my-shops.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import { insertRow, reloadTables, save, setClock, tables, type Row } from './db.ts';
@@ -2096,4 +2097,178 @@ test('opened on a later day, ratings and replies people left stay, and the sampl
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
     reloadTables();
   }
+});
+
+test('Find a barber gives Hakim his next cut and his barbers, with what Book again needs', async () => {
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const { data, error } = await hakim.rpc('my_shops');
+  assert.equal(error, null);
+  const mine = data as MyShops;
+  // His skin fade tomorrow at 4:30 pm is the only one to come.
+  assert.equal(mine.upcoming, 1);
+  const { id, starts_at, barber_name, ...next } = mine.next!;
+  assert.deepEqual(next, { service_name: 'Skin fade', shop_name: 'Ali Barber Sungai Chua', time_zone: TZ });
+  assert.equal(Date.parse(starts_at), Date.parse(kajang(1, '16:30')));
+  assert.match(String(barber_name), /^(Ali|Danial)$/);
+  assert.equal(tables().bookings.find((b) => b.id === id)?.customer_note, 'Same as last time');
+
+  // Kemas about two weeks ago, Ali's four weeks ago and The Fade Room two months ago, latest first.
+  assert.deepEqual(
+    mine.shops.map((s) => s.slug),
+    ['kemas-barber-kajang', 'ali-barber', 'the-fade-room'],
+  );
+  const [kemas, ali, fadeRoom] = mine.shops;
+  const serviceId = (slug: string, name: string) => {
+    const shop = tables().shops.find((s) => s.slug === slug)!;
+    return tables().services.find((v) => v.shop_id === shop.id && v.name === name)!.id;
+  };
+  assert.deepEqual(
+    [kemas.name, kemas.service_name, kemas.service_id, kemas.barber_name],
+    ['Kemas Barber Kajang', 'Haircut', serviceId('kemas-barber-kajang', 'Haircut'), 'Rahman'],
+  );
+  assert.deepEqual([ali.service_name, ali.service_id], ['Haircut', serviceId('ali-barber', 'Haircut')]);
+  assert.match(ali.barber_name, /^(Ali|Danial)$/);
+  assert.deepEqual(
+    [fadeRoom.service_name, fadeRoom.service_id, fadeRoom.barber_name],
+    ['Skin fade', serviceId('the-fade-room', 'Skin fade'), 'Irfan'],
+  );
+  assert.equal(Date.parse(ali.last_visit_at), Date.parse(kajang(-26, '11:00')));
+  assert.ok([kajang(-61, '15:00'), kajang(-60, '15:00')].some((at) => Date.parse(at) === Date.parse(fadeRoom.last_visit_at)));
+  // One visit each so far, so four weeks between cuts; each live, with today's hours and next free time as listed.
+  const { data: listed } = await client().rpc('find_shops', { p_limit: 50 });
+  for (const s of mine.shops) {
+    const l = (listed as Row[]).find((x) => x.id === s.shop_id)!;
+    assert.deepEqual(
+      [s.is_live, s.visits, s.usual_gap_days, s.time_zone, s.opens_today, s.closes_today, s.next_free_at],
+      [true, 1, 28, TZ, l.opens_today, l.closes_today, l.next_free_at],
+    );
+  }
+
+  // Once Ali pauses bookings, his shop still shows, saying so, with no free times.
+  const owner = await signedIn(DEMO_BARBER_EMAIL);
+  await owner.from('shops').update({ is_published: false }).eq('slug', 'ali-barber');
+  const after = (await hakim.rpc('my_shops')).data as MyShops;
+  const paused = after.shops[1];
+  assert.deepEqual(
+    [paused.slug, paused.is_live, paused.opens_today, paused.closes_today, paused.next_free_at],
+    ['ali-barber', false, null, null, null],
+  );
+  assert.equal(after.next?.shop_name, 'Ali Barber Sungai Chua');
+});
+
+test('my_shops works out the last cut, visits and usual gap at each shop, as the database does', async () => {
+  // The same diary as supabase/tests/booking_test.sql, across the sample shops.
+  const shop = (slug: string) => tables().shops.find((s) => s.slug === slug)!;
+  const barber = (slug: string, name: string) =>
+    tables().barbers.find((b) => b.shop_id === shop(slug).id && b.name === name)!;
+  const service = (slug: string, name: string) =>
+    tables().services.find((v) => v.shop_id === shop(slug).id && v.name === name) ?? null;
+  const userId = (email: string) => tables().users.find((u) => u.email === email)!.id;
+  const ben = userId(DEMO_CUSTOMER_EMAIL);
+  const chong = userId('ravi@demo.potongku.my');
+  shop('the-fade-room').is_published = false;
+  tables().bookings.splice(0);
+  const diary: [unknown, string, string, string, number, string, string][] = [
+    // Every three weeks at Ali's, the last with Danial; a no-show isn't a visit,
+    // two cuts on one day are one, and one over two years ago is too old.
+    [ben, 'ali-barber', 'Ali', 'Haircut', -800, '10:00', 'completed'],
+    [ben, 'ali-barber', 'Ali', 'Haircut', -70, '10:00', 'completed'],
+    [ben, 'ali-barber', 'Ali', 'Haircut', -49, '10:00', 'completed'],
+    [ben, 'ali-barber', 'Ali', 'Beard trim', -49, '10:30', 'completed'],
+    [ben, 'ali-barber', 'Danial', 'Haircut', -28, '11:00', 'completed'],
+    [ben, 'ali-barber', 'Ali', 'Haircut', -14, '10:00', 'no_show'],
+    // His latest cut was at Kemas, and he is booked there again tomorrow, and at Ali's later on.
+    [ben, 'kemas-barber-kajang', 'Rahman', 'Fade', -10, '10:00', 'completed'],
+    [ben, 'kemas-barber-kajang', 'Rahman', 'Fade', 1, '10:00', 'confirmed'],
+    [ben, 'ali-barber', 'Ali', 'Haircut', 3, '11:00', 'confirmed'],
+    // Not marked done, but its time has passed: a visit, at a shop since paused.
+    [ben, 'the-fade-room', 'Irfan', 'Skin fade', -40, '13:00', 'confirmed'],
+    // The fourth shop back is left out, and a cancelled booking isn't one to come.
+    [ben, 'gunting-pak-mat', 'Pak Mat', 'Potong biasa', -100, '10:00', 'completed'],
+    [ben, 'gunting-pak-mat', 'Pak Mat', 'Potong biasa', 2, '10:00', 'cancelled'],
+    // Chong's cut is his own.
+    [chong, 'ali-barber', 'Ali', 'Haircut', -5, '10:00', 'completed'],
+  ];
+  for (const [customer, slug, barberName, serviceName, days, clock, status] of diary) {
+    const at = kajang(days, clock);
+    insertRow('bookings', {
+      shop_id: shop(slug).id,
+      barber_id: barber(slug, barberName).id,
+      service_id: serviceName === 'Beard trim' ? null : service(slug, serviceName)!.id,
+      customer_id: customer,
+      service_name: serviceName,
+      price: 20,
+      starts_at: at,
+      ends_at: new Date(Date.parse(at) + 30 * 60_000).toISOString(),
+      status,
+    });
+  }
+
+  const mine = async (email: string) => {
+    const { data, error } = await (await signedIn(email)).rpc('my_shops');
+    assert.equal(error, null);
+    return data as MyShops;
+  };
+  const m = await mine(DEMO_CUSTOMER_EMAIL);
+  assert.deepEqual(
+    m.shops.map((s) => s.slug),
+    ['kemas-barber-kajang', 'ali-barber', 'the-fade-room'],
+  );
+  const { data: listed } = await client().rpc('find_shops', { p_limit: 50 });
+  const asListed = (slug: string) => {
+    const l = (listed as Row[]).find((x) => x.slug === slug)!;
+    return [l.opens_today, l.closes_today, l.next_free_at];
+  };
+  const [kemas, ali, fadeRoom] = m.shops;
+  const [opens, closes, nextFree] = asListed('kemas-barber-kajang');
+  assert.deepEqual(
+    { ...kemas, last_visit_at: Date.parse(kemas.last_visit_at) },
+    {
+      shop_id: shop('kemas-barber-kajang').id,
+      name: 'Kemas Barber Kajang',
+      slug: 'kemas-barber-kajang',
+      time_zone: TZ,
+      is_live: true,
+      opens_today: opens,
+      closes_today: closes,
+      next_free_at: nextFree,
+      last_visit_at: Date.parse(kajang(-10, '10:00')),
+      service_id: service('kemas-barber-kajang', 'Fade')!.id,
+      service_name: 'Fade',
+      barber_id: barber('kemas-barber-kajang', 'Rahman').id,
+      barber_name: 'Rahman',
+      visits: 1,
+      usual_gap_days: 28,
+    },
+  );
+  assert.deepEqual(
+    [ali.barber_name, ali.service_name, ali.visits, ali.usual_gap_days, Date.parse(ali.last_visit_at), ali.is_live],
+    ['Danial', 'Haircut', 3, 21, Date.parse(kajang(-28, '11:00')), true],
+  );
+  assert.deepEqual([ali.opens_today, ali.closes_today, ali.next_free_at], asListed('ali-barber'));
+  assert.deepEqual(
+    [fadeRoom.is_live, fadeRoom.next_free_at, fadeRoom.opens_today, fadeRoom.barber_name, fadeRoom.visits],
+    [false, null, null, 'Irfan', 1],
+  );
+  assert.equal(m.upcoming, 2);
+  assert.deepEqual(
+    { ...m.next!, id: undefined, starts_at: Date.parse(m.next!.starts_at) },
+    {
+      id: undefined,
+      starts_at: Date.parse(kajang(1, '10:00')),
+      service_name: 'Fade',
+      barber_name: 'Rahman',
+      shop_name: 'Kemas Barber Kajang',
+      time_zone: TZ,
+    },
+  );
+
+  // Only the caller's own: Chong sees his one cut, someone with none sees nothing, and guests can't ask.
+  const c = await mine('ravi@demo.potongku.my');
+  assert.deepEqual(
+    [c.next, c.upcoming, c.shops.map((s) => [s.slug, s.visits, s.barber_name])],
+    [null, 0, [['ali-barber', 1, 'Ali']]],
+  );
+  assert.deepEqual(await mine(DEMO_BARBER_EMAIL), { next: null, upcoming: 0, shops: [] });
+  assert.equal((await client().rpc('my_shops')).error?.code, '42501');
 });

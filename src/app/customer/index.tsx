@@ -5,12 +5,15 @@ import { RefreshControl, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { RatingSummary } from '@/components/reviews';
+import { ReturningCards } from '@/components/returning-cards';
 import { Button, Card, Chip, Empty, Field, Row, T } from '@/components/ui';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
+import { useAuth } from '@/lib/auth';
 import { nextFreeLine, openStatus } from '@/lib/hours';
 import { t } from '@/lib/lang';
+import type { MyShops } from '@/lib/my-shops';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice, localDateString } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -36,6 +39,7 @@ const AREA_KEY = 'potongku.area';
 
 export default function Explore() {
   const theme = useTheme();
+  const uid = useAuth().session?.user.id;
   // Keeps "Open now" and "Free now" right while the list stays on screen.
   const now = useNow();
   const [shops, setShops] = useState<ShopListing[]>([]);
@@ -43,6 +47,8 @@ export default function Explore() {
   const [areas, setAreas] = useState<Area[]>([]);
   const [area, setArea] = useState<string | null>(null);
   const [areaRestored, setAreaRestored] = useState(false);
+  // An area picked on this visit, rather than the one remembered from the last.
+  const [areaPicked, setAreaPicked] = useState(false);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -56,6 +62,9 @@ export default function Explore() {
   const chipsRef = useRef<ScrollView>(null);
   // A saved area's chip can sit past the right edge of a small phone; it is scrolled into view once.
   const revealSavedArea = useRef(false);
+  // A returning customer's next cut and their barbers, and whose they are.
+  const [mine, setMine] = useState<(MyShops & { uid: string }) | null>(null);
+  const latestMine = useRef(0);
 
   useEffect(() => {
     AsyncStorage.getItem(AREA_KEY)
@@ -74,10 +83,26 @@ export default function Explore() {
     [query, area],
   );
 
+  const loadMine = useCallback(async () => {
+    const request = ++latestMine.current;
+    // Asked of the client rather than taken from the screen's state, so the
+    // session arriving after the first load doesn't send the list again.
+    const who = (await supabase.auth.getSession()).data.session?.user.id;
+    if (!who) return setMine(null);
+    const { data, error } = await supabase.rpc('my_shops');
+    // Nothing to say on failure: the list below is what matters, and the cards come back on the next load.
+    if (request !== latestMine.current || error || !data) return;
+    setMine({ ...(data as MyShops), uid: who });
+  }, []);
+
   const load = useCallback(async () => {
     const request = ++latest.current;
     setLoading(true);
-    const { data, error } = await fetchPage(0);
+    // then() sends the list's request now, so the cards' one goes alongside it, never ahead.
+    const page = fetchPage(0).then((res) => res);
+    // Searching or picking an area hides the cards, so they wait until both are cleared.
+    if (!query.trim() && !areaPicked) loadMine();
+    const { data, error } = await page;
     if (request !== latest.current) return;
     setLoading(false);
     if (error) return setError(errorMessage(error));
@@ -86,7 +111,7 @@ export default function Explore() {
     setShops(rows.slice(0, PAGE));
     setHasMore(rows.length > PAGE);
     setListedOn(localDateString(new Date()));
-  }, [fetchPage]);
+  }, [fetchPage, loadMine, query, areaPicked]);
 
   async function loadMore() {
     const request = latest.current;
@@ -128,6 +153,7 @@ export default function Explore() {
 
   function pickArea(next: string | null) {
     setArea(next);
+    setAreaPicked(next !== null);
     (next ? AsyncStorage.setItem(AREA_KEY, next) : AsyncStorage.removeItem(AREA_KEY)).catch(() => {});
   }
 
@@ -138,6 +164,9 @@ export default function Explore() {
   }
 
   const searching = query.trim() !== '';
+  // Only the signed-in customer's own, and out of the way while they look for something else.
+  // The area remembered from last time still filters the list, but they came back for their barber.
+  const returning = !searching && !areaPicked && mine && mine.uid === uid ? mine : null;
   // The saved area may have no live shops any more; keep its chip so it can be cleared.
   const areaChips =
     area && areas.length && !areas.some((a) => a.area.toLowerCase() === area.toLowerCase())
@@ -215,6 +244,13 @@ export default function Explore() {
             </T>
             <Button title={t('Show all')} variant="ghost" onPress={showAllAreas} />
           </Row>
+        ) : null}
+        {returning ? (
+          <ReturningCards
+            mine={returning}
+            now={now}
+            listTitle={area ? t('Barbers in {area}', { area }) : t('All barbers')}
+          />
         ) : null}
         {error ? (
           <Empty title={t('Couldn’t load barbers')} body={t('Check your connection and try again.')}>
