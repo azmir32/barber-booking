@@ -39,7 +39,7 @@ export const Colors = {
     danger: '#F97066',
     dangerSoft: '#3A1D20',
     chip: '#323844',
-    skeleton: '#30353F',
+    skeleton: '#373C48',
   },
 } as const;
 

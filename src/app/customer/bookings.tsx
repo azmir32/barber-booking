@@ -255,8 +255,8 @@ function MyBookings() {
   ) : null;
 
   // Cancel and Add to calendar wait for the server's list rather than act on last visit's,
-  // where the time may have moved: off until it comes, with a spinner while it is on its way.
-  const hold = fromCache ? { loading, disabled: true } : {};
+  // where the time may have moved: dimmed until it comes (the title's spinner says it is coming).
+  const hold = fromCache ? { disabled: true } : {};
 
   return (
     <Screen onRefresh={load} overlay={overlay}>

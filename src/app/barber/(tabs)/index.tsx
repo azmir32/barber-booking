@@ -86,10 +86,11 @@ type DayAnswer = {
 
 /**
  * Buttons that change a customer's booking, while the day on screen is last
- * visit's: off until the server's list arrives (busy while it is on its way),
- * so nothing is done to a booking that has since moved or been cancelled.
+ * visit's: dimmed until the server's list arrives (the title's spinner says it
+ * is on its way), so nothing is done to a booking that has since moved or been
+ * cancelled.
  */
-type Held = { loading: boolean; disabled: boolean } | null;
+type Held = { disabled: boolean } | null;
 
 /**
  * The bar at the bottom: what just happened and one thing to do about it (undo, or message the
@@ -498,7 +499,7 @@ export default function BarberBookings() {
   const loaded = loadedDay === day;
   // Last visit's list for this day, until the server answers for it.
   const fromCache = loaded && freshFor !== day;
-  const held: Held = fromCache ? { loading: asking, disabled: true } : null;
+  const held: Held = fromCache ? { disabled: true } : null;
   // A removed block is gone from the barber's point of view.
   const kept = loaded ? bookings.filter((b) => !(b.is_block && b.status === 'cancelled')) : [];
   // A barber marked away keeps a chip on days they still have customers booked.
@@ -1037,7 +1038,7 @@ function LiveCard({
           title={t('Mark as reminded')}
           accessibilityLabel={t('Mark {name} as reminded', { name: who })}
           variant="secondary"
-          loading={reminding || held?.loading}
+          loading={reminding}
           disabled={held?.disabled}
           onPress={busy(onSaveReminder)}
         />
@@ -1046,7 +1047,7 @@ function LiveCard({
           title={t('Remind on WhatsApp')}
           accessibilityLabel={t('Remind {name} on WhatsApp', { name: who })}
           variant="secondary"
-          loading={reminding || held?.loading}
+          loading={reminding}
           disabled={held?.disabled}
           onPress={busy(onRemind)}
         />
@@ -1057,7 +1058,7 @@ function LiveCard({
             <Button
               title={b.reminded_at ? t('Remind again') : t('Remind on WhatsApp')}
               variant="secondary"
-              loading={reminding || held?.loading}
+              loading={reminding}
               disabled={held?.disabled}
               onPress={busy(onRemind)}
             />
@@ -1066,7 +1067,7 @@ function LiveCard({
             <Button
               title={t('Undo “{status}”', { status: t('Reminded') })}
               variant="secondary"
-              loading={reminding || held?.loading}
+              loading={reminding}
               disabled={held?.disabled}
               onPress={busy(onUnremind)}
             />
