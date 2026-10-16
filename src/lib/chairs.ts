@@ -18,14 +18,22 @@ export type ChairBarber = Pick<Barber, 'id' | 'is_active'> & {
   working_hours: Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>[];
 };
 
-export type ChairItem<B> = Span & { booking: B };
+export type ChairItem<B> = Span & {
+  booking: B;
+  /**
+   * Where its block is drawn to: a quarter hour at least, so the shortest
+   * booking still has room for a name and a finger, but never past the end
+   * of the time line. A booking right after a short one is drawn over it.
+   */
+  end: number;
+};
 export type Shade = Span & { kind: 'off' | 'break' };
 
 export type Chair<Br, B> = {
   barber: Br;
   /** The barber's hours that day; none for one marked away who still has customers booked. */
   hours: Span[];
-  /** Bookings and blocked time, by start. Cancelled ones are left out. */
+  /** Bookings and blocked time, by start. Cancelled ones, and whole days blocked, are left out. */
   items: ChairItem<B>[];
   /** Time with nothing on it outside the barber's hours: before or after them (off), or between them (break). */
   shades: Shade[];
@@ -39,10 +47,12 @@ export type ChairsDay<Br, B> = {
   to: number;
   /** One per barber working that day, in the team's order, and any other barber with customers still booked. */
   chairs: Chair<Br, B>[];
-  /** Barbers with the day off: no hours that weekday, or the whole day blocked. */
+  /** Barbers with no hours that weekday. */
   off: Br[];
   /** Barbers marked away who would otherwise work that day. */
   away: Br[];
+  /** Whole days blocked, by barber in the team's order: named above the chairs, each opening its block so it can be taken off. */
+  blocked: { barber: Br; booking: B }[];
 };
 
 /** "10:30" or "10:30:00" to minutes from midnight. */
@@ -50,6 +60,11 @@ const clockMinutes = (time: string) => {
   const [h, m] = time.split(':').map(Number);
   return h * 60 + m;
 };
+
+/** Time blocked from midnight to midnight: the day off, rather than time in it. */
+export function isWholeDay(b: Pick<Booking, 'is_block' | 'starts_at' | 'ends_at'>): boolean {
+  return b.is_block && Date.parse(b.ends_at) - Date.parse(b.starts_at) >= DAY_MINUTES * 60_000;
+}
 
 /** Minutes from midnight to "HH:MM", the way new-booking takes a start time. */
 export function clockOf(minutes: number): string {
@@ -76,27 +91,32 @@ export function chairsDay<Br extends ChairBarber, B extends ChairBooking>(
   const chairs: Chair<Br, B>[] = [];
   const off: Br[] = [];
   const away: Br[] = [];
+  const blocked: { barber: Br; booking: B }[] = [];
 
   for (const barber of barbers) {
     const own = bookings.filter((b) => b.barber_id === barber.id && b.status !== 'cancelled');
-    const wholeDay = own.some((b) => b.is_block && minuteOf(b.ends_at) - minuteOf(b.starts_at) >= DAY_MINUTES);
+    // A whole day blocked is the day off, said above the chairs rather than drawn down one.
+    const wholeDays = own.filter(isWholeDay);
+    for (const booking of wholeDays) blocked.push({ barber, booking });
     const hours = barber.working_hours
       .filter((h) => h.weekday === weekday)
       .map((h) => ({ from: clockMinutes(h.opens_at), to: clockMinutes(h.closes_at) }))
       .sort((a, b) => a.from - b.from);
     const items = own
-      .map((booking) => ({
-        booking,
-        from: Math.max(0, minuteOf(booking.starts_at)),
-        to: Math.min(DAY_MINUTES, minuteOf(booking.ends_at)),
-      }))
-      // A whole day blocked is the day off, said above the chairs rather than drawn down one.
-      .filter((i) => i.to > i.from && !(i.booking.is_block && i.to - i.from >= DAY_MINUTES))
+      .filter((b) => !isWholeDay(b))
+      .map((booking) => {
+        const from = Math.max(0, minuteOf(booking.starts_at));
+        const to = Math.min(DAY_MINUTES, minuteOf(booking.ends_at));
+        return { booking, from, to, end: to };
+      })
+      .filter((i) => i.to > i.from)
       .sort((a, b) => a.from - b.from);
-    const working = barber.is_active && hours.length > 0 && !wholeDay;
+    const working = barber.is_active && hours.length > 0 && wholeDays.length === 0;
     // Someone away or off with customers still booked keeps a chair, so nobody is forgotten.
     if (working || items.some((i) => !i.booking.is_block)) {
       chairs.push({ barber, hours: working ? hours : [], items, shades: [], gaps: [] });
+    } else if (wholeDays.length > 0) {
+      // Named with the block, which says more than Off.
     } else if (!barber.is_active) {
       if (hours.length > 0) away.push(barber);
     } else {
@@ -106,11 +126,14 @@ export function chairsDay<Br extends ChairBarber, B extends ChairBooking>(
 
   const starts = chairs.flatMap((c) => [...c.hours, ...c.items].map((s) => s.from));
   const ends = chairs.flatMap((c) => [...c.hours, ...c.items].map((s) => s.to));
-  if (starts.length === 0) return { from: 0, to: 0, chairs, off, away };
+  if (starts.length === 0) return { from: 0, to: 0, chairs, off, away, blocked };
   const from = Math.floor(Math.min(...starts) / 60) * 60;
   const to = Math.min(DAY_MINUTES, Math.ceil(Math.max(...ends) / 60) * 60);
-  for (const chair of chairs) Object.assign(chair, fill(chair.hours, chair.items, from, to));
-  return { from, to, chairs, off, away };
+  for (const chair of chairs) {
+    Object.assign(chair, fill(chair.hours, chair.items, from, to));
+    for (const item of chair.items) item.end = Math.min(to, Math.max(item.to, item.from + SLOT_MINUTES));
+  }
+  return { from, to, chairs, off, away, blocked };
 }
 
 /**
@@ -166,6 +189,14 @@ export function gapSlots(gap: Span, notBefore = 0): Slot[] {
 }
 
 /**
+ * The quarter hour a press `minute` minutes into the day lands on, of a gap's
+ * slots: the one under it, or the nearest at either end.
+ */
+export function slotAt(slots: Slot[], minute: number): Slot {
+  return slots.find((s) => minute < s.to) ?? slots[slots.length - 1];
+}
+
+/**
  * Minutes from the day's midnight to `now`, for the now line and for which
  * free times can still be offered: below 0 on a day still to come, past the
  * day's end on one gone by.
@@ -185,7 +216,7 @@ export function chairStatus(b: Pick<Booking, 'status' | 'is_block' | 'starts_at'
   return Date.parse(b.starts_at) <= now ? 'now' : 'upcoming';
 }
 
-/** The word a block says beside its time, so its colour isn't the only clue; none for one still to come. */
+/** The word a block says under its name, so its colour isn't the only clue; none for one still to come. */
 export function statusWord(status: ChairStatus): string | null {
   switch (status) {
     case 'now':
@@ -199,4 +230,26 @@ export function statusWord(status: ChairStatus): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * What a booking's block says, in as many lines as its height has room for:
+ * who, then what, when and how it went. Two words share a line only when the
+ * second can lose its end: a narrow chair cuts lines off, and a cut time
+ * misleads ("No-show · 1…" reads as one o'clock). Beside other words the time
+ * is the clock alone ("4:30"), as the time column says am or pm.
+ */
+export function blockText(
+  lines: number,
+  p: { name: string; detail: string | null; time: string; clock: string; word: string | null },
+): { title: string | null; rows: string[] } {
+  if (lines < 1) return { title: null, rows: [] };
+  if (lines === 1) return { title: p.word ? `${p.name} · ${p.word}` : p.name, rows: [] };
+  const rows =
+    lines === 2
+      ? [p.word ?? (p.detail ? `${p.clock} · ${p.detail}` : p.time)]
+      : lines === 3
+        ? [p.detail, p.word ?? p.time]
+        : [p.detail, p.time, p.word];
+  return { title: p.name, rows: rows.filter((r): r is string => Boolean(r)) };
 }

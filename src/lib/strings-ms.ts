@@ -979,8 +979,12 @@ export const ms: Record<string, string> = {
   '{name}, {service}, {from} to {to}, with {barber}': '{name}, {service}, {from} hingga {to}, bersama {barber}',
   'Blocked, {from} to {to}, with {barber}': 'Disekat, {from} hingga {to}, bersama {barber}',
   'Blocked, {reason}, {from} to {to}, with {barber}': 'Disekat, {reason}, {from} hingga {to}, bersama {barber}',
-  'Free with {barber}, {from} to {to}. Add a booking':
-    'Kosong bersama {barber}, {from} hingga {to}. Tambah tempahan',
+  'Free with {barber}, {from} to {to}. Add a booking': '{barber} lapang, {from} hingga {to}. Tambah tempahan',
+  // Time before or after a barber's hours: not on leave ("Cuti"), just not in yet or gone home.
+  'Not working': 'Tidak bekerja',
+  'Blocked all day': 'Disekat seharian',
+  'Blocked all day, with {barber}': 'Disekat seharian, bersama {barber}',
+  'Blocked all day, {reason}, with {barber}': 'Disekat seharian, {reason}, bersama {barber}',
   'Nobody is working this day': 'Tiada sesiapa bekerja pada hari itu',
   '{name} isn’t working this day': '{name} tidak bekerja pada hari itu',
 };

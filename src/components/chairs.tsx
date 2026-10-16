@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import {
+  AccessibilityInfo,
   Animated,
   Platform,
   Pressable,
@@ -9,30 +10,37 @@ import {
   Text,
   useWindowDimensions,
   View,
+  type GestureResponderEvent,
+  type LayoutChangeEvent,
 } from 'react-native';
 
-import { Bone, Empty, Skeleton, T } from '@/components/ui';
+import { Bone, Empty, IconButton, Skeleton, T } from '@/components/ui';
 import { chairFills, type Palette } from '@/constants/colors';
 import { Fonts, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
+  blockText,
   chairStatus,
   clockOf,
   clockText,
   gapSlots,
+  isWholeDay,
   minutesInto,
+  slotAt,
   statusWord,
   type Chair,
   type ChairBarber,
   type ChairBooking,
   type ChairsDay,
   type ChairStatus,
+  type Slot,
+  type Span,
 } from '@/lib/chairs';
 import { t } from '@/lib/lang';
 import { clockParts, formatClockOnly, formatTime } from '@/lib/time';
 import type { Booking } from '@/lib/types';
 
-/** A quarter hour is a finger's height, so the shortest booking or free time is still easy to tap. */
+/** A quarter hour is a finger's height, so the shortest booking (drawn a quarter hour at least) or free time is easy to tap. */
 const QUARTER_PX = 44;
 const PER_MINUTE = QUARTER_PX / 15;
 /** The row of barbers' names over the chairs, and its copy that stays at the top of the screen. */
@@ -80,7 +88,8 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
   onOpen,
   onAdd,
   onFrame,
-  scrollTo,
+  openAtNow,
+  onOpenAtNow,
 }: {
   grid: ChairsDay<Br, B>;
   day: string;
@@ -88,7 +97,7 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
   now: number;
   /** Who a booking is for, the way the list says it. */
   nameOf: (b: B) => string;
-  /** The booking whose actions are open, outlined. */
+  /** The booking whose actions are open, outlined; focus goes back to it when they close. */
   selectedId: string | null;
   /** A booking opened from "Since you last looked" (a cancelled one too): its chair scrolls into view and `focusRef` marks it. */
   focus: B | null;
@@ -101,8 +110,10 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
   /** Free time tapped: that barber, at that start ("HH:MM"). */
   onAdd: (barberId: string, clock: string) => void;
   onFrame: (frame: ChairsFrame) => void;
-  /** Scrolls the screen's content to `y`: once on opening today, to an hour before now. */
-  scrollTo: (y: number) => void;
+  /** Whether to offer to open on now once laid out. The screen decides, as it knows what else is above. */
+  openAtNow: boolean;
+  /** Where the screen's content would scroll to for the hour before now to show at the top; null if nothing would. */
+  onOpenAtNow: (y: number | null) => void;
 }) {
   const theme = useTheme();
   const fills = chairFills(theme);
@@ -114,7 +125,9 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
   const stripRef = useRef<View>(null);
   const sideways = useRef<ScrollView>(null);
   const shownX = useRef(0);
-  const openedOn = useRef<string | null>(null);
+  // Each booking's block (or blocked day) by id, for focus to come back to.
+  const blocks = useRef(new Map<string, View>());
+  const lastSelected = useRef(selectedId);
 
   const content = measured || Math.min(windowWidth, MaxContentWidth) - 2 * Spacing.lg;
   const gridWidth = Math.max(content, Math.min(windowWidth, MAX_GRID_WIDTH + 2 * Spacing.lg) - 2 * Spacing.lg);
@@ -133,14 +146,23 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
     if (top !== null && strip) onFrame({ top, x: strip.x, width: strip.width, chairWidth });
   }, [top, strip, chairWidth, onFrame]);
 
-  // Today opens on now, with the hour before it in view; a booking opened from the news card scrolls there instead.
+  // Today can open on now, with the hour before it in view; a booking opened from the news card scrolls there instead.
   useEffect(() => {
-    if (top === null || count === 0 || openedOn.current === day) return;
-    openedOn.current = day;
-    if (focus || !nowShown) return;
+    if (!openAtNow || top === null || count === 0) return;
     const above = (nowMinute - grid.from - 60) * PER_MINUTE;
-    if (above > 0) scrollTo(top + above);
-  }, [top, count, day, focus, nowShown, nowMinute, grid.from, scrollTo]);
+    onOpenAtNow(!focus && nowShown && above > 0 ? top + above : null);
+  }, [openAtNow, top, count, focus, nowShown, nowMinute, grid.from, onOpenAtNow]);
+
+  // A booking's actions closed: back to its block, so a screen reader or keyboard carries on from there.
+  useEffect(() => {
+    const was = lastSelected.current;
+    lastSelected.current = selectedId;
+    if (was && !selectedId) moveFocus(blocks.current.get(was));
+  }, [selectedId]);
+  const blockRef = (id: string) => (node: View | null) => {
+    if (node) blocks.current.set(id, node);
+    else blocks.current.delete(id);
+  };
 
   // That booking's chair, brought in from the side if it is out of view.
   const focusChair = focus ? grid.chairs.findIndex((c) => c.barber.id === focus.barber_id) : -1;
@@ -183,6 +205,22 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
         setMeasured(e.nativeEvent.layout.width);
       }}>
       {notIn ? <T variant="muted">{notIn}</T> : null}
+      {grid.blocked.length ? (
+        <View style={styles.blockedDays}>
+          {grid.blocked.map(({ barber, booking }) => (
+            <BlockedDay
+              key={booking.id}
+              ref={blockRef(booking.id)}
+              barber={barber.name}
+              reason={booking.service_name === 'Blocked' ? null : booking.service_name}
+              label={bookingLabel(booking, nameOf, barber.name, tz, now)}
+              fill={fills.block}
+              selected={booking.id === selectedId}
+              onPress={() => onOpen(booking)}
+            />
+          ))}
+        </View>
+      ) : null}
       {count === 0 ? (
         <Empty title={emptyTitle} />
       ) : (
@@ -261,6 +299,7 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
                         focus?.barber_id === chair.barber.id ? minutesInto(day, Date.parse(focus.starts_at), tz) : null
                       }
                       focusRef={focusRef}
+                      blockRef={blockRef}
                       onOpen={onOpen}
                       onAdd={(clock) => onAdd(chair.barber.id, clock)}
                     />
@@ -291,6 +330,7 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
   selectedId,
   focusAt,
   focusRef,
+  blockRef,
   onOpen,
   onAdd,
 }: {
@@ -312,6 +352,7 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
   /** Where the booking opened from the news card starts, when it is in this chair. */
   focusAt: number | null;
   focusRef: Ref<View>;
+  blockRef: (id: string) => Ref<View>;
   onOpen: (b: B) => void;
   onAdd: (clock: string) => void;
 }) {
@@ -327,7 +368,7 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
         <View key={`s${shade.from}`} style={[styles.shade, { top: y(shade.from), height: h, backgroundColor: fills.shade }]}>
           {h >= 24 ? (
             <Text numberOfLines={1} style={[styles.shadeText, { color: theme.textSecondary }]}>
-              {shade.kind === 'break' ? t('Break') : t('Off')}
+              {shade.kind === 'break' ? t('Break') : t('Not working')}
             </Text>
           ) : null}
         </View>
@@ -338,45 +379,22 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
   for (const gap of chair.gaps) {
     const slots = gapSlots(gap, notBefore);
     if (slots.length === 0) continue;
-    const first = slots[0];
-    const label = t('Free with {barber}, {from} to {to}. Add a booking', {
-      barber,
-      from: clockText(first.at),
-      to: clockText(gap.to),
-    });
     pieces.push({
-      at: first.from,
+      at: slots[0].from,
       node: (
-        <Pressable
+        <FreeGap
           key={`g${gap.from}`}
-          accessibilityRole="button"
-          accessibilityLabel={label}
-          // A screen reader's double tap opens the gap's first time, wherever the gap's middle is.
-          accessibilityActions={[{ name: 'activate' }]}
-          onAccessibilityAction={() => onAdd(clockOf(first.at))}
-          onPress={() => onAdd(clockOf(first.at))}
-          style={[styles.gap, { top: y(first.from), height: (gap.to - first.from) * PER_MINUTE }]}>
-          {slots.map((s) => (
-            <Pressable
-              key={s.at}
-              accessible={false}
-              focusable={false}
-              aria-hidden
-              importantForAccessibility="no"
-              onPress={() => onAdd(clockOf(s.at))}
-              style={({ pressed }) => [
-                { height: (s.to - s.from) * PER_MINUTE },
-                pressed && { backgroundColor: fills.upcoming },
-              ]}
-            />
-          ))}
-          <View style={styles.freeHint}>
-            <Ionicons name="add" size={16} color={theme.textSecondary} />
-            <Text numberOfLines={1} style={[styles.freeText, { color: theme.textSecondary }]}>
-              {t('Free')}
-            </Text>
-          </View>
-        </Pressable>
+          gap={gap}
+          slots={slots}
+          top={y(slots[0].from)}
+          label={t('Free with {barber}, {from} to {to}. Add a booking', {
+            barber,
+            from: clockText(slots[0].at),
+            to: clockText(gap.to),
+          })}
+          fill={fills.upcoming}
+          onAdd={onAdd}
+        />
       ),
     });
   }
@@ -389,13 +407,15 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
       node: (
         <ChairBlock
           key={b.id}
+          ref={blockRef(b.id)}
           name={b.is_block ? t('Blocked') : nameOf(b)}
           detail={b.is_block ? (b.service_name === 'Blocked' ? null : b.service_name) : b.service_name}
           time={formatTime(b.starts_at, tz)}
+          clock={formatClockOnly(b.starts_at, tz)}
           status={status}
-          label={blockLabel(b, status, nameOf, barber, tz)}
+          label={bookingLabel(b, nameOf, barber, tz, now)}
           top={y(item.from)}
-          height={(item.to - item.from) * PER_MINUTE}
+          height={(item.end - item.from) * PER_MINUTE}
           fills={fills}
           selected={b.id === selectedId}
           onPress={() => onOpen(b)}
@@ -426,11 +446,75 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
   );
 }
 
+/**
+ * Free time in a chair: one button, opening Add to the day at the quarter
+ * hour pressed. A screen reader or a key opens its first quarter hour, as
+ * there is no spot to press.
+ */
+function FreeGap({
+  gap,
+  slots,
+  top,
+  label,
+  fill,
+  onAdd,
+}: {
+  gap: Span;
+  slots: Slot[];
+  top: number;
+  label: string;
+  /** The quarter hour pressed lights up in this. */
+  fill: string;
+  onAdd: (clock: string) => void;
+}) {
+  const theme = useTheme();
+  const [pressed, setPressed] = useState<Slot | null>(null);
+  const first = slots[0];
+  // How far down the gap a press landed: a touch's offset in it, or on the web a click's. A key has none.
+  const slotOf = (e: GestureResponderEvent) => {
+    const { locationY, offsetY } = e.nativeEvent as { locationY?: number; offsetY?: number };
+    const down = locationY ?? offsetY;
+    return typeof down === 'number' && Number.isFinite(down) ? slotAt(slots, first.from + down / PER_MINUTE) : first;
+  };
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityActions={[{ name: 'activate' }]}
+      onAccessibilityAction={() => onAdd(clockOf(first.at))}
+      onPressIn={(e) => setPressed(slotOf(e))}
+      onPressOut={() => setPressed(null)}
+      onPress={(e) => onAdd(clockOf(slotOf(e).at))}
+      style={[styles.gap, { top, height: (gap.to - first.from) * PER_MINUTE }]}>
+      {pressed ? (
+        <View
+          style={[
+            styles.pressedSlot,
+            {
+              top: (pressed.from - first.from) * PER_MINUTE,
+              height: (pressed.to - pressed.from) * PER_MINUTE,
+              backgroundColor: fill,
+            },
+          ]}
+        />
+      ) : null}
+      <View style={styles.freeHint}>
+        <Ionicons name="add" size={16} color={theme.textSecondary} />
+        <Text numberOfLines={1} style={[styles.freeText, { color: theme.textSecondary }]}>
+          {t('Free')}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
 /** A booking, or blocked time: who, what and when, as much as its height has room for. */
 function ChairBlock({
+  ref,
   name,
   detail,
   time,
+  clock,
   status,
   label,
   top,
@@ -439,9 +523,12 @@ function ChairBlock({
   selected,
   onPress,
 }: {
+  ref: Ref<View>;
   name: string;
   detail: string | null;
   time: string;
+  /** The time without am or pm, for beside other words. */
+  clock: string;
   status: ChairStatus;
   label: string;
   top: number;
@@ -452,23 +539,13 @@ function ChairBlock({
 }) {
   const theme = useTheme();
   const { fill, edge } = look(status, theme, fills);
-  const word = statusWord(status);
   // Lines of 18pt inside the block's gap and padding: a quarter hour has two, half an hour four.
   const lines = Math.floor((height - 2 - 2 * BLOCK_PADDING) / 18);
   const sub = status === 'done' || status === 'noShow' ? theme.textSecondary : theme.text;
-  // Short of room, how it went comes first, as a narrow chair cuts off the end of a line.
-  const title = word && lines <= 1 ? `${name} · ${word}` : name;
-  const when = word ? `${word} · ${time}` : time;
-  const rows =
-    lines >= 4
-      ? [detail, time, word]
-      : lines === 3
-        ? [detail, when]
-        : lines === 2
-          ? [word || !detail ? when : `${time} · ${detail}`]
-          : [];
+  const { title, rows } = blockText(lines, { name, detail, time, clock, word: statusWord(status) });
   return (
     <Pressable
+      ref={ref}
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
@@ -479,43 +556,141 @@ function ChairBlock({
         selected && { borderColor: theme.text, borderWidth: 2, borderLeftWidth: status === 'block' ? 2 : 4 },
         pressed && { opacity: 0.8 },
       ]}>
-      {lines >= 1 ? (
+      {title ? (
         <T variant="label" numberOfLines={1} style={{ color: sub }}>
           {title}
         </T>
       ) : null}
-      {rows.map((row, i) =>
-        row ? (
-          <T key={i} variant="small" numberOfLines={1} style={{ color: sub }}>
-            {row}
-          </T>
-        ) : null,
-      )}
+      {rows.map((row, i) => (
+        <T key={i} variant="small" numberOfLines={1} style={{ color: sub }}>
+          {row}
+        </T>
+      ))}
     </Pressable>
   );
 }
 
-/** "Hakim, Haircut, 4:30 pm to 5:00 pm, with Ali", with how it went once it has started. */
-function blockLabel<B extends ChairsBooking>(
+/** A barber's whole day blocked, above the chairs: who, and why if the barber said. It opens the block, to take it off. */
+function BlockedDay({
+  ref,
+  barber,
+  reason,
+  label,
+  fill,
+  selected,
+  onPress,
+}: {
+  ref: Ref<View>;
+  barber: string;
+  reason: string | null;
+  label: string;
+  fill: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      ref={ref}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.blockedDay,
+        { backgroundColor: fill, borderColor: theme.inputBorder },
+        selected && { borderColor: theme.text, borderWidth: 2, borderStyle: 'solid' },
+        pressed && { opacity: 0.8 },
+      ]}>
+      <T variant="label" numberOfLines={1}>
+        {barber}
+      </T>
+      <T variant="small" numberOfLines={1} style={{ color: theme.text }}>
+        {reason ? `${t('Blocked all day')} · ${reason}` : t('Blocked all day')}
+      </T>
+    </Pressable>
+  );
+}
+
+/**
+ * How a booking is read out: "Hakim, Haircut, 4:30 pm to 5:00 pm, with Ali",
+ * with how it went once it has started. For its block, its blocked day and
+ * the dialog with its actions.
+ */
+export function bookingLabel<B extends ChairsBooking>(
   b: B,
-  status: ChairStatus,
   nameOf: (b: B) => string,
   barber: string,
   tz: string,
+  now: number,
 ): string {
   const times = { from: formatTime(b.starts_at, tz), to: formatTime(b.ends_at, tz), barber };
+  // Blocks saved without a reason get this English default from the database.
+  const reason = b.service_name === 'Blocked' ? null : b.service_name;
+  if (b.is_block && isWholeDay(b)) {
+    return reason
+      ? t('Blocked all day, {reason}, with {barber}', { barber, reason })
+      : t('Blocked all day, with {barber}', { barber });
+  }
   if (b.is_block) {
-    return b.service_name === 'Blocked'
-      ? t('Blocked, {from} to {to}, with {barber}', times)
-      : t('Blocked, {reason}, {from} to {to}, with {barber}', { ...times, reason: b.service_name });
+    return reason
+      ? t('Blocked, {reason}, {from} to {to}, with {barber}', { ...times, reason })
+      : t('Blocked, {from} to {to}, with {barber}', times);
   }
   const label = t('{name}, {service}, {from} to {to}, with {barber}', {
     ...times,
     name: nameOf(b),
     service: b.service_name,
   });
-  const word = statusWord(status);
+  const word = statusWord(chairStatus(b, now));
   return word ? `${label}. ${word}` : label;
+}
+
+/**
+ * A booking's actions over the chairs, as a dialog: its time and barber over
+ * the card the list has for it. Focus moves into it as it opens, so a screen
+ * reader says what opened; the chairs send it back to the booking as it
+ * closes. Give each booking its own key, so focus moves for each.
+ */
+export function ChairsPanel({
+  label,
+  title,
+  onClose,
+  onLayout,
+  children,
+}: {
+  /** Read out for the dialog: the booking's label. */
+  label: string;
+  /** Its time and barber, as the heading. */
+  title: string;
+  onClose: () => void;
+  onLayout?: (e: LayoutChangeEvent) => void;
+  children: ReactNode;
+}) {
+  const theme = useTheme();
+  const heading = useRef<View>(null);
+  useEffect(() => moveFocus(heading.current), []);
+  return (
+    <View
+      role="dialog"
+      aria-label={label}
+      onLayout={onLayout}
+      style={[styles.panel, { backgroundColor: theme.background, borderColor: theme.border }]}>
+      <View style={styles.panelHead}>
+        <View ref={heading} accessible role="heading" tabIndex={-1} style={styles.panelTitle}>
+          <T variant="label">{title}</T>
+        </View>
+        <IconButton icon="close" label={t('Close')} variant="ghost" onPress={onClose} />
+      </View>
+      {children}
+    </View>
+  );
+}
+
+/** Moves a screen reader's focus, and on the web the keyboard's, to `node`. */
+function moveFocus(node: View | null | undefined) {
+  if (!node) return;
+  if (Platform.OS === 'web') (node as unknown as HTMLElement).focus?.();
+  else AccessibilityInfo.sendAccessibilityEvent(node, 'focus');
 }
 
 function look(status: ChairStatus, theme: Palette, fills: ReturnType<typeof chairFills>) {
@@ -662,14 +837,30 @@ const styles = StyleSheet.create({
   },
   blocked: { borderWidth: 1, borderLeftWidth: 1, borderStyle: 'dashed' },
   marker: { position: 'absolute', left: 0, width: 1, height: 1 },
-  sticky: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    borderBottomWidth: 1,
-    pointerEvents: 'none',
+  // It takes its own taps, so none reaches the booking or free time scrolled under it, out of sight.
+  sticky: { position: 'absolute', top: 0, left: 0, right: 0, borderBottomWidth: 1 },
+  blockedDays: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  blockedDay: {
+    minHeight: 48,
+    maxWidth: '100%',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
   },
+  pressedSlot: { position: 'absolute', left: 0, right: 0, pointerEvents: 'none' },
+  // Over the chairs, as a sheet: the booking's time and barber, then its card.
+  panel: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    gap: Spacing.xs,
+    boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+  },
+  panelHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingLeft: Spacing.sm },
+  panelTitle: { flex: 1 },
   skeletonRow: { flexDirection: 'row', gap: Spacing.sm },
   skeletonTimes: { gap: QUARTER_PX * 4 - 12, paddingTop: NAMES_HEIGHT },
   skeletonChair: { flex: 1, gap: Spacing.sm },

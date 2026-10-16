@@ -6,7 +6,7 @@ import { Animated, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, V
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BookingStatusBadge } from '@/components/booking-status';
-import { ChairNames, Chairs, ChairsSkeleton, type ChairsFrame } from '@/components/chairs';
+import { bookingLabel, ChairNames, Chairs, ChairsPanel, ChairsSkeleton, type ChairsFrame } from '@/components/chairs';
 import { DayPicker } from '@/components/day-picker';
 import {
   Badge,
@@ -31,7 +31,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { appCache } from '@/lib/app-cache';
 import { useAuth } from '@/lib/auth';
 import { cacheKey } from '@/lib/cache';
-import { chairsDay } from '@/lib/chairs';
+import { chairsDay, isWholeDay } from '@/lib/chairs';
 import { dateRange } from '@/lib/closures';
 import { confirmAction } from '@/lib/confirm';
 import { WALK_IN } from '@/lib/customers';
@@ -113,6 +113,12 @@ type DayView = 'list' | 'chairs';
 const dayViewKey = (shopId: string) => `potongku.dayView.${shopId}`;
 /** The same, for this visit, so coming back to the tab doesn't flash the list first. */
 const dayViews: Record<string, DayView> = {};
+/**
+ * Shops whose day as chairs has had its one chance this visit to open on now
+ * (see openAtNow). A tap on the switch or a day uses it up: the screen never
+ * moves away from what was just tapped.
+ */
+const nowPlaced = new Set<string>();
 
 export default function BarberBookings() {
   const { shop } = useMyShop();
@@ -213,7 +219,6 @@ export default function BarberBookings() {
     setChairsFrame(frame);
     setNamesStuck(scrollY.current > frame.top);
   }, []);
-  const scrollContentTo = useCallback((y: number) => scroller.current?.scrollTo({ y, animated: false }), []);
 
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
 
@@ -512,6 +517,7 @@ export default function BarberBookings() {
   /** Another day: any message on screen was about the day before. */
   const pickDay = (next: string) => {
     if (next === day) return;
+    nowPlaced.add(shop.id);
     setDay(next);
     setError(null);
     setRefreshError(null);
@@ -519,6 +525,7 @@ export default function BarberBookings() {
   };
 
   const pickView = (next: DayView) => {
+    nowPlaced.add(shop.id);
     dayViews[shop.id] = next;
     setDayView(next);
     setPicked(null);
@@ -613,6 +620,17 @@ export default function BarberBookings() {
       : null;
   // The booking whose actions are open over the chairs; gone with the day or once it leaves it.
   const pickedBooking = grid && picked?.day === day ? (kept.find((b) => b.id === picked.id) ?? null) : null;
+  // Opened on today as chairs (kept from last time), the day opens on now, once a visit: when the server
+  // has answered, or failed to, unless the barber has scrolled or tapped the switch or a day meanwhile.
+  const openAtNow = Boolean(grid) && isToday && !nowPlaced.has(shop.id) && (freshFor === day || refreshError !== null);
+  const onOpenAtNow = (y: number | null) => {
+    if (nowPlaced.has(shop.id)) return;
+    nowPlaced.add(shop.id);
+    // What is above comes first: a failed refresh (so the barber knows the day may be out of date), an
+    // error, or what customers changed.
+    const readFirst = refreshError || error || (news && news.count > 0);
+    if (y !== null && !readFirst && scrollY.current <= 0) scroller.current?.scrollTo({ y, animated: false });
+  };
   // The floating button would cover the bar, and the button under the date already shows near the top.
   const showFab = canAdd && !notice && !pickedBooking && pastAddButton;
 
@@ -697,22 +715,22 @@ export default function BarberBookings() {
 
   /** Over the chairs: the tapped booking's time and barber, and the same card the list has for it. */
   const panel = pickedBooking ? (
-    <View
-      onLayout={(e) => setPanelHeight(e.nativeEvent.layout.height)}
-      style={[styles.panel, { backgroundColor: theme.background, borderColor: theme.border }]}>
-      <View style={styles.panelHead}>
-        <T variant="label" style={styles.info}>
-          {noBreak(`${formatTime(pickedBooking.starts_at, tz)}–${formatTime(pickedBooking.ends_at, tz)}`)}
-          {pickedBooking.barbers ? ` · ${pickedBooking.barbers.name}` : ''}
-        </T>
-        <IconButton icon="close" label={t('Close')} variant="ghost" onPress={() => setPicked(null)} />
-      </View>
+    <ChairsPanel
+      key={pickedBooking.id}
+      label={bookingLabel(pickedBooking, whoFor, pickedBooking.barbers?.name ?? '', tz, now)}
+      title={`${
+        isWholeDay(pickedBooking)
+          ? t('Whole day')
+          : noBreak(`${formatTime(pickedBooking.starts_at, tz)}–${formatTime(pickedBooking.ends_at, tz)}`)
+      }${pickedBooking.barbers ? ` · ${pickedBooking.barbers.name}` : ''}`}
+      onClose={() => setPicked(null)}
+      onLayout={(e) => setPanelHeight(e.nativeEvent.layout.height)}>
       {isFinished(pickedBooking) ? (
         <Card style={styles.compactCard}>{finishedRow(pickedBooking, false)}</Card>
       ) : (
         openCard(pickedBooking, false)
       )}
-    </View>
+    </ChairsPanel>
   ) : null;
 
   return (
@@ -919,7 +937,8 @@ export default function BarberBookings() {
           onOpen={(b) => setPicked({ id: b.id, day })}
           onAdd={addAt}
           onFrame={onChairsFrame}
-          scrollTo={scrollContentTo}
+          openAtNow={openAtNow}
+          onOpenAtNow={onOpenAtNow}
         />
       ) : shown.length === 0 ? (
         <Empty
@@ -984,9 +1003,6 @@ export default function BarberBookings() {
     </Screen>
   );
 }
-
-const isWholeDay = (b: Booking) =>
-  b.is_block && new Date(b.ends_at).getTime() - new Date(b.starts_at).getTime() >= 24 * 60 * 60 * 1000;
 
 const minutesOf = (b: Booking) => Math.round((new Date(b.ends_at).getTime() - new Date(b.starts_at).getTime()) / 60000);
 
@@ -1499,13 +1515,4 @@ const styles = StyleSheet.create({
   noticeActions: { flexDirection: 'row', alignItems: 'center', marginLeft: 'auto' },
   fab: { borderRadius: Radius.md, boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)' },
   panelWrap: { width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center', paddingHorizontal: Spacing.lg },
-  // Over the chairs, as a sheet: the booking's time and barber, then its card.
-  panel: {
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    padding: Spacing.sm,
-    gap: Spacing.xs,
-    boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
-  },
-  panelHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingLeft: Spacing.sm },
 });

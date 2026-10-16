@@ -2,7 +2,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { chairsDay, chairStatus, clockOf, clockText, gapSlots, minutesInto, statusWord } from './chairs.ts';
+import {
+  blockText,
+  chairsDay,
+  chairStatus,
+  clockOf,
+  clockText,
+  gapSlots,
+  isWholeDay,
+  minutesInto,
+  slotAt,
+  statusWord,
+} from './chairs.ts';
 import { setCurrentLang } from './lang.ts';
 
 const TZ = 'Asia/Kuala_Lumpur';
@@ -113,20 +124,51 @@ test('a booking that runs past closing stretches the day, and sits over the time
   assert.deepEqual(early.chairs[0].shades[0], { kind: 'off', from: 9 * 60, to: 9 * 60 + 15 });
 });
 
-test('cancelled bookings are left out; a whole day blocked is a day off', () => {
-  const day = chairsDay(
-    DAY,
-    [ali, danial],
-    [
-      booking('ali', '11:00', '11:30', { status: 'cancelled' }),
-      booking('danial', '00:00', '00:00', { is_block: true, ends_at: at('00:00', '2026-10-17') }),
-    ],
-    TZ,
-  );
+test('cancelled bookings are left out; a whole day blocked is named with its block, to open and take off', () => {
+  const wholeDay = booking('danial', '00:00', '00:00', { is_block: true, ends_at: at('00:00', '2026-10-17') });
+  const day = chairsDay(DAY, [ali, danial], [booking('ali', '11:00', '11:30', { status: 'cancelled' }), wholeDay], TZ);
   assert.deepEqual(day.chairs.map((c) => c.barber.id), ['ali']);
   assert.deepEqual(day.chairs[0].items, []);
-  assert.deepEqual(day.off.map((b) => b.id), ['danial']);
+  assert.deepEqual(
+    day.blocked.map((b) => [b.barber.id, b.booking.id]),
+    [['danial', wholeDay.id]],
+  );
+  assert.deepEqual(day.off, [], 'blocked says more than off');
   assert.deepEqual(day.away, []);
+  assert.ok(isWholeDay(wholeDay));
+  assert.ok(!isWholeDay(booking('ali', '00:00', '23:45', { is_block: true })));
+
+  // Customers still booked on a day blocked whole keep the chair, and the block is still there to open.
+  const kept = booking('danial', '15:00', '15:30');
+  const both = chairsDay(DAY, [ali, danial], [wholeDay, kept], TZ);
+  assert.deepEqual(both.chairs.map((c) => c.barber.id), ['ali', 'danial']);
+  assert.deepEqual(both.chairs[1].items.map((i) => i.booking.id), [kept.id]);
+  assert.deepEqual(both.chairs[1].gaps, [], 'nothing to offer on a day blocked');
+  assert.deepEqual(both.blocked.map((b) => b.booking.id), [wholeDay.id]);
+
+  // A barber off that weekday who also has it blocked: the block is what can be acted on.
+  const sunday = '2026-10-18';
+  const sundayBlock = { ...wholeDay, starts_at: at('00:00', sunday), ends_at: at('00:00', '2026-10-19') };
+  const offToo = chairsDay(sunday, [ali, danial], [sundayBlock], TZ);
+  assert.deepEqual(offToo.off.map((b) => b.id), ['ali']);
+  assert.deepEqual(offToo.blocked.map((b) => b.barber.id), ['danial']);
+  assert.deepEqual(offToo.chairs, []);
+});
+
+test('a booking shorter than a quarter hour is drawn a quarter hour tall, but not past the end of the time line', () => {
+  const day = chairsDay(
+    DAY,
+    [ali],
+    [booking('ali', '11:00', '11:05'), booking('ali', '11:05', '11:15'), booking('ali', '16:00', '16:45'), booking('ali', '19:50', '20:00')],
+    TZ,
+  );
+  const [chair] = day.chairs;
+  assert.deepEqual(
+    chair.items.map((i) => `${clockOf(i.from)}-${clockOf(i.end)}`),
+    ['11:00-11:15', '11:05-11:20', '16:00-16:45', '19:50-20:00'],
+  );
+  // What is free is worked out from the real times: the gap after the second starts at 11:15.
+  assert.ok(spans(chair.gaps).includes('11:15-12:45'));
 });
 
 test('barbers off that day, or away, are named instead of given a chair, unless customers are still booked with them', () => {
@@ -197,6 +239,21 @@ test('a gap offers its quarter hours, from the one now is in, with odd minutes a
   assert.deepEqual(gapSlots({ from: m('15:00'), to: m('16:30') }, 24 * 60 + 600), []);
 });
 
+test('a press in a gap opens the quarter hour under it, or the nearest one at either end', () => {
+  const m = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3));
+  // After a booking that ended at 5:10 pm: 5:15 takes the five minutes above it.
+  const slots = gapSlots({ from: m('17:10'), to: m('18:00') });
+  const pick = (clock: string) => clockOf(slotAt(slots, m(clock)).at);
+  assert.equal(pick('17:10'), '17:15');
+  assert.equal(pick('17:29'), '17:15');
+  assert.equal(pick('17:30'), '17:30');
+  assert.equal(pick('17:59'), '17:45');
+  // A press on the very edge, or a little outside it, still finds a time.
+  assert.equal(pick('17:00'), '17:15');
+  assert.equal(pick('18:00'), '17:45');
+  assert.equal(clockOf(slotAt(slots, m('17:37') + 0.6).at), '17:30', 'minutes need not be whole');
+});
+
 test('minutes into the day, on the shop’s clock, whatever the phone’s zone', () => {
   const now = Date.parse('2026-10-16T16:07:00+08:00');
   assert.equal(minutesInto(DAY, now, TZ), 16 * 60 + 7);
@@ -236,4 +293,23 @@ test('each booking is coloured by where it is in its day, and says so in words u
     (['now', 'toMark', 'done', 'noShow'] as const).map(statusWord),
     ['Now', 'Mark done?', 'Done', 'No-show'],
   );
+});
+
+test('a block says as much as fits, and never ends a line with a time cut short', () => {
+  const p = { name: 'Amir', detail: 'Beard trim', time: '10:00 am', clock: '10:00', word: 'No-show' };
+  const still = { ...p, word: null };
+  assert.deepEqual(blockText(0, p), { title: null, rows: [] });
+  assert.deepEqual(blockText(1, p), { title: 'Amir · No-show', rows: [] });
+  // A quarter hour has two lines: how it went, or the clock and the service when it is still to come.
+  assert.deepEqual(blockText(2, p), { title: 'Amir', rows: ['No-show'] });
+  assert.deepEqual(blockText(2, still), { title: 'Amir', rows: ['10:00 · Beard trim'] });
+  assert.deepEqual(blockText(2, { ...still, detail: null }), { title: 'Amir', rows: ['10:00 am'] });
+  assert.deepEqual(blockText(3, p), { title: 'Amir', rows: ['Beard trim', 'No-show'] });
+  assert.deepEqual(blockText(3, still), { title: 'Amir', rows: ['Beard trim', '10:00 am'] });
+  assert.deepEqual(blockText(4, p), { title: 'Amir', rows: ['Beard trim', '10:00 am', 'No-show'] });
+  assert.deepEqual(blockText(6, { ...still, detail: null }), { title: 'Amir', rows: ['10:00 am'] });
+  // No line has a status word followed by a time, where a narrow chair would cut the time off.
+  for (let lines = 0; lines < 6; lines++) {
+    for (const row of blockText(lines, p).rows) assert.doesNotMatch(row, /No-show · /);
+  }
 });
