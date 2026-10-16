@@ -4,7 +4,8 @@
 
 import type { Shop } from './types.ts';
 
-export type ShopPreview = Pick<Shop, 'slug' | 'name' | 'area' | 'address' | 'about'> & {
+export type ShopPreview = Pick<Shop, 'slug' | 'name' | 'area' | 'address' | 'about'> &
+  Partial<Pick<Shop, 'latitude' | 'longitude'>> & {
   rating_count: number;
   /** Average stars to one decimal; null with no reviews. */
   rating_avg: number | null;

@@ -2285,6 +2285,8 @@ begin
          = nearest, 'nearest first, then the shops without a location by name';
   select * into ali from find_shops(null, null, 1, 0, lat, lng);
   assert ali.name = 'Ali Cuts' and ali.distance_km between 0.5 and 0.55, 'Ali Cuts is about 500 m away: ' || ali.distance_km;
+  assert (ali.latitude, ali.longitude) = (select s.latitude, s.longitude from shops s where s.name = 'Ali Cuts'),
+    'with where the shop is, for Directions before its page loads';
   assert (select count(distinct distance_km) = 1 and min(distance_km) between 2.6 and 2.65
           from find_shops(null, null, 50, 0, lat, lng) where name in ('Kemas Cuts', 'Twin Cuts')),
     'next door is just as far';

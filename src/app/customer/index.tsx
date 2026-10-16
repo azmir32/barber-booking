@@ -32,7 +32,7 @@ import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice, localDateString } from '@/lib/time';
 import type { Shop } from '@/lib/types';
 
-type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'about'> & {
+type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'about' | 'latitude' | 'longitude'> & {
   from_price: number | null;
   barber_count: number;
   /** Today's first opening and last closing time, e.g. "10:00:00"; null when nobody works today. */

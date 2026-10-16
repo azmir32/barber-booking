@@ -133,6 +133,8 @@ export function findShops(args: Record<string, unknown>) {
         // round(sum / count, 1), null without any.
         rating_avg: s.rating_count ? Math.round(((s.rating_sum as number) * 10) / (s.rating_count as number)) / 10 : null,
         distance_km: km,
+        latitude: s.latitude ?? null,
+        longitude: s.longitude ?? null,
       };
     });
 }

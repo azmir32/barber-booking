@@ -586,7 +586,10 @@ returns table (
   next_free_at timestamptz,
   rating_count int,
   rating_avg numeric,
-  distance_km double precision
+  distance_km double precision,
+  -- Where the shop is, so Directions from its page go there before the rest of the page loads.
+  latitude double precision,
+  longitude double precision
 )
 language sql
 stable
@@ -600,9 +603,10 @@ as $$
   select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
          h.opens_today, h.closes_today, public.shop_next_free(p.id),
          p.rating_count, round(p.rating_sum::numeric / nullif(p.rating_count, 0), 1),
-         p.distance_km
+         p.distance_km, p.latitude, p.longitude
   from (
     select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone, s.rating_count, s.rating_sum,
+           s.latitude, s.longitude,
            (select min(v.price) from services v where v.shop_id = s.id and v.is_active) as from_price,
            (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active) as barber_count,
            case when p_lat between -90 and 90 and p_lng between -180 and 180

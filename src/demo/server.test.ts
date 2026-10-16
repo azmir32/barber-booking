@@ -197,7 +197,7 @@ test('Near me lists the nearest shops first, with how far each is', async () => 
   const listed = async (args: Record<string, unknown>) => {
     const { data, error } = await c.rpc('find_shops', { p_search: null, p_area: null, p_limit: 20, p_offset: 0, ...args });
     assert.equal(error, null);
-    return data as { slug: string; distance_km: number | null }[];
+    return data as { slug: string; distance_km: number | null; latitude: number | null; longitude: number | null }[];
   };
   const slugs = (list: { slug: string }[]) => list.map((s) => s.slug);
   const near = await listed(sungaiChua);
@@ -208,6 +208,8 @@ test('Near me lists the nearest shops first, with how far each is', async () => 
   );
   const ali = await shopBySlug(c, 'ali-barber');
   assert.equal(near[0].distance_km, kmBetween({ latitude: 2.9833, longitude: 101.7667 }, ali));
+  // Where the shop is too, for Directions before its page loads.
+  assert.deepEqual([near[0].latitude, near[0].longitude], [ali.latitude, ali.longitude]);
 
   // A page at a time, every shop once.
   const paged = [];
