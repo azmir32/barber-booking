@@ -345,8 +345,12 @@ test('a new shop is walked to its first booking, and the steps go once it is rea
   await expect(app.getByText('Get your shop ready')).toBeVisible();
   await expect(app.getByText('0 of 4 done')).toBeVisible();
   await expect(step('Add your services', 'not done yet')).toBeVisible();
-  await expect(step('Add your barbers and their hours', 'not done yet')).toContainText(
-    'Set Nizam’s working hours, so customers can pick a time.',
+  // Steps for later show their names only; what to do is still read out.
+  await expect(step('Add your barbers and their hours', 'not done yet')).toHaveAccessibleName(
+    /Set Nizam’s working hours, so customers can pick a time\.$/,
+  );
+  await expect(step('Add your services', 'not done yet')).toContainText(
+    'What you offer, with prices, so customers have something to book.',
   );
   await expect(step('Set where the shop is \\(optional\\)', 'not done yet')).toBeVisible();
   await expect(step('Go live', 'not done yet')).toBeVisible();

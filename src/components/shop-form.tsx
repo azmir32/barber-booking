@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRef, useState } from 'react';
+import { useRef, useState, type Ref } from 'react';
 import { Linking, Platform, View, type TextInput } from 'react-native';
 
 import { Button, Chip, ErrorText, Field, Row, T } from '@/components/ui';
@@ -46,12 +46,12 @@ const sixPlaces = (n: number) => Math.round(n * 1e6) / 1e6;
 export function ShopForm({
   shop,
   onSaved,
-  onLocationLayout,
+  locationRef,
 }: {
   shop?: Shop | null;
   onSaved: () => void;
   /** Where the location part sits in the form's parent, so a screen can scroll to it. */
-  onLocationLayout?: (y: number) => void;
+  locationRef?: Ref<View>;
 }) {
   const theme = useTheme();
   const { session, profile } = useAuth();
@@ -226,7 +226,7 @@ export function ShopForm({
         role="group"
         accessibilityLabel={t('Shop location')}
         style={{ gap: Spacing.sm }}
-        onLayout={onLocationLayout && ((e) => onLocationLayout(e.nativeEvent.layout.y))}>
+        ref={locationRef}>
         <T variant="label">{t('Shop location')}</T>
         {point ? (
           <>

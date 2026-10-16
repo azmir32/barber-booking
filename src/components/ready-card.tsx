@@ -151,7 +151,8 @@ function StepRow({
         <T variant={next ? 'label' : 'body'} style={next ? styles.nextTitle : step.done ? { color: theme.textSecondary } : null}>
           {text.title}
         </T>
-        <T variant="small">{text.detail}</T>
+        {/* Steps for later keep to their names, so the card stays short; their line is still read out. */}
+        {step.done || next ? <T variant="small">{text.detail}</T> : null}
       </View>
       <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
     </Pressable>

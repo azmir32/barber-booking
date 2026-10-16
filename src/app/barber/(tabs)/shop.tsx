@@ -29,6 +29,8 @@ import type { Shop } from '@/lib/types';
 
 // The booking link's buttons go two to a line, so four fit a phone without one left on its own.
 const linkAction: ViewStyle = { flexGrow: 1, flexBasis: '40%' };
+/** ScrollView's getInnerViewRef, its scrolled content: there on native and on the web, but missing from its types. */
+type ScrollWithContent = ScrollView & { getInnerViewRef?: () => View | null };
 
 function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' | 'danger' } {
   if (shop.subscription_status === 'active') return { label: t('Subscription active'), tone: 'success' };
@@ -80,7 +82,9 @@ export default function MyShop() {
   const [error, setError] = useState<string | null>(null);
   // Where the parts the ready card's steps scroll to sit on this screen.
   const scroll = useRef<ScrollView>(null);
-  const placed = useRef({ status: 0, link: 0, details: 0, location: 0 });
+  const statusRef = useRef<View>(null);
+  const linkRef = useRef<View>(null);
+  const locationRef = useRef<View>(null);
 
   if (!shop) return null;
   const link = bookingLink(shop.slug);
@@ -159,7 +163,16 @@ export default function MyShop() {
 
   /** Where each of the ready card's steps is done: another tab, a barber's hours, or further down here. */
   function openStep(id: StepId, setup = ready.setup) {
-    const scrollTo = (y: number) => scroll.current?.scrollTo({ y: Math.max(0, y - Spacing.lg), animated: true });
+    // Measured on the tap: on the web onLayout only follows a view's size, so it
+    // misses the parts below the card moving as its steps change.
+    const scrollTo = (target: View | null) => {
+      const content = (scroll.current as ScrollWithContent | null)?.getInnerViewRef?.();
+      if (target && content) {
+        target.measureLayout(content, (_x, y) =>
+          scroll.current?.scrollTo({ y: Math.max(0, y - Spacing.lg), animated: true }),
+        );
+      }
+    };
     switch (id) {
       case 'services':
         return router.push('/barber/services');
@@ -170,11 +183,11 @@ export default function MyShop() {
           : router.push('/barber/team');
       }
       case 'location':
-        return scrollTo(placed.current.details + placed.current.location);
+        return scrollTo(locationRef.current);
       case 'live':
-        return scrollTo(placed.current.status);
+        return scrollTo(statusRef.current);
       case 'share':
-        return scrollTo(placed.current.link);
+        return scrollTo(linkRef.current);
     }
   }
 
@@ -218,10 +231,7 @@ export default function MyShop() {
         />
       ) : null}
 
-      <View
-        onLayout={(e) => {
-          placed.current.status = e.nativeEvent.layout.y;
-        }}>
+      <View ref={statusRef}>
         <Card>
           <Row style={{ justifyContent: 'space-between' }}>
             <T variant="heading">
@@ -284,10 +294,7 @@ export default function MyShop() {
 
       <ClosedDaysCard shop={shop} />
 
-      <View
-        onLayout={(e) => {
-          placed.current.link = e.nativeEvent.layout.y;
-        }}>
+      <View ref={linkRef}>
         <Card>
           <T variant="heading">{t('Your booking link')}</T>
           <T selectable>{link}</T>
@@ -349,22 +356,10 @@ export default function MyShop() {
         </Card>
       </View>
 
-      <View
-        onLayout={(e) => {
-          placed.current.details = e.nativeEvent.layout.y;
-        }}>
-        <Section title={t('Shop details')}>
-          {/* Starts again from the server's details once they arrive, so saving never puts back last visit's. */}
-          <ShopForm
-            key={fresh ? shop.id : `${shop.id}-kept`}
-            shop={shop}
-            onSaved={reload}
-            onLocationLayout={(y) => {
-              placed.current.location = y;
-            }}
-          />
-        </Section>
-      </View>
+      <Section title={t('Shop details')}>
+        {/* Starts again from the server's details once they arrive, so saving never puts back last visit's. */}
+        <ShopForm key={fresh ? shop.id : `${shop.id}-kept`} shop={shop} onSaved={reload} locationRef={locationRef} />
+      </Section>
 
       <Section title={t('Account')}>
         <AccountPanel />
