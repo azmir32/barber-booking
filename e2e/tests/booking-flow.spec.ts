@@ -104,7 +104,8 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('Get your shop ready')).toBeVisible();
     await expect(page.getByText('0 of 4 done')).toBeVisible();
     await page.getByRole('tab', { name: /Bookings/ }).click();
-    await expect(page.getByText('Get ready for bookings')).toBeVisible();
+    // The Bookings tab points to those steps rather than listing its own.
+    await expect(page.getByText('Customers can book once your shop is live. The steps are on My shop.')).toBeVisible();
     await snap(page, '04-barber-bookings-empty');
 
     // Services: quick add a haircut.

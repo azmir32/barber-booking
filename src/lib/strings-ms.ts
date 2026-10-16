@@ -178,10 +178,6 @@ export const ms: Record<string, string> = {
   'Book again': 'Tempah lagi',
 
   // Barber: bookings for the day
-  'Get ready for bookings': 'Bersedia untuk menerima tempahan',
-  'Add your services and prices': 'Tambah servis dan harga anda',
-  'Check your barbers and working hours': 'Semak barber dan waktu kerja anda',
-  'Go live and share your booking link': 'Buka tempahan dan kongsi pautan tempahan anda',
   '+ Add booking or block time': '+ Tambah tempahan atau sekat masa',
   'No bookings': 'Tiada tempahan',
   'Share your booking link to fill this day.': 'Kongsi pautan tempahan anda untuk penuhkan hari tersebut.',
@@ -417,9 +413,6 @@ export const ms: Record<string, string> = {
   'Hi {who}, sorry, {shop} has to cancel your {service} on {day} at {time}. Reply here and we will find you another time.':
     'Hai {who}, maaf, {shop} terpaksa batalkan {service} anda pada {day} jam {time}. Balas di sini dan kami akan carikan masa lain untuk anda.',
   Change: 'Tukar',
-  'Looks right': 'Sudah betul',
-  'Closed on some days, or a break for Friday prayers? Tap Change.':
-    'Tutup pada hari tertentu, atau rehat untuk solat Jumaat? Tekan Tukar.',
 
   // Barber: adding walk-ins and blocking time, team
   'Other time': 'Masa lain',
@@ -1044,4 +1037,10 @@ export const ms: Record<string, string> = {
   'Blocked all day, {reason}, with {barber}': 'Disekat seharian, {reason}, bersama {barber}',
   'Nobody is working this day': 'Tiada sesiapa bekerja pada hari itu',
   '{name} isn’t working this day': '{name} tidak bekerja pada hari itu',
+
+  // Round 10, the Bookings tab points a shop that can't take bookings to My shop (barber/(tabs)/index.tsx)
+  'Customers can book once your shop is live. The steps are on My shop.':
+    'Pelanggan boleh menempah sebaik sahaja kedai anda dibuka untuk tempahan. Langkah-langkahnya ada di Kedai saya.',
+  'Customers can’t book right now': 'Pelanggan tidak boleh menempah sekarang',
+  'My shop says what to do.': 'Kedai saya menerangkan apa yang perlu dibuat.',
 };

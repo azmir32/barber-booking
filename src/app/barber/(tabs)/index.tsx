@@ -35,7 +35,6 @@ import { chairsDay, isWholeDay } from '@/lib/chairs';
 import { dateRange } from '@/lib/closures';
 import { confirmAction } from '@/lib/confirm';
 import { WALK_IN } from '@/lib/customers';
-import { summarizeWeek } from '@/lib/hours';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { ago, changeLine, changeTag, moreText, seenMark, type ShopChange, type ShopChanges } from '@/lib/news';
@@ -105,7 +104,6 @@ const NOTICE_MS = 8000;
 /** Whose bookings this phone shows, so each barber's phone opens on their own queue. */
 const filterKey = (shopId: string) => `potongku.barberFilter.${shopId}`;
 /** Set once the owner has looked at the hours every new barber starts with. */
-const hoursCheckedKey = (shopId: string) => `potongku.hoursChecked.${shopId}`;
 
 /** The day as a list in time order, or as chairs side by side. */
 type DayView = 'list' | 'chairs';
@@ -156,8 +154,6 @@ export default function BarberBookings() {
     setError(null);
     setRefreshError(null);
   }
-  const [hoursChecked, setHoursChecked] = useState(false);
-  const [hoursOpen, setHoursOpen] = useState(false);
   const [showFinished, setShowFinished] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [noticeHeight, setNoticeHeight] = useState(0);
@@ -200,9 +196,6 @@ export default function BarberBookings() {
     AsyncStorage.getItem(filterKey(shopId))
       // A barber picked on the Barbers tab meanwhile comes first.
       .then((saved) => setBarberId((current) => current ?? (saved || null)))
-      .catch(() => {});
-    AsyncStorage.getItem(hoursCheckedKey(shopId))
-      .then((saved) => setHoursChecked(saved === '1'))
       .catch(() => {});
     AsyncStorage.getItem(dayViewKey(shopId))
       .then((saved) => {
@@ -537,17 +530,14 @@ export default function BarberBookings() {
     AsyncStorage.setItem(filterKey(shop.id), id ?? '').catch(() => {});
   };
 
-  const confirmHours = () => {
-    setHoursChecked(true);
-    AsyncStorage.setItem(hoursCheckedKey(shop.id), '1').catch(() => {});
-  };
-
   // Setup -------------------------------------------------------------------
   const activeBarbers = barbers.filter((b) => b.is_active);
   const hasHours = activeBarbers.some((b) => b.working_hours.length > 0);
-  // Every new barber starts with default hours, so the step only ticks once the owner has seen them.
-  const hoursDone = activeBarbers.length > 0 && hasHours && hoursChecked;
   const ready = services !== null && services > 0 && activeBarbers.length > 0 && hasHours && shop.is_published;
+  const notTaking =
+    shop.published_at == null
+      ? { title: t('Get your shop ready'), body: t('Customers can book once your shop is live. The steps are on My shop.') }
+      : { title: t('Customers can’t book right now'), body: t('My shop says what to do.') };
 
   // The day's list ---------------------------------------------------------
   const loaded = loadedDay === day;
@@ -800,28 +790,20 @@ export default function BarberBookings() {
         />
       ) : null}
 
+      {/* The steps themselves are on My shop, so a new owner never sees two lists. */}
       {services !== null && !ready ? (
-        <Card>
-          <T variant="heading">{t('Get ready for bookings')}</T>
-          <SetupStep
-            done={services > 0}
-            label={t('Add your services and prices')}
-            onPress={() => router.push('/barber/services')}
-          />
-          <SetupStep
-            done={hoursDone}
-            label={t('Check your barbers and working hours')}
-            onPress={() => (activeBarbers.length ? setHoursOpen(true) : router.push('/barber/team'))}>
-            {/* Opens by itself once it is the next step, so new owners see one thing at a time. */}
-            {activeBarbers.length > 0 && (hoursOpen || services > 0) ? (
-              <HoursCheck barbers={activeBarbers} onConfirm={confirmHours} />
-            ) : null}
-          </SetupStep>
-          <SetupStep
-            done={shop.is_published}
-            label={t('Go live and share your booking link')}
-            onPress={() => router.push('/barber/shop')}
-          />
+        <Card
+          style={styles.compactCard}
+          onPress={() => router.push('/barber/shop')}
+          accessibilityLabel={`${notTaking.title}: ${notTaking.body}`}>
+          <View style={styles.compactRow}>
+            <Ionicons name="storefront-outline" size={22} color={theme.tint} />
+            <View style={styles.info}>
+              <T variant="label">{notTaking.title}</T>
+              <T variant="small">{notTaking.body}</T>
+            </View>
+            <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+          </View>
         </Card>
       ) : null}
 
@@ -1411,56 +1393,6 @@ function DaySkeleton() {
   );
 }
 
-function SetupStep({
-  done,
-  label,
-  onPress,
-  children,
-}: {
-  done: boolean;
-  label: string;
-  onPress: () => void;
-  /** Shown under the step in place of its Go button while it is not done. */
-  children?: ReactNode;
-}) {
-  const detail = done ? null : children;
-  return (
-    <View style={styles.list}>
-      <Row style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
-        <T style={{ flex: 1 }}>
-          {done ? '✓ ' : '○ '}
-          {label}
-        </T>
-        {done || detail ? null : <Button title={t('Go')} variant="secondary" onPress={onPress} />}
-      </Row>
-      {detail}
-    </View>
-  );
-}
-
-/** Each barber's week, so the owner checks the hours a new barber starts with instead of us ticking them. */
-function HoursCheck({ barbers, onConfirm }: { barbers: BarberWithHours[]; onConfirm: () => void }) {
-  return (
-    <View style={styles.hoursCheck}>
-      {barbers.map((b) => (
-        <Row key={b.id} style={styles.noWrap}>
-          <View style={{ flex: 1 }}>
-            <T variant="label">{b.name}</T>
-            <T variant="small">{summarizeWeek(b.working_hours)}</T>
-          </View>
-          <Button
-            title={t('Change')}
-            variant="ghost"
-            onPress={() => router.push({ pathname: '/barber/hours/[id]', params: { id: b.id } })}
-          />
-        </Row>
-      ))}
-      <T variant="small">{t('Closed on some days, or a break for Friday prayers? Tap Change.')}</T>
-      <Button title={t('Looks right')} variant="secondary" onPress={onConfirm} />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   list: { gap: Spacing.sm },
   dayHeader: { gap: Spacing.xs },
@@ -1483,7 +1415,6 @@ const styles = StyleSheet.create({
   period: { fontSize: 13, lineHeight: 18, fontWeight: '600' },
   info: { flex: 1, gap: 2 },
   fold: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 48 },
-  hoursCheck: { gap: Spacing.sm, paddingLeft: Spacing.lg },
   overlay: { position: 'absolute', left: 0, right: 0, bottom: 0, pointerEvents: 'box-none' },
   overlayInner: {
     width: '100%',
