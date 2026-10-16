@@ -352,6 +352,16 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText(`Day off · ${barber.name}`)).toBeVisible();
     // The only barber is off, so the day strip says the shop is closed then.
     await expect(choice(page, closedChip(2))).toBeChecked();
+    // As chairs, the day blocked is named above them and opens its block, so it can be taken off from there too.
+    await choice(page, 'Chairs').click();
+    const blockedDay = button(page, `Blocked all day, Day off, with ${barber.name}`);
+    await blockedDay.click();
+    const actions = page.getByRole('dialog', { name: `Blocked all day, Day off, with ${barber.name}` });
+    await expect(actions.getByRole('heading', { name: `Whole day · ${barber.name}` })).toBeFocused();
+    await expect(actions.getByRole('button', { name: 'Remove block', exact: true })).toBeVisible();
+    await actions.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(blockedDay).toBeFocused();
+    await choice(page, 'List').click();
 
     // Pak Abu is on the customer list now: booked, so not due, and Ben's
     // cancelled booking doesn't make him a customer.

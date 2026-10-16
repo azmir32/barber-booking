@@ -410,7 +410,6 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
           ref={blockRef(b.id)}
           name={b.is_block ? t('Blocked') : nameOf(b)}
           detail={b.is_block ? (b.service_name === 'Blocked' ? null : b.service_name) : b.service_name}
-          time={formatTime(b.starts_at, tz)}
           clock={formatClockOnly(b.starts_at, tz)}
           status={status}
           label={bookingLabel(b, nameOf, barber, tz, now)}
@@ -513,7 +512,6 @@ function ChairBlock({
   ref,
   name,
   detail,
-  time,
   clock,
   status,
   label,
@@ -526,8 +524,7 @@ function ChairBlock({
   ref: Ref<View>;
   name: string;
   detail: string | null;
-  time: string;
-  /** The time without am or pm, for beside other words. */
+  /** When it starts, without am or pm: the time column says which. */
   clock: string;
   status: ChairStatus;
   label: string;
@@ -542,7 +539,7 @@ function ChairBlock({
   // Lines of 18pt inside the block's gap and padding: a quarter hour has two, half an hour four.
   const lines = Math.floor((height - 2 - 2 * BLOCK_PADDING) / 18);
   const sub = status === 'done' || status === 'noShow' ? theme.textSecondary : theme.text;
-  const { title, rows } = blockText(lines, { name, detail, time, clock, word: statusWord(status) });
+  const { title, rows } = blockText(lines, { name, detail, clock, word: statusWord(status) });
   return (
     <Pressable
       ref={ref}

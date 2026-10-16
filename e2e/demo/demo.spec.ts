@@ -1061,24 +1061,50 @@ test('the barber sees the day as chairs side by side, opens a booking from there
     app.getByRole('group', { name: `${other}’s chair` }).or(app.getByText(new RegExp(`^Off: ${other}`))),
   ).toBeVisible();
   expect(await asked(page, '/rest/v1/bookings')).toBe(0);
+  // Nothing a keyboard can reach is hidden from screen readers (free time is one stop, not one per quarter hour).
+  await expect(app.locator('[aria-hidden="true"][tabindex="0"], [aria-hidden="true"] [tabindex="0"]')).toHaveCount(0);
   await snap(page, 'demo-34-chairs');
 
-  // A booking opens the same actions as its row in the list.
+  // A booking opens the same actions as its row in the list, as a dialog that takes focus.
   await hakim.click();
-  await expect(app.getByText(`4:30 pm–5:15 pm · ${barber}`)).toBeVisible();
-  await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
-  await expect(button(app, 'More actions for Hakim')).toBeVisible();
+  const actions = app.getByRole('dialog', { name: `Hakim, Skin fade, 4:30 pm to 5:15 pm, with ${barber}` });
+  await expect(actions.getByRole('heading', { name: `4:30 pm–5:15 pm · ${barber}` })).toBeFocused();
+  await expect(button(actions, 'Remind Hakim on WhatsApp')).toBeVisible();
+  await expect(button(actions, 'More actions for Hakim')).toBeVisible();
   await snap(page, 'demo-35-chairs-booking');
-  await button(app, 'Close').click();
-  await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
+  await button(actions, 'Close').click();
+  await expect(actions).toHaveCount(0);
+  await expect(hakim).toBeFocused();
 
-  // Free time after Hakim: its first quarter hour opens Add to the day with that barber and time.
-  await chair
-    .getByRole('button', { name: new RegExp(`^Free with ${barber}, 5:15 pm to \\d{1,2}:\\d{2} pm\\. Add a booking$`) })
-    .click({ position: { x: 24, y: 8 } });
+  // Scrolled down, the names stay on top and take their own taps: Hakim's block under them can't be hit.
+  const frame = (await page.locator('#app').boundingBox())!;
+  const before = (await hakim.boundingBox())!;
+  await page.mouse.move(frame.x + frame.width / 2, frame.y + frame.height / 2);
+  await page.mouse.wheel(0, before.y - frame.y - 16);
+  const pinned = { x: before.x - frame.x + before.width / 2, y: 30 };
+  await expect
+    .poll(() =>
+      app.locator('body').evaluate((_, { x, y }) => {
+        const hit = document.elementFromPoint(x, y);
+        const pressable = hit?.closest('[role="button"]');
+        return { names: hit?.closest('[aria-hidden="true"]')?.textContent ?? '', button: pressable ? (pressable.getAttribute('aria-label') ?? 'a button') : null };
+      }, pinned),
+    )
+    .toEqual({ names: expect.stringContaining(barber), button: null });
+  const under = (await hakim.boundingBox())!;
+  expect(under.y - frame.y).toBeLessThan(pinned.y);
+  expect(under.y + under.height - frame.y).toBeGreaterThan(pinned.y);
+
+  // Free time after Hakim: the quarter hour pressed opens Add to the day with that barber and time.
+  const free = chair.getByRole('button', {
+    name: new RegExp(`^Free with ${barber}, 5:15 pm to \\d{1,2}:\\d{2} pm\\. Add a booking$`),
+  });
+  await free.scrollIntoViewIfNeeded();
+  // Its second quarter hour: the gap starts at 5:15 and each quarter hour is 44 high.
+  await free.click({ position: { x: 24, y: 44 + 22 } });
   await expect(app.getByRole('radiogroup', { name: 'Barber' }).getByRole('radio', { name: barber, exact: true })).toBeChecked();
   await expect(
-    app.getByRole('radiogroup', { name: `Free times for ${barber}` }).getByRole('radio', { name: '5:15 pm', exact: true }),
+    app.getByRole('radiogroup', { name: `Free times for ${barber}` }).getByRole('radio', { name: '5:30 pm', exact: true }),
   ).toBeChecked();
   await snap(page, 'demo-36-chairs-add');
 

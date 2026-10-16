@@ -234,22 +234,23 @@ export function statusWord(status: ChairStatus): string | null {
 
 /**
  * What a booking's block says, in as many lines as its height has room for:
- * who, then what, when and how it went. Two words share a line only when the
- * second can lose its end: a narrow chair cuts lines off, and a cut time
- * misleads ("No-show · 1…" reads as one o'clock). Beside other words the time
- * is the clock alone ("4:30"), as the time column says am or pm.
+ * who, then what, when and how it went. The time is the clock alone ("4:30",
+ * "12.00"), like the now line's, as the time column says am or pm and "12.00
+ * tengah hari" would not fit a narrow chair. Two words share a line only when
+ * the second can lose its end: a cut time misleads ("No-show · 1…" reads as
+ * one o'clock).
  */
 export function blockText(
   lines: number,
-  p: { name: string; detail: string | null; time: string; clock: string; word: string | null },
+  p: { name: string; detail: string | null; clock: string; word: string | null },
 ): { title: string | null; rows: string[] } {
   if (lines < 1) return { title: null, rows: [] };
   if (lines === 1) return { title: p.word ? `${p.name} · ${p.word}` : p.name, rows: [] };
   const rows =
     lines === 2
-      ? [p.word ?? (p.detail ? `${p.clock} · ${p.detail}` : p.time)]
+      ? [p.word ?? (p.detail ? `${p.clock} · ${p.detail}` : p.clock)]
       : lines === 3
-        ? [p.detail, p.word ?? p.time]
-        : [p.detail, p.time, p.word];
+        ? [p.detail, p.word ?? p.clock]
+        : [p.detail, p.clock, p.word];
   return { title: p.name, rows: rows.filter((r): r is string => Boolean(r)) };
 }

@@ -296,18 +296,18 @@ test('each booking is coloured by where it is in its day, and says so in words u
 });
 
 test('a block says as much as fits, and never ends a line with a time cut short', () => {
-  const p = { name: 'Amir', detail: 'Beard trim', time: '10:00 am', clock: '10:00', word: 'No-show' };
+  const p = { name: 'Amir', detail: 'Beard trim', clock: '10:00', word: 'No-show' };
   const still = { ...p, word: null };
   assert.deepEqual(blockText(0, p), { title: null, rows: [] });
   assert.deepEqual(blockText(1, p), { title: 'Amir · No-show', rows: [] });
   // A quarter hour has two lines: how it went, or the clock and the service when it is still to come.
   assert.deepEqual(blockText(2, p), { title: 'Amir', rows: ['No-show'] });
   assert.deepEqual(blockText(2, still), { title: 'Amir', rows: ['10:00 · Beard trim'] });
-  assert.deepEqual(blockText(2, { ...still, detail: null }), { title: 'Amir', rows: ['10:00 am'] });
+  assert.deepEqual(blockText(2, { ...still, detail: null }), { title: 'Amir', rows: ['10:00'] });
   assert.deepEqual(blockText(3, p), { title: 'Amir', rows: ['Beard trim', 'No-show'] });
-  assert.deepEqual(blockText(3, still), { title: 'Amir', rows: ['Beard trim', '10:00 am'] });
-  assert.deepEqual(blockText(4, p), { title: 'Amir', rows: ['Beard trim', '10:00 am', 'No-show'] });
-  assert.deepEqual(blockText(6, { ...still, detail: null }), { title: 'Amir', rows: ['10:00 am'] });
+  assert.deepEqual(blockText(3, still), { title: 'Amir', rows: ['Beard trim', '10:00'] });
+  assert.deepEqual(blockText(4, p), { title: 'Amir', rows: ['Beard trim', '10:00', 'No-show'] });
+  assert.deepEqual(blockText(6, { ...still, detail: null }), { title: 'Amir', rows: ['10:00'] });
   // No line has a status word followed by a time, where a narrow chair would cut the time off.
   for (let lines = 0; lines < 6; lines++) {
     for (const row of blockText(lines, p).rows) assert.doesNotMatch(row, /No-show · /);
