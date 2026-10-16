@@ -441,7 +441,7 @@ test('once the shop has been called ready, its steps never come back', async ({ 
 
   // It stays until Got it, coming back to My shop too.
   await app.getByRole('tab', { name: /Services/ }).click();
-  await expect(app.getByText('Your menu')).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Your menu' })).toBeVisible();
   await app.getByRole('tab', { name: /My shop/ }).click();
   await expect(app.getByText('Your shop is ready.')).toBeVisible();
 
@@ -463,8 +463,8 @@ test('a barber set off all week stays off when their hours are opened again', as
   const app = await open(page);
   await button(app, 'Try as a barber').click();
   await app.getByRole('tab', { name: /Barbers/ }).click();
-  await expect(app.getByText('Danial', { exact: true })).toBeVisible();
   // Ali, then Danial.
+  await expect(button(app, 'Hours')).toHaveCount(2);
   await button(app, 'Hours').nth(1).click();
   await expect(app.getByLabel('Barber name', { exact: true })).toHaveValue('Danial');
   for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']) {
