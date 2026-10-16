@@ -971,7 +971,7 @@ export const ms: Record<string, string> = {
   // components/ready-card.tsx, lib/ready.ts, the database's go-live check)
   'Add a barber with working hours before you go live, so customers can pick a time.':
     'Tambah barber yang ada waktu kerja dahulu sebelum buka tempahan, supaya pelanggan boleh pilih masa.',
-  'Get your shop ready': 'Sediakan kedai anda',
+  'Get your shop ready': 'Siapkan kedai anda',
   '{done} of {total} done': '{done} daripada {total} selesai',
   'Loading your steps': 'Memuatkan langkah anda',
   'Couldn’t load your steps. Check your connection and try again.':

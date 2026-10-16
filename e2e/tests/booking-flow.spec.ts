@@ -100,7 +100,10 @@ test.describe.serial('booking flow', () => {
     await field(page, 'Address').fill('No. 12, Jalan Reko, Kajang');
     await button(page, 'Create my shop').click();
 
-    // Onboarding checklist on the bookings tab.
+    // Lands on My shop, with the steps to the first booking.
+    await expect(page.getByText('Get your shop ready')).toBeVisible();
+    await expect(page.getByText('0 of 4 done')).toBeVisible();
+    await page.getByRole('tab', { name: /Bookings/ }).click();
     await expect(page.getByText('Get ready for bookings')).toBeVisible();
     await snap(page, '04-barber-bookings-empty');
 
@@ -111,13 +114,17 @@ test.describe.serial('booking flow', () => {
     await expect(page.getByText('30 min', { exact: true })).toBeVisible();
     await snap(page, '05-services');
 
-    // Barbers: the owner got the first chair; open Sundays too.
+    // Barbers: the owner got the first chair, with hours to set; Mon to Sat is
+    // filled in to start from. Open Sundays too.
     await page.getByRole('tab', { name: /Barbers/ }).click();
     await expect(page.getByText(barber.name, { exact: true })).toBeVisible();
-    await expect(page.getByText('Mon–Sat · 10:00 am–8:00 pm')).toBeVisible();
+    await expect(page.getByText('No hours set, so not bookable')).toBeVisible();
     await snap(page, '06-barbers');
     await button(page, 'Hours').click();
     await expect(field(page, 'Barber name')).toBeVisible();
+    await expect(
+      page.getByText('These are suggested hours, not saved yet. Change them to yours, then tap Save hours.'),
+    ).toBeVisible();
     await snap(page, '07-hours');
     await page.getByRole('group', { name: 'Sun' }).getByRole('radio', { name: 'Open' }).click();
     await button(page, '+ Add break (e.g. Friday prayers)').click();
@@ -138,8 +145,10 @@ test.describe.serial('booking flow', () => {
     await page.getByRole('tab', { name: /My shop/ }).click();
     await expect(page.getByText('Not live yet')).toBeVisible();
     await expect(page.getByText(/Free trial: 30 days left/)).toBeVisible();
+    await expect(page.getByText('2 of 4 done')).toBeVisible();
     await button(page, 'Go live').click();
     await expect(page.getByText('You are live')).toBeVisible();
+    await expect(page.getByText('3 of 4 done')).toBeVisible();
     await snap(page, '08-my-shop');
 
     // A poster for the counter, so walk-ins can scan the QR code and book. Not printed here.
@@ -149,6 +158,10 @@ test.describe.serial('booking flow', () => {
     await snap(page, '08b-poster');
     await page.getByLabel('Go back').click();
     await expect(page.getByText('You are live')).toBeVisible();
+    // The poster was the last step: the shop is ready, which is said once.
+    await expect(page.getByText('Your shop is ready.')).toBeVisible();
+    await button(page, 'Got it').click();
+    await expect(page.getByText('Get your shop ready')).toHaveCount(0);
 
     // Takings: nothing booked yet, so the summary says how it fills up.
     await page.getByRole('link', { name: 'Takings: This week: no cuts marked done yet' }).click();

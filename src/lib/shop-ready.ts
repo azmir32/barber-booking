@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { appCache } from '@/lib/app-cache';
 import { useAuth } from '@/lib/auth';
@@ -44,29 +44,29 @@ export function useShopReady(shop: Shop | null) {
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  // Read on each visit, so a card that said the shop is ready is gone on coming back.
   // Seen here before the shop first went live: it stays through going live, for the last step.
-  const neverLive = shop != null && shop.published_at == null;
-  useFocusEffect(
-    useCallback(() => {
-      if (!shopId) return;
-      let active = true;
-      AsyncStorage.getItem(readyKey(shopId))
-        .catch(() => null)
-        .then((json) => {
-          if (!active) return;
-          let value = parseMemory(json);
-          if (neverLive && !value.started && !value.closed) {
-            value = { ...value, started: true };
-            AsyncStorage.setItem(readyKey(shopId), JSON.stringify(value)).catch(() => {});
-          }
-          setMemory((m) => ({ shopId, value: m && m.shopId === shopId ? joined(m.value, value) : value }));
-        });
-      return () => {
-        active = false;
-      };
-    }, [shopId, neverLive]),
-  );
+  const neverLive = useRef(false);
+  useEffect(() => {
+    neverLive.current = shop != null && shop.published_at == null;
+  });
+  useEffect(() => {
+    if (!shopId) return;
+    let active = true;
+    AsyncStorage.getItem(readyKey(shopId))
+      .catch(() => null)
+      .then((json) => {
+        if (!active) return;
+        let value = parseMemory(json);
+        if (neverLive.current && !value.started && !value.closed) {
+          value = { ...value, started: true };
+          AsyncStorage.setItem(readyKey(shopId), JSON.stringify(value)).catch(() => {});
+        }
+        setMemory((m) => ({ shopId, value: m && m.shopId === shopId ? joined(m.value, value) : value }));
+      });
+    return () => {
+      active = false;
+    };
+  }, [shopId]);
 
   const mem = memory && memory.shopId === shopId ? memory.value : null;
   const showsCard = Boolean(shop && mem && readyCardShows(shop, mem));
@@ -111,8 +111,8 @@ export function useShopReady(shop: Shop | null) {
     }, [needed, load]),
   );
 
-  // Every step done, by the server's answer: the card says so on this visit,
-  // and the phone already forgets it, so it is gone the next time.
+  // Every step done, by the server's answer: the card says so until Got it,
+  // and the phone already forgets it, so it is gone the next time the app opens.
   const saidReady = Boolean(showsCard && fresh && shop && setup && mem && readyProgress(readySteps(shop, setup, mem)).ready);
   useEffect(() => {
     if (saidReady && shopId && mem) {
