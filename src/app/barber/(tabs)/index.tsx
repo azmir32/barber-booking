@@ -2,10 +2,11 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Animated, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BookingStatusBadge } from '@/components/booking-status';
+import { ChairNames, Chairs, ChairsSkeleton, type ChairsFrame } from '@/components/chairs';
 import { DayPicker } from '@/components/day-picker';
 import {
   Badge,
@@ -30,6 +31,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { appCache } from '@/lib/app-cache';
 import { useAuth } from '@/lib/auth';
 import { cacheKey } from '@/lib/cache';
+import { chairsDay } from '@/lib/chairs';
 import { dateRange } from '@/lib/closures';
 import { confirmAction } from '@/lib/confirm';
 import { WALK_IN } from '@/lib/customers';
@@ -105,6 +107,13 @@ const filterKey = (shopId: string) => `potongku.barberFilter.${shopId}`;
 /** Set once the owner has looked at the hours every new barber starts with. */
 const hoursCheckedKey = (shopId: string) => `potongku.hoursChecked.${shopId}`;
 
+/** The day as a list in time order, or as chairs side by side. */
+type DayView = 'list' | 'chairs';
+/** Which this phone shows, kept for next time. */
+const dayViewKey = (shopId: string) => `potongku.dayView.${shopId}`;
+/** The same, for this visit, so coming back to the tab doesn't flash the list first. */
+const dayViews: Record<string, DayView> = {};
+
 export default function BarberBookings() {
   const { shop } = useMyShop();
   const uid = useAuth().session?.user.id;
@@ -171,6 +180,14 @@ export default function BarberBookings() {
   const focusPending = useRef(false);
   const focusRef = useRef<View>(null);
   const dayHeaderRef = useRef<View>(null);
+  const [dayView, setDayView] = useState<DayView>(() => (shopId && dayViews[shopId]) || 'list');
+  // The booking whose actions are open over the chairs, on its day.
+  const [picked, setPicked] = useState<{ id: string; day: string } | null>(null);
+  const [chairsX] = useState(() => new Animated.Value(0));
+  const [chairsFrame, setChairsFrame] = useState<ChairsFrame | null>(null);
+  // Scrolled past the chairs' row of names, so a copy stays at the top.
+  const [namesStuck, setNamesStuck] = useState(false);
+  const [panelHeight, setPanelHeight] = useState(0);
 
   useEffect(() => {
     if (!shopId) return;
@@ -181,7 +198,22 @@ export default function BarberBookings() {
     AsyncStorage.getItem(hoursCheckedKey(shopId))
       .then((saved) => setHoursChecked(saved === '1'))
       .catch(() => {});
+    AsyncStorage.getItem(dayViewKey(shopId))
+      .then((saved) => {
+        // Unless the switch was tapped meanwhile.
+        if ((saved === 'list' || saved === 'chairs') && !dayViews[shopId]) {
+          dayViews[shopId] = saved;
+          setDayView(saved);
+        }
+      })
+      .catch(() => {});
   }, [shopId]);
+
+  const onChairsFrame = useCallback((frame: ChairsFrame) => {
+    setChairsFrame(frame);
+    setNamesStuck(scrollY.current > frame.top);
+  }, []);
+  const scrollContentTo = useCallback((y: number) => scroller.current?.scrollTo({ y, animated: false }), []);
 
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
 
@@ -483,6 +515,14 @@ export default function BarberBookings() {
     setDay(next);
     setError(null);
     setRefreshError(null);
+    setPicked((p) => (p?.day === next ? p : null));
+  };
+
+  const pickView = (next: DayView) => {
+    dayViews[shop.id] = next;
+    setDayView(next);
+    setPicked(null);
+    AsyncStorage.setItem(dayViewKey(shop.id), next).catch(() => {});
   };
 
   const pickBarber = (id: string | null) => {
@@ -527,12 +567,16 @@ export default function BarberBookings() {
   const started = (b: Booking) => new Date(b.starts_at).getTime() <= now;
   const ended = (b: Booking) => new Date(b.ends_at).getTime() <= now;
   // Blocks are never marked, so they count as finished once their time is over.
-  const finished = shown.filter((b) => b.status !== 'confirmed' || (b.is_block && ended(b)));
-  const open = shown.filter((b) => !finished.includes(b));
+  const isFinished = (b: ShopBooking) => b.status !== 'confirmed' || (b.is_block && ended(b));
+  const chairs = dayView === 'chairs';
+  // The list's sections; Chairs lays out the same bookings its own way.
+  const listed = chairs ? [] : shown;
+  const finished = listed.filter(isFinished);
+  const open = listed.filter((b) => !finished.includes(b));
   const needsMarking = open.filter(ended);
   const inChair = open.filter((b) => started(b) && !ended(b));
   const upcoming = open.filter((b) => !started(b));
-  const onlyFinished = finished.length === shown.length;
+  const onlyFinished = finished.length === listed.length;
   const finishedOpen = showFinished || onlyFinished;
   const finishedTitle = finished.every((b) => b.status === 'cancelled')
     ? t('Cancelled ({count})', { count: finished.length })
@@ -556,8 +600,21 @@ export default function BarberBookings() {
       pathname: '/barber/new-booking',
       params: { day, barber: filterId ?? '', kind: services === 0 ? 'block' : 'booking' },
     });
+  /** From free time in a chair: that barber, at the quarter hour tapped. */
+  const addAt = (barber: string, time: string) =>
+    router.push({
+      pathname: '/barber/new-booking',
+      params: { day, barber, time, kind: services === 0 ? 'block' : 'booking' },
+    });
+  // The day as chairs, for the barbers shown; null while it shows as a list, isn't loaded or is closed.
+  const grid =
+    chairs && loaded && !closure
+      ? chairsDay(day, filterId ? barbers.filter((b) => b.id === filterId) : barbers, shown, tz)
+      : null;
+  // The booking whose actions are open over the chairs; gone with the day or once it leaves it.
+  const pickedBooking = grid && picked?.day === day ? (kept.find((b) => b.id === picked.id) ?? null) : null;
   // The floating button would cover the bar, and the button under the date already shows near the top.
-  const showFab = canAdd && !notice && pastAddButton;
+  const showFab = canAdd && !notice && !pickedBooking && pastAddButton;
 
   // Cards the customer booked or moved since this phone last looked say so until Got it.
   const seenUpTo = seenMark(seen, news);
@@ -571,33 +628,52 @@ export default function BarberBookings() {
       row
     );
 
-  const renderOpen = (b: ShopBooking) =>
-    focusable(
-      b,
-      b.is_block ? (
-        <Card key={b.id} style={styles.compactCard}>
-          <BlockRow booking={b} tz={tz} onRemove={() => cancel(b)} />
-        </Card>
-      ) : (
-        <LiveCard
-          key={b.id}
-          booking={b}
-          tz={tz}
-          now={now}
-          showBarber={showBarber}
-          away={awayIds.has(b.barber_id)}
-          held={held}
-          onMark={(status) => mark([b], status)}
-          onCancel={() => cancel(b)}
-          onMove={() => router.push({ pathname: '/barber/move-booking', params: { id: b.id } })}
-          onWhatsApp={() => whatsapp(b)}
-          unsaved={unsaved[b.id] && awaitsReminder(b, now) ? unsaved[b.id] : undefined}
-          onRemind={() => remind(b)}
-          onSaveReminder={() => saveReminder(b, unsaved[b.id].startsAt)}
-          onUnremind={() => unremind(b)}
-          tag={changeTag(b, seenUpTo, todayStart)}
-        />
-      ),
+  const renderOpen = (b: ShopBooking) => focusable(b, openCard(b));
+
+  /**
+   * A booking still to come or to mark, or time still blocked, with everything that can be done to it.
+   * Over the chairs the barber is said above it, so it leaves out their badge.
+   */
+  const openCard = (b: ShopBooking, withBarber = showBarber) =>
+    b.is_block ? (
+      <Card key={b.id} style={styles.compactCard}>
+        <BlockRow booking={b} tz={tz} onRemove={() => cancel(b)} />
+      </Card>
+    ) : (
+      <LiveCard
+        key={b.id}
+        booking={b}
+        tz={tz}
+        now={now}
+        showBarber={withBarber}
+        away={awayIds.has(b.barber_id)}
+        held={held}
+        onMark={(status) => mark([b], status)}
+        onCancel={() => cancel(b)}
+        onMove={() => router.push({ pathname: '/barber/move-booking', params: { id: b.id } })}
+        onWhatsApp={() => whatsapp(b)}
+        unsaved={unsaved[b.id] && awaitsReminder(b, now) ? unsaved[b.id] : undefined}
+        onRemind={() => remind(b)}
+        onSaveReminder={() => saveReminder(b, unsaved[b.id].startsAt)}
+        onUnremind={() => unremind(b)}
+        tag={changeTag(b, seenUpTo, todayStart)}
+      />
+    );
+
+  /** A booking that is done, a no-show or cancelled, or time blocked that is over. */
+  const finishedRow = (b: ShopBooking, withBarber = showBarber) =>
+    b.is_block ? (
+      <BlockRow key={b.id} booking={b} tz={tz} />
+    ) : (
+      <FinishedRow
+        key={b.id}
+        booking={b}
+        tz={tz}
+        showBarber={withBarber}
+        held={held}
+        onRestore={() => restore([b])}
+        onWhatsApp={() => (b.status === 'cancelled' && cancelledHere.has(b.id) ? sorry(b) : whatsapp(b))}
+      />
     );
 
   const closeNotice = () => showNotice(null);
@@ -614,8 +690,30 @@ export default function BarberBookings() {
     if (target === day) await load();
     focusPending.current = true;
     setFocus({ id: c.booking_id, day: target });
+    // In its chair, with its actions open (a cancelled one's WhatsApp too), over the time it leaves free.
+    if (chairs) setPicked({ id: c.booking_id, day: target });
     pickDay(target);
   };
+
+  /** Over the chairs: the tapped booking's time and barber, and the same card the list has for it. */
+  const panel = pickedBooking ? (
+    <View
+      onLayout={(e) => setPanelHeight(e.nativeEvent.layout.height)}
+      style={[styles.panel, { backgroundColor: theme.background, borderColor: theme.border }]}>
+      <View style={styles.panelHead}>
+        <T variant="label" style={styles.info}>
+          {noBreak(`${formatTime(pickedBooking.starts_at, tz)}–${formatTime(pickedBooking.ends_at, tz)}`)}
+          {pickedBooking.barbers ? ` · ${pickedBooking.barbers.name}` : ''}
+        </T>
+        <IconButton icon="close" label={t('Close')} variant="ghost" onPress={() => setPicked(null)} />
+      </View>
+      {isFinished(pickedBooking) ? (
+        <Card style={styles.compactCard}>{finishedRow(pickedBooking, false)}</Card>
+      ) : (
+        openCard(pickedBooking, false)
+      )}
+    </View>
+  ) : null;
 
   return (
     <Screen
@@ -624,40 +722,49 @@ export default function BarberBookings() {
       onScroll={(y) => {
         scrollY.current = y;
         setPastAddButton(y > addButtonBottom);
+        setNamesStuck(chairsFrame !== null && y > chairsFrame.top);
       }}
       overlay={
-        <View style={styles.overlay}>
-          <View style={styles.overlayInner}>
-            {notice ? (
-              <View
-                role="status"
-                accessibilityLiveRegion="polite"
-                onLayout={(e) => setNoticeHeight(e.nativeEvent.layout.height)}
-                style={[styles.undoBar, { backgroundColor: theme.card, borderColor: theme.border }]}>
-                <T style={styles.noticeText}>{notice.message}</T>
-                <View style={styles.noticeActions}>
-                  <Button
-                    title={notice.actionLabel}
-                    variant="secondary"
-                    onPress={() => {
-                      closeNotice();
-                      notice.onAction();
-                    }}
-                  />
-                  {notice.closable ? (
-                    <IconButton icon="close" label={t('Close')} variant="ghost" onPress={closeNotice} />
-                  ) : null}
-                </View>
-              </View>
-            ) : null}
-            {/* Adding a walk-in works from anywhere in a long day. */}
-            {showFab ? (
-              <View style={styles.fab}>
-                <IconButton icon="add" label={t('Add booking or block time')} variant="primary" onPress={addBooking} />
+        <>
+          {grid && chairsFrame && namesStuck ? (
+            <ChairNames chairs={grid.chairs} frame={chairsFrame} scrollX={chairsX} topInset={insets.top} />
+          ) : null}
+          <View style={styles.overlay}>
+            {panel ? <View style={[styles.panelWrap, !notice && { paddingBottom: Spacing.lg }]}>{panel}</View> : null}
+            {notice || showFab ? (
+              <View style={styles.overlayInner}>
+                {notice ? (
+                  <View
+                    role="status"
+                    accessibilityLiveRegion="polite"
+                    onLayout={(e) => setNoticeHeight(e.nativeEvent.layout.height)}
+                    style={[styles.undoBar, { backgroundColor: theme.card, borderColor: theme.border }]}>
+                    <T style={styles.noticeText}>{notice.message}</T>
+                    <View style={styles.noticeActions}>
+                      <Button
+                        title={notice.actionLabel}
+                        variant="secondary"
+                        onPress={() => {
+                          closeNotice();
+                          notice.onAction();
+                        }}
+                      />
+                      {notice.closable ? (
+                        <IconButton icon="close" label={t('Close')} variant="ghost" onPress={closeNotice} />
+                      ) : null}
+                    </View>
+                  </View>
+                ) : null}
+                {/* Adding a walk-in works from anywhere in a long day. */}
+                {showFab ? (
+                  <View style={styles.fab}>
+                    <IconButton icon="add" label={t('Add booking or block time')} variant="primary" onPress={addBooking} />
+                  </View>
+                ) : null}
               </View>
             ) : null}
           </View>
-        </View>
+        </>
       }>
       <ScreenTitle title={t('Bookings')} refreshing={fromCache && asking} />
       {loaded && refreshError ? (
@@ -743,7 +850,16 @@ export default function BarberBookings() {
       {loaded ? <ErrorText message={error} /> : null}
 
       <View ref={dayHeaderRef} style={styles.dayHeader}>
-        <T variant="heading">{formatDay(dayBounds(day, tz).start, tz)}</T>
+        <View style={styles.dayTitle}>
+          <T variant="heading" style={styles.info}>
+            {formatDay(dayBounds(day, tz).start, tz)}
+          </T>
+          {/* Chairs side by side show the gaps, often to fit a walk-in; List is easier with a screen reader. */}
+          <Row role="radiogroup" accessibilityLabel={t('Show the day as')} style={styles.noWrap}>
+            <Chip label={t('List')} icon="list" selected={!chairs} onPress={() => pickView('list')} />
+            <Chip label={t('Chairs')} icon="grid-outline" selected={chairs} onPress={() => pickView('chairs')} />
+          </Row>
+        </View>
         {loaded && counted.length ? <T variant="muted">{summary}</T> : null}
       </View>
       {canAdd ? (
@@ -767,6 +883,8 @@ export default function BarberBookings() {
               }}
             />
           </View>
+        ) : chairs ? (
+          <ChairsSkeleton />
         ) : (
           <DaySkeleton />
         )
@@ -782,6 +900,27 @@ export default function BarberBookings() {
             onPress={reopen}
           />
         </Card>
+      ) : grid ? (
+        <Chairs
+          grid={grid}
+          day={day}
+          tz={tz}
+          now={now}
+          nameOf={whoFor}
+          selectedId={pickedBooking?.id ?? null}
+          focus={focus?.day === day ? (kept.find((b) => b.id === focus.id) ?? null) : null}
+          focusRef={focusRef}
+          scrollX={chairsX}
+          emptyTitle={
+            filterId
+              ? t('{name} isn’t working this day', { name: barbers.find((b) => b.id === filterId)?.name ?? '' })
+              : t('Nobody is working this day')
+          }
+          onOpen={(b) => setPicked({ id: b.id, day })}
+          onAdd={addAt}
+          onFrame={onChairsFrame}
+          scrollTo={scrollContentTo}
+        />
       ) : shown.length === 0 ? (
         <Empty
           title={t('No bookings')}
@@ -834,31 +973,14 @@ export default function BarberBookings() {
           )}
           {finishedOpen ? (
             <Card style={styles.compactCard}>
-              {finished.map((b) =>
-                b.is_block ? (
-                  <BlockRow key={b.id} booking={b} tz={tz} />
-                ) : (
-                  focusable(
-                    b,
-                    <FinishedRow
-                      key={b.id}
-                      booking={b}
-                      tz={tz}
-                      showBarber={showBarber}
-                      held={held}
-                      onRestore={() => restore([b])}
-                      onWhatsApp={() => (b.status === 'cancelled' && cancelledHere.has(b.id) ? sorry(b) : whatsapp(b))}
-                    />,
-                  )
-                ),
-              )}
+              {finished.map((b) => (b.is_block ? finishedRow(b) : focusable(b, finishedRow(b))))}
             </Card>
           ) : null}
         </View>
       ) : null}
 
-      {/* Room for the add button and the bar, so neither covers the last card's buttons for good. */}
-      <View style={{ height: notice ? Math.max(48, noticeHeight) : 48 }} />
+      {/* Room for the add button, the bar and a booking's actions over the chairs, so none covers the end of the day for good. */}
+      <View style={{ height: (notice ? Math.max(48, noticeHeight) : 48) + (panel ? panelHeight : 0) }} />
     </Screen>
   );
 }
@@ -1326,6 +1448,7 @@ function HoursCheck({ barbers, onConfirm }: { barbers: BarberWithHours[]; onConf
 const styles = StyleSheet.create({
   list: { gap: Spacing.sm },
   dayHeader: { gap: Spacing.xs },
+  dayTitle: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   noWrap: { flexWrap: 'nowrap' },
   badges: { gap: Spacing.xs },
   cardRow: { flexDirection: 'row', gap: Spacing.sm },
@@ -1373,4 +1496,14 @@ const styles = StyleSheet.create({
   noticeText: { flexGrow: 1, flexShrink: 1, flexBasis: 'auto', paddingVertical: Spacing.sm },
   noticeActions: { flexDirection: 'row', alignItems: 'center', marginLeft: 'auto' },
   fab: { borderRadius: Radius.md, boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)' },
+  panelWrap: { width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center', paddingHorizontal: Spacing.lg },
+  // Over the chairs, as a sheet: the booking's time and barber, then its card.
+  panel: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    gap: Spacing.xs,
+    boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+  },
+  panelHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingLeft: Spacing.sm },
 });

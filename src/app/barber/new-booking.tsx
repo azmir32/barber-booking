@@ -19,6 +19,7 @@ import {
   groupByPartOfDay,
   localClock,
   localDateString,
+  partOfDay,
   type PartOfDay,
 } from '@/lib/time';
 import type { Barber, Service, Slot, WorkingHours } from '@/lib/types';
@@ -51,10 +52,12 @@ function firstBarber(list: BarberWithHours[], day: string, wanted?: string): str
 /**
  * Barber adds a walk-in / WhatsApp / phone booking, or blocks time. `barber` is the barber the
  * Bookings tab was showing, and `kind` "block" opens on Block time (a shop with no services yet).
+ * `time` ("HH:MM") is free time tapped in a chair, picked to start with.
  */
 export default function NewBooking() {
   const { shop } = useMyShop();
-  const params = useLocalSearchParams<{ day?: string; barber?: string; kind?: string }>();
+  const params = useLocalSearchParams<{ day?: string; barber?: string; kind?: string; time?: string }>();
+  const tapped = params.time && /^([01]\d|2[0-3]):[0-5]\d$/.test(params.time) ? params.time : null;
   const tz = shop!.time_zone;
   const today = localDateString(new Date(), tz);
   const day = params.day ?? today;
@@ -68,7 +71,7 @@ export default function NewBooking() {
   const [everyone, setEveryone] = useState(false);
   const [serviceId, setServiceId] = useState<string | null>(null);
   const [blockMinutes, setBlockMinutes] = useState(60);
-  const [time, setTime] = useState<string | null>(null); // "HH:MM" or NOW
+  const [time, setTime] = useState<string | null>(tapped); // "HH:MM" or NOW
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [note, setNote] = useState('');
@@ -82,7 +85,8 @@ export default function NewBooking() {
   // Which request the current `slots` answer; bumping slotsVersion refetches.
   const [slotsFor, setSlotsFor] = useState<string | null>(null);
   const [slotsVersion, setSlotsVersion] = useState(0);
-  const [part, setPart] = useState<PartOfDay | null>(null);
+  // The tapped time's part of the day, so its chip is the one in view.
+  const [part, setPart] = useState<PartOfDay | null>(tapped ? partOfDay(Number(tapped.slice(0, 2))) : null);
 
   useEffect(() => {
     if (!shop) return;

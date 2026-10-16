@@ -965,4 +965,22 @@ export const ms: Record<string, string> = {
   'Loading free times': 'Memuatkan masa kosong',
   'Hi {shop}, this is {name}.': 'Hai {shop}, saya {name}.',
   'Hi {who}, this is {shop}.': 'Hai {who}, ini {shop}.',
+
+  // Round 10: the barber's day as chairs side by side (barber/(tabs)/index.tsx,
+  // components/chairs.tsx)
+  'Show the day as': 'Papar hari sebagai',
+  List: 'Senarai',
+  Chairs: 'Kerusi',
+  'Off: {names}': 'Tidak bekerja: {names}',
+  'Away: {names}': 'Bercuti: {names}',
+  Break: 'Rehat',
+  Free: 'Kosong',
+  '{name}’s chair': 'Kerusi {name}',
+  '{name}, {service}, {from} to {to}, with {barber}': '{name}, {service}, {from} hingga {to}, bersama {barber}',
+  'Blocked, {from} to {to}, with {barber}': 'Disekat, {from} hingga {to}, bersama {barber}',
+  'Blocked, {reason}, {from} to {to}, with {barber}': 'Disekat, {reason}, {from} hingga {to}, bersama {barber}',
+  'Free with {barber}, {from} to {to}. Add a booking':
+    'Kosong bersama {barber}, {from} hingga {to}. Tambah tempahan',
+  'Nobody is working this day': 'Tiada sesiapa bekerja pada hari itu',
+  '{name} isn’t working this day': '{name} tidak bekerja pada hari itu',
 };

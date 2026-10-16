@@ -444,6 +444,24 @@ function seed() {
     }),
   );
 
+  // A little more of today, so the day as chairs shows each kind of booking:
+  // a walk-in done first thing, a beard trim that never turned up, and an
+  // errand blocked in Danial's afternoon. Done or no-show only once their
+  // time is over, and each only where nothing else is (cancelled ones too, so
+  // the list never shows two at one time), so the bookings above stay as they are.
+  const extra = (b: Booked, after?: string) => {
+    const minutes = b.block ? b.block[1] : (b.service!.duration_min as number);
+    const start = startOf(b.day, b.at);
+    const end = start + minutes * 60_000;
+    const taken = tables().bookings.some(
+      (x) => x.barber_id === b.barber.row.id && Date.parse(String(x.starts_at)) < end && start < Date.parse(String(x.ends_at)),
+    );
+    if (!taken) book(sa, { ...b, status: after && end <= now() ? after : 'confirmed' });
+  };
+  extra({ barber: danial, day: 0, at: '11:00', service: haircut, guest: [WALK_IN] }, 'completed');
+  extra({ barber: aliChair, day: 0, at: '10:00', service: beard, guest: ['Haziq'] }, 'no_show');
+  extra({ barber: danial, day: 0, at: '17:30', block: ['Errand', 30] });
+
   // Reviews ------------------------------------------------------------------------
   // Mostly happy, a few so-so, in English and Malay, now and then with the
   // shop's answer. Each is left some hours after the cut, as people do.
