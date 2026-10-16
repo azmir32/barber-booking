@@ -17,7 +17,7 @@ export type TableName =
   | 'shop_closures'
   | 'reviews';
 export type Tables = Record<TableName, Row[]>;
-type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
+type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'float' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = {
   type: ColumnType;
   nullable: boolean;
@@ -98,6 +98,9 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     about: opt('text'),
     address: opt('text'),
     area: req('text', () => 'Kajang'),
+    // A demo saved before shops had a location gets the sample shops' own.
+    latitude: { ...opt('float'), backfill: (r) => sampleValue('shops', r.id, 'latitude') },
+    longitude: { ...opt('float'), backfill: (r) => sampleValue('shops', r.id, 'longitude') },
     phone: opt('text'),
     instagram: opt('text'),
     time_zone: req('text', () => 'Asia/Kuala_Lumpur'),
@@ -203,6 +206,9 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['shops_about_check', (r) => atMost(r.about, 500)],
     ['shops_address_check', (r) => atMost(r.address, 200)],
     ['shops_area_check', (r) => between(len(r.area), 1, 60)],
+    ['shops_latitude_check', (r) => between(r.latitude as number | null, -90, 90)],
+    ['shops_longitude_check', (r) => between(r.longitude as number | null, -180, 180)],
+    ['shops_location_pair', (r) => (r.latitude == null) === (r.longitude == null)],
     ['shops_phone_check', (r) => atMost(r.phone, 20)],
     ['shops_instagram_check', (r) => atMost(r.instagram, 60)],
   ],
@@ -362,6 +368,11 @@ export function toColumnValue(table: TableName, column: string, value: unknown):
       if (typeof n !== 'number' || !Number.isFinite(n)) throw bad('numeric');
       return Math.round(n * 100) / 100;
     }
+    case 'float': {
+      const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+      if (typeof n !== 'number' || !Number.isFinite(n)) throw bad('double precision');
+      return n;
+    }
     case 'bool':
       if (value === true || value === 'true') return true;
       if (value === false || value === 'false') return false;
@@ -399,7 +410,7 @@ export function toColumnValue(table: TableName, column: string, value: unknown):
 export function compareValues(table: TableName, column: string, a: unknown, b: unknown): number {
   const type = COLUMNS[table][column]?.type;
   if (type === 'timestamptz') return ms(a) - ms(b);
-  if (type === 'int' || type === 'numeric') return (a as number) - (b as number);
+  if (type === 'int' || type === 'numeric' || type === 'float') return (a as number) - (b as number);
   if (type === 'bool') return Number(a) - Number(b);
   return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
 }
@@ -524,17 +535,30 @@ function moveToToday(saved: Tables, savedOn: string) {
   ].map((r) => ({ ...r, barber_id: byId.get(r.booking_id)!.barber_id }));
 }
 
-/** The sample bookings from before yesterday, every sample review and their customers, as the seed lays them out for today. */
-function sampleHistory(): { bookings: Row[]; reviews: Row[]; users: Row[] } {
+/** The sample data as the seed lays it out for today, worked out at most once while a saved demo loads. */
+let sample: Tables | null = null;
+function sampleTables(): Tables {
+  if (sample) return sample;
   const kept = current;
   current = emptyTables();
   try {
     seedFn?.();
-    const { bookings, reviews, users } = current;
-    return { bookings: bookings.filter((b) => String(b.id).startsWith(HISTORY_ID)), reviews, users };
+    sample = current;
+    return sample;
   } finally {
     current = kept;
   }
+}
+
+/** The sample bookings from before yesterday, every sample review and their customers, as the seed lays them out for today. */
+function sampleHistory(): { bookings: Row[]; reviews: Row[]; users: Row[] } {
+  const { bookings, reviews, users } = sampleTables();
+  return { bookings: bookings.filter((b) => String(b.id).startsWith(HISTORY_ID)), reviews, users };
+}
+
+/** What the sample data has in a column for a row; null for rows people added. */
+function sampleValue(table: TableName, rowId: unknown, column: string): unknown {
+  return sampleTables()[table].find((r) => r.id === rowId)?.[column] ?? null;
 }
 
 export function tables(): Tables {
@@ -561,6 +585,8 @@ export function tables(): Tables {
     }
   } catch {
     // Unreadable or blocked storage: start fresh.
+  } finally {
+    sample = null;
   }
   return current ?? seeded();
 }

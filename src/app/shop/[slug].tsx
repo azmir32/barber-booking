@@ -3,6 +3,7 @@ import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } fro
 import { Linking, View, type LayoutChangeEvent, type ScrollView, type TextInput } from 'react-native';
 
 import { DayPicker } from '@/components/day-picker';
+import { Distance } from '@/components/distance';
 import { RatingSummary } from '@/components/reviews';
 import { ShopReviews } from '@/components/shop-reviews';
 import { Button, Card, Chip, Empty, ErrorText, Field, Loading, Row, Screen, Section, T } from '@/components/ui';
@@ -13,8 +14,10 @@ import { useTheme } from '@/hooks/use-theme';
 import { addToCalendar } from '@/lib/add-to-calendar';
 import { useAuth } from '@/lib/auth';
 import { bookingEvent } from '@/lib/calendar';
+import { kmBetween, shopPoint } from '@/lib/distance';
 import { t } from '@/lib/lang';
 import { directionsUrl } from '@/lib/maps';
+import { nearMePosition } from '@/lib/near-me';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
@@ -65,6 +68,8 @@ export default function ShopPage() {
   const now = useNow();
 
   const [shop, setShop] = useState<Shop | null>(null);
+  // Where the customer was when they opened the page, if Near me is on; it isn't asked for here.
+  const [here] = useState(nearMePosition);
   const [hidden, setHidden] = useState<HiddenShop | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
@@ -455,6 +460,9 @@ export default function ShopPage() {
   const tz = shop.time_zone;
   const openNow =
     hoursToday?.date === todayDate && week.some(Boolean) ? openStatus(hoursToday.opens, hoursToday.closes, now, tz) : null;
+  const door = shopPoint(shop);
+  // Worked out here as the list's find_shops does, so both say the same.
+  const away = here && door ? kmBetween(here, door) : null;
   const when = (at: string) => ({ day: formatDay(at, tz), time: formatTime(at, tz) });
   /** The same, kept whole on screen: a heading never breaks between "4:00" and "pm". */
   const whenShown = (at: string) => ({ day: noBreak(formatDay(at, tz)), time: noBreak(formatTime(at, tz)) });
@@ -657,7 +665,12 @@ export default function ShopPage() {
       {header}
       <View style={{ gap: Spacing.xs }}>
         <T variant="title">{shop.name}</T>
-        <T variant="muted">{shop.address || shop.area}</T>
+        <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+          <T variant="muted" style={{ flex: 1 }}>
+            {shop.address || shop.area}
+          </T>
+          {away != null ? <Distance km={away} style={{ marginTop: 2 }} /> : null}
+        </Row>
         {moving ? null : (
           <RatingSummary
             average={ratingAverage(shop.rating_sum, shop.rating_count)}

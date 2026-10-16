@@ -911,4 +911,40 @@ export const ms: Record<string, string> = {
   'Book again at {shop}': 'Tempah lagi di {shop}',
   'Not taking online bookings right now': 'Tidak menerima tempahan dalam talian buat masa ini',
   'Barbers in {area}': 'Barber di {area}',
+
+  // Round 9: Barbers near me, and where each shop is (customer/index.tsx,
+  // shop/[slug].tsx, components/distance.tsx, components/shop-form.tsx)
+  'Near me': 'Dekat saya',
+  'Finding where you are…': 'Mencari lokasi anda…',
+  'Barbers near you': 'Barber berdekatan anda',
+  '{distance} away': '{distance} dari anda',
+  'Couldn’t find where you are. Check that location is on, then tap Near me again.':
+    'Lokasi anda tidak dapat dikesan. Pastikan lokasi dihidupkan, kemudian ketik Dekat saya sekali lagi.',
+  'Your browser is blocking location. Allow it for this site, then tap Near me again.':
+    'Pelayar anda menyekat lokasi. Benarkan untuk laman ini, kemudian ketik Dekat saya sekali lagi.',
+  'Location is off for {app}. Allow it in Settings to see barbers near you.':
+    'Lokasi dimatikan untuk {app}. Benarkan dalam Tetapan untuk melihat barber berdekatan anda.',
+  Settings: 'Tetapan',
+  'Shop location': 'Lokasi kedai',
+  'Optional. Tap this while you’re in the shop, so customers nearby find you first and Directions bring them to your door.':
+    'Pilihan. Ketik ini semasa anda berada di kedai, supaya pelanggan berdekatan menjumpai anda dahulu dan Arah ke kedai membawa mereka terus ke pintu anda.',
+  'Use my location here': 'Guna lokasi saya di sini',
+  'Location set': 'Lokasi sudah ditetapkan',
+  'Check on the map': 'Semak pada peta',
+  'Remove the shop location': 'Buang lokasi kedai',
+  'Not saved yet. Tap Save changes below.': 'Belum disimpan. Ketik Simpan perubahan di bawah.',
+  'Couldn’t find where you are. Check that location is on, then try again.':
+    'Lokasi anda tidak dapat dikesan. Pastikan lokasi dihidupkan, kemudian cuba lagi.',
+  'Your browser is blocking location. Allow it for this site, then try again.':
+    'Pelayar anda menyekat lokasi. Benarkan untuk laman ini, kemudian cuba lagi.',
+  'Location is off for {app}. Allow it in Settings, then try again.':
+    'Lokasi dimatikan untuk {app}. Benarkan dalam Tetapan, kemudian cuba lagi.',
+  'Location isn’t available on this page. Pick your area instead.':
+    'Lokasi tidak tersedia di halaman ini. Sila pilih kawasan anda.',
+  'Location isn’t available on this page. Customers can still find you by your address.':
+    'Lokasi tidak tersedia di halaman ini. Pelanggan masih boleh mencari anda melalui alamat.',
+  '{app} only has your approximate location. Turn on Precise location in Settings, then try again.':
+    '{app} hanya mendapat lokasi anggaran anda. Hidupkan Lokasi tepat dalam Tetapan, kemudian cuba lagi.',
+  'Couldn’t get your exact spot. Try again near the door or just outside.':
+    'Lokasi tepat anda tidak dapat dikesan. Cuba lagi berhampiran pintu atau di luar kedai.',
 };

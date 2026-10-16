@@ -1,13 +1,18 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRef, useState } from 'react';
-import { View, type TextInput } from 'react-native';
+import { Linking, Platform, View, type TextInput } from 'react-native';
 
 import { Button, Chip, ErrorText, Field, Row, T } from '@/components/ui';
-import { bookingLink } from '@/constants/brand';
+import { APP_NAME, bookingLink } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
+import { shopPoint, type LatLng } from '@/lib/distance';
 import { t } from '@/lib/lang';
+import { directionsUrl } from '@/lib/maps';
 import { addBarber } from '@/lib/my-shop';
+import { locateShop, type ShopLocateProblem } from '@/lib/near-me';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { slugify, suggestSlug } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -16,7 +21,10 @@ import type { Shop } from '@/lib/types';
 const slugTaken = (error: { code?: string; message?: string }) =>
   error.code === '23505' && /slug/.test(error.message ?? '');
 
-type Details = Pick<Shop, 'name' | 'slug' | 'about' | 'address' | 'area' | 'phone' | 'instagram'>;
+type Details = Pick<
+  Shop,
+  'name' | 'slug' | 'about' | 'address' | 'area' | 'latitude' | 'longitude' | 'phone' | 'instagram'
+>;
 
 /** The details as they are saved, so what was typed and what is stored compare like for like. */
 const clean = (d: Details) => ({
@@ -25,12 +33,18 @@ const clean = (d: Details) => ({
   about: d.about?.trim() || null,
   address: d.address?.trim() || null,
   area: d.area.trim() || 'Kajang',
+  latitude: d.latitude ?? null,
+  longitude: d.longitude ?? null,
   phone: d.phone?.trim() || null,
   instagram: d.instagram?.trim().replace(/^@/, '') || null,
 });
 
+/** To six decimal places, about 10 cm: as close as any phone can tell, and no closer. */
+const sixPlaces = (n: number) => Math.round(n * 1e6) / 1e6;
+
 /** Creates the barber's shop, or edits it when `shop` is given. */
 export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () => void }) {
+  const theme = useTheme();
   const { session, profile } = useAuth();
   const [name, setName] = useState(shop?.name ?? '');
   const [slug, setSlug] = useState(shop?.slug ?? '');
@@ -44,6 +58,10 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   const [area, setArea] = useState(shop?.area ?? 'Kajang');
   const [phone, setPhone] = useState(shop?.phone ?? profile?.phone ?? '');
   const [instagram, setInstagram] = useState(shop?.instagram ?? '');
+  // Where the shop is, from the owner's phone while they stand in it.
+  const [point, setPoint] = useState<LatLng | null>(shop ? shopPoint(shop) : null);
+  const [locating, setLocating] = useState(false);
+  const [placeProblem, setPlaceProblem] = useState<ShopLocateProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The link another shop turned out to have, said at the link field with one to try instead.
@@ -52,7 +70,17 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   const [savedAs, setSavedAs] = useState<string | null>(null);
   const slugField = useRef<TextInput>(null);
 
-  const fields = clean({ name, slug, about, address, area, phone, instagram });
+  const fields = clean({
+    name,
+    slug,
+    about,
+    address,
+    area,
+    latitude: point?.latitude ?? null,
+    longitude: point?.longitude ?? null,
+    phone,
+    instagram,
+  });
   const cleanSlug = fields.slug;
   const current = JSON.stringify(fields);
   const justSaved = savedAs === current;
@@ -60,6 +88,18 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
   const unchanged = shop != null && (justSaved || current === JSON.stringify(clean(shop)));
   const takenNow = taken != null && taken === cleanSlug;
   const suggestion = takenNow ? suggestSlug(cleanSlug, area) : null;
+
+  // Saved as it is shown: the location, set or removed, waits for Save changes like every other field.
+  const pointUnsaved = shop != null && !justSaved && JSON.stringify(point) !== JSON.stringify(shopPoint(shop));
+
+  async function setPointHere() {
+    setLocating(true);
+    setPlaceProblem(null);
+    const found = await locateShop();
+    setLocating(false);
+    if ('problem' in found) return setPlaceProblem(found.problem);
+    setPoint({ latitude: sixPlaces(found.position.latitude), longitude: sixPlaces(found.position.longitude) });
+  }
 
   async function unlockSlug() {
     const ok = await confirmAction(
@@ -171,6 +211,65 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
         maxLength={200}
       />
       <Field label={t('Area')} value={area} onChangeText={setArea} maxLength={60} />
+      <View role="group" accessibilityLabel={t('Shop location')} style={{ gap: Spacing.sm }}>
+        <T variant="label">{t('Shop location')}</T>
+        {point ? (
+          <>
+            <Row style={{ flexWrap: 'nowrap', gap: Spacing.xs }}>
+              <Ionicons name="checkmark-circle" size={20} color={theme.success} />
+              <T style={{ flex: 1 }}>{t('Location set')}</T>
+            </Row>
+            <Row>
+              <Button
+                title={t('Check on the map')}
+                variant="secondary"
+                icon="map-outline"
+                onPress={() => Linking.openURL(directionsUrl({ name, address, area, ...point }))}
+              />
+              <Button
+                title={t('Remove')}
+                variant="ghost"
+                tone="danger"
+                accessibilityLabel={t('Remove the shop location')}
+                onPress={() => {
+                  setPoint(null);
+                  setPlaceProblem(null);
+                }}
+              />
+            </Row>
+          </>
+        ) : (
+          <>
+            <T variant="small">
+              {t(
+                'Optional. Tap this while you’re in the shop, so customers nearby find you first and Directions bring them to your door.',
+              )}
+            </T>
+            <Button
+              title={t('Use my location here')}
+              variant="secondary"
+              icon="locate-outline"
+              loading={locating}
+              onPress={setPointHere}
+              style={{ alignSelf: 'flex-start' }}
+            />
+          </>
+        )}
+        {placeProblem ? (
+          <Row style={{ flexWrap: 'nowrap' }}>
+            <View style={{ flex: 1 }}>
+              <ErrorText message={placeProblemText(placeProblem)} />
+            </View>
+            {(placeProblem === 'denied' || placeProblem === 'approximate') && Platform.OS !== 'web' ? (
+              <Button title={t('Settings')} variant="ghost" onPress={() => Linking.openSettings()} />
+            ) : null}
+          </Row>
+        ) : pointUnsaved ? (
+          <T variant="small" role="status" accessibilityLiveRegion="polite">
+            {t('Not saved yet. Tap Save changes below.')}
+          </T>
+        ) : null}
+      </View>
       <Field
         label={t('Shop phone (WhatsApp)')}
         value={phone}
@@ -200,4 +299,24 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
       ) : null}
     </>
   );
+}
+
+/** Why "Use my location here" didn't set it, and what to do about it. */
+function placeProblemText(problem: ShopLocateProblem) {
+  switch (problem) {
+    case 'approximate':
+      return t('{app} only has your approximate location. Turn on Precise location in Settings, then try again.', {
+        app: APP_NAME,
+      });
+    case 'rough':
+      return t('Couldn’t get your exact spot. Try again near the door or just outside.');
+    case 'blocked':
+      return t('Location isn’t available on this page. Customers can still find you by your address.');
+    case 'unavailable':
+      return t('Couldn’t find where you are. Check that location is on, then try again.');
+    case 'denied':
+      return Platform.OS === 'web'
+        ? t('Your browser is blocking location. Allow it for this site, then try again.')
+        : t('Location is off for {app}. Allow it in Settings, then try again.', { app: APP_NAME });
+  }
 }

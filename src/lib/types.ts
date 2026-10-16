@@ -18,6 +18,9 @@ export type Shop = {
   about: string | null;
   address: string | null;
   area: string;
+  /** Where the shop is, set by the owner from inside it; both or neither. */
+  latitude: number | null;
+  longitude: number | null;
   phone: string | null;
   instagram: string | null;
   time_zone: string;

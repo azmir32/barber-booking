@@ -2191,6 +2191,152 @@ do $$ begin
 end $$;
 rollback;
 
+-- Near me ------------------------------------------------------------------------
+-- Owners set where their shop is. Given the customer's position, the shop
+-- list goes nearest first with each shop's distance, shops without a
+-- location after the rest by name, in pages that never overlap.
+begin;
+reset role;
+do $$ begin
+  assert abs(km_between(0, 0, 0, 1) - 111.195) < 0.001, 'a degree along the equator is 111.195 km';
+  assert km_between(2.9833, 101.7667, 2.9833, 101.7667) = 0, 'no distance to itself';
+  assert abs(km_between(0, 0, 0, 180) - 20015.114) < 0.01, 'half way round the world, without rounding past it';
+  assert abs(km_between(2.9833, 101.7667, 2.9925, 101.7884) - km_between(2.9925, 101.7884, 2.9833, 101.7667)) < 1e-9,
+    'the same either way';
+  assert km_between(2.9833, 101.7667, null, null) is null, 'no distance to a shop without a location';
+end $$;
+update shops set is_published = true, trial_ends_at = now() + interval '30 days'
+where id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}'),
+  ('00000000-0000-0000-0000-0000000000b3', 'owner3@test', '{"role":"barber","full_name":"Irfan"}'),
+  ('00000000-0000-0000-0000-0000000000b4', 'owner4@test', '{"role":"barber","full_name":"Wei Ming"}'),
+  ('00000000-0000-0000-0000-0000000000b5', 'owner5@test', '{"role":"barber","full_name":"Zaki"}'),
+  ('00000000-0000-0000-0000-0000000000b6', 'owner6@test', '{"role":"barber","full_name":"Amin"}'),
+  ('00000000-0000-0000-0000-0000000000b7', 'owner7@test', '{"role":"barber","full_name":"Mat"}');
+insert into shops (id, owner_id, name, slug, area, latitude, longitude, is_published) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts',
+   'Kajang', 2.9925, 101.7884, true),
+  ('00000000-0000-0000-0000-00000000005c', '00000000-0000-0000-0000-0000000000b3', 'Fade Cuts', 'fade-cuts',
+   'Saujana Impian', 2.9822, 101.8045, true),
+  -- Next door to Kemas, so just as far: after it by name.
+  ('00000000-0000-0000-0000-00000000005d', '00000000-0000-0000-0000-0000000000b4', 'Twin Cuts', 'twin-cuts',
+   'Kajang', 2.9925, 101.7884, true),
+  ('00000000-0000-0000-0000-00000000005e', '00000000-0000-0000-0000-0000000000b5', 'Bangi Cuts', 'bangi-cuts',
+   'Bangi', null, null, true),
+  ('00000000-0000-0000-0000-00000000005f', '00000000-0000-0000-0000-0000000000b6', 'Alpha Cuts', 'alpha-cuts',
+   'Kajang', null, null, true);
+set role authenticated;
+
+-- A new shop can say where it is from the start; this one isn't live yet.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b7';
+insert into shops (owner_id, name, slug, latitude, longitude)
+values ('00000000-0000-0000-0000-0000000000b7', 'Hidden Cuts', 'hidden-cuts', 2.9833, 101.7667);
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  begin
+    update shops set latitude = 2.9846;
+    raise exception 'half a location should be refused';
+  exception when check_violation then null;
+  end;
+  begin
+    update shops set latitude = 91, longitude = 101.7712;
+    raise exception 'a latitude off the map should be refused';
+  exception when check_violation then null;
+  end;
+  begin
+    update shops set latitude = 2.9846, longitude = -181;
+    raise exception 'a longitude off the map should be refused';
+  exception when check_violation then null;
+  end;
+  begin
+    update shops set latitude = 'NaN', longitude = 'NaN';
+    raise exception 'not a number should be refused';
+  exception when check_violation then null;
+  end;
+  update shops set latitude = 2.9846, longitude = 101.7712;
+  assert (select latitude = 2.9846 and longitude = 101.7712 from shops where id = '00000000-0000-0000-0000-00000000005a'),
+    'the owner sets where the shop is';
+  -- Another shop's location is not theirs to move.
+  update shops set latitude = 0, longitude = 0 where id = '00000000-0000-0000-0000-00000000005b';
+  reset role;
+  assert (select latitude = 2.9925 from shops where id = '00000000-0000-0000-0000-00000000005b'),
+    'an owner can''t move another shop';
+  set role authenticated;
+  update shops set latitude = null, longitude = null;
+  assert (select latitude is null from shops where id = '00000000-0000-0000-0000-00000000005a'), 'and can take it away';
+  update shops set latitude = 2.9846, longitude = 101.7712;
+end $$;
+
+-- Ben is in Sungai Chua.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  lat constant double precision := 2.9833;
+  lng constant double precision := 101.7667;
+  nearest constant text[] := array['Ali Cuts', 'Kemas Cuts', 'Twin Cuts', 'Fade Cuts', 'Alpha Cuts', 'Bangi Cuts'];
+  by_name constant text[] := array['Ali Cuts', 'Alpha Cuts', 'Bangi Cuts', 'Fade Cuts', 'Kemas Cuts', 'Twin Cuts'];
+  paged text[] := '{}';
+  ali record;
+  b jsonb;
+begin
+  assert (select array_agg(f.name order by f.ordinality) from find_shops(null, null, 50, 0, lat, lng) with ordinality f)
+         = nearest, 'nearest first, then the shops without a location by name';
+  select * into ali from find_shops(null, null, 1, 0, lat, lng);
+  assert ali.name = 'Ali Cuts' and ali.distance_km between 0.5 and 0.55, 'Ali Cuts is about 500 m away: ' || ali.distance_km;
+  assert (select count(distinct distance_km) = 1 and min(distance_km) between 2.6 and 2.65
+          from find_shops(null, null, 50, 0, lat, lng) where name in ('Kemas Cuts', 'Twin Cuts')),
+    'next door is just as far';
+  assert (select bool_and(distance_km is null) from find_shops(null, null, 50, 0, lat, lng)
+          where name in ('Alpha Cuts', 'Bangi Cuts')), 'no distance without a location';
+
+  -- A page at a time, every shop once.
+  for i in 0..5 loop
+    paged := paged || (select array_agg(name) from find_shops(null, null, 1, i, lat, lng));
+  end loop;
+  assert paged = nearest, 'one at a time comes out the same: ' || paged::text;
+  assert (select array_agg(f.name order by f.ordinality) from find_shops(null, null, 4, 4, lat, lng) with ordinality f)
+         = array['Alpha Cuts', 'Bangi Cuts'], 'the second page of four';
+
+  -- Without a whole position on the map, by name as before.
+  assert (select array_agg(f.name order by f.ordinality) from find_shops() with ordinality f) = by_name, 'by name';
+  assert (select bool_and(distance_km is null) from find_shops()), 'no distances without a position';
+  assert (select array_agg(f.name order by f.ordinality) from find_shops(null, null, 50, 0, lat, null) with ordinality f)
+         = by_name, 'half a position is left out';
+  assert (select array_agg(f.name order by f.ordinality) from find_shops(null, null, 50, 0, 95, lng) with ordinality f)
+         = by_name and (select bool_and(distance_km is null) from find_shops(null, null, 50, 0, 95, lng)),
+    'a position off the map is left out';
+
+  -- Search and areas still filter, nearest first.
+  assert (select array_agg(f.name order by f.ordinality) from find_shops('kajang', null, 50, 0, lat, lng) with ordinality f)
+         = array['Ali Cuts', 'Kemas Cuts', 'Twin Cuts', 'Alpha Cuts'], 'search, nearest first';
+  assert (select array_agg(f.name order by f.ordinality) from find_shops(null, 'SAUJANA IMPIAN', 50, 0, lat, lng) with ordinality f)
+         = array['Fade Cuts'], 'an area, with its distance';
+  assert (select count(*) from find_shops(null, null, 50, 0, 2.9833, 101.7667) where name = 'Hidden Cuts') = 0,
+    'a shop that isn''t live is never listed, however near';
+
+  -- My bookings has the location too, for Directions.
+  b := (select e from jsonb_array_elements(my_bookings()) e where e ->> 'shop_id' = '00000000-0000-0000-0000-00000000005a' limit 1);
+  assert (b -> 'shops' ->> 'latitude')::float8 = 2.9846 and (b -> 'shops' ->> 'longitude')::float8 = 101.7712,
+    'my_bookings says where the shop is: ' || coalesce(b::text, 'no booking');
+end $$;
+
+set role anon;
+do $$ begin
+  assert (select name from find_shops(null, null, 1, 0, 2.9833, 101.7667)) = 'Ali Cuts', 'guests can look near them too';
+  perform km_between(0, 0, 0, 1);
+  raise exception 'guests must not call km_between';
+exception when insufficient_privilege then null;
+end $$;
+set role authenticated;
+do $$ begin
+  perform km_between(0, 0, 0, 1);
+  raise exception 'only find_shops should call km_between';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
+
 -- Signed up as a barber by mistake --------------------------------------------
 -- Before making a shop, a barber account can turn into a customer one. An
 -- owner can't, or their shop would be left without anyone to run it.

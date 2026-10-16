@@ -67,6 +67,26 @@ const SCENARIOS = {
       must(c.rpc('my_shops')),
     ]);
   },
+  // Near me from somewhere around Kajang, within about 5 km of the town, to
+  // three decimals as the app sends it: every shop measured, the nearest 21 kept.
+  'Barbers near me': async () => {
+    const c = customer();
+    const around = (centre) => Math.round((centre + (Math.random() - 0.5) * 0.1) * 1000) / 1000;
+    return Promise.all([
+      must(
+        c.rpc('find_shops', {
+          p_search: null,
+          p_area: null,
+          p_limit: 21,
+          p_offset: 0,
+          p_lat: around(2.99),
+          p_lng: around(101.79),
+        }),
+      ),
+      must(c.rpc('shop_areas')),
+      must(c.rpc('my_shops')),
+    ]);
+  },
   'Search for a barber': async () =>
     must(anon.rpc('find_shops', { p_search: AREAS[pick(AREAS.length) - 1], p_area: null, p_limit: 20, p_offset: 0 })),
   'Shop page': async () => {

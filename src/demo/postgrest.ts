@@ -85,8 +85,8 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
 const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'delete', string[]>>>> = {
   profiles: { update: ['full_name', 'phone'] },
   shops: {
-    insert: ['owner_id', 'name', 'slug', 'about', 'address', 'area', 'phone', 'instagram', 'is_published'],
-    update: ['name', 'slug', 'about', 'address', 'area', 'phone', 'instagram', 'is_published'],
+    insert: ['owner_id', 'name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram', 'is_published'],
+    update: ['name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram', 'is_published'],
   },
   bookings: { insert: [], update: [], delete: [] },
   shop_closures: { insert: [], update: [], delete: [] },
