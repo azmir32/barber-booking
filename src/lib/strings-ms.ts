@@ -971,4 +971,55 @@ export const ms: Record<string, string> = {
   // components/ready-card.tsx, lib/ready.ts, the database's go-live check)
   'Add a barber with working hours before you go live, so customers can pick a time.':
     'Tambah barber yang ada waktu kerja dahulu sebelum buka tempahan, supaya pelanggan boleh pilih masa.',
+  'Get your shop ready': 'Sediakan kedai anda',
+  '{done} of {total} done': '{done} daripada {total} selesai',
+  'Loading your steps': 'Memuatkan langkah anda',
+  'Couldn’t load your steps. Check your connection and try again.':
+    'Langkah anda tidak dapat dimuatkan. Semak sambungan anda dan cuba lagi.',
+  'Hide these steps': 'Sembunyikan langkah ini',
+  done: 'selesai',
+  'not done yet': 'belum selesai',
+  'Add your services': 'Tambah servis anda',
+  'What you offer, with prices, so customers have something to book.':
+    'Apa yang anda tawarkan, dengan harga, supaya pelanggan ada sesuatu untuk ditempah.',
+  '1 service on your menu': '1 servis dalam menu anda',
+  '{count} services on your menu': '{count} servis dalam menu anda',
+  'Add your barbers and their hours': 'Tambah barber dan waktu kerja mereka',
+  'Hours set for {names}': 'Waktu kerja sudah ditetapkan untuk {names}',
+  'Set {name}’s working hours, so customers can pick a time.':
+    'Tetapkan waktu kerja {name}, supaya pelanggan boleh pilih masa.',
+  'Set where the shop is (optional)': 'Tetapkan lokasi kedai (pilihan)',
+  'So customers nearby find you first, and Directions bring them to your door.':
+    'Supaya pelanggan berdekatan jumpa anda dahulu, dan Arah ke kedai membawa mereka terus ke pintu anda.',
+  'So customers can find your shop and book.': 'Supaya pelanggan boleh cari kedai anda dan buat tempahan.',
+  'Customers can find you and book.': 'Pelanggan boleh cari dan tempah anda.',
+  'Share your booking link': 'Kongsi pautan tempahan anda',
+  'Once you’re live: share or copy it, or print the poster.':
+    'Selepas tempahan dibuka: kongsi atau salin pautan, atau cetak poster.',
+  'Share or copy it, or print the poster for your counter.':
+    'Kongsi atau salin pautan, atau cetak poster untuk kaunter anda.',
+  'Shared. Keep it in your Instagram bio and WhatsApp status.':
+    'Sudah dikongsi. Simpan di bio Instagram dan status WhatsApp anda.',
+  'Your shop is ready.': 'Kedai anda sudah sedia.',
+  'Customers can book you now.': 'Pelanggan boleh tempah anda sekarang.',
+  'Add where the shop is any time under Shop details, so customers nearby find you first.':
+    'Tambah lokasi kedai bila-bila masa di Butiran kedai, supaya pelanggan berdekatan jumpa anda dahulu.',
+  'Not ready to go live yet': 'Belum sedia untuk buka tempahan',
+  'Customers would have nothing to book. Add a service first.':
+    'Pelanggan tiada apa untuk ditempah. Tambah servis dahulu.',
+  'Customers would have nothing to book yet. Add a service and set your working hours first.':
+    'Pelanggan belum ada apa untuk ditempah. Tambah servis dan tetapkan waktu kerja anda dahulu.',
+  'Customers would have no times to pick. Set {name}’s working hours first.':
+    'Pelanggan tiada masa untuk dipilih. Tetapkan waktu kerja {name} dahulu.',
+  'Customers would have nobody to book. Add a barber with working hours first.':
+    'Pelanggan tiada barber untuk ditempah. Tambah barber yang ada waktu kerja dahulu.',
+  'Set hours': 'Tetapkan waktu',
+  'Set your barbers’ working hours before you go live, so customers can pick a time.':
+    'Tetapkan waktu kerja barber anda sebelum buka tempahan, supaya pelanggan boleh pilih masa.',
+  'Add your services and working hours before you go live, so customers can book.':
+    'Tambah servis dan waktu kerja anda sebelum buka tempahan, supaya pelanggan boleh buat tempahan.',
+  'Your services and hours are set. Go live when you’re ready.':
+    'Servis dan waktu kerja anda sudah ditetapkan. Buka tempahan apabila anda sudah sedia.',
+  'These are suggested hours, not saved yet. Change them to yours, then tap Save hours.':
+    'Ini waktu cadangan, belum disimpan. Tukar kepada waktu anda, kemudian tekan Simpan waktu.',
 };

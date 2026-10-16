@@ -8,7 +8,7 @@ import { Button, Chip, ErrorText, Field, Loading, Row, Screen, T } from '@/compo
 import { Spacing } from '@/constants/theme';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
-import { useMyShop } from '@/lib/my-shop';
+import { defaultHours, useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { dayPlanFrom, rangesFromPlan, WEEK_ORDER, type DayPlan } from '@/lib/hours';
 import { WEEKDAYS, type Barber, type WorkingHours } from '@/lib/types';
@@ -26,6 +26,8 @@ export default function Hours() {
   const shopId = shop?.id;
   const [name, setName] = useState('');
   const [week, setWeek] = useState<DayPlan[] | null>(null);
+  // No hours saved yet (a new shop's first chair): the usual week is filled in to start from.
+  const [suggested, setSuggested] = useState(false);
   // As loaded, so leaving with changes asks first.
   const [saved, setSaved] = useState('');
   // The shop's other barbers with hours set, to copy from.
@@ -52,9 +54,12 @@ export default function Hours() {
       const barbers = (data ?? []) as BarberWithHours[];
       const barber = barbers.find((b) => b.id === id);
       if (!barber) return setError(t('Barber not found.'));
-      const loaded = weekFrom(barber.working_hours ?? []);
+      const none = !barber.working_hours?.length;
+      const loaded = weekFrom(none ? defaultHours(barber.id).map((h) => ({ ...h, id: '' })) : barber.working_hours);
       setName(barber.name);
       setWeek(loaded);
+      setSuggested(none);
+      // Leaving without saving keeps them unsaved, which the note and My shop's steps say.
       setSaved(JSON.stringify([barber.name, loaded]));
       setOthers(barbers.filter((b) => b.id !== id && b.working_hours?.length));
     })();
@@ -147,6 +152,11 @@ export default function Hours() {
           </Row>
         </>
       }>
+      {suggested ? (
+        <T variant="muted" role="status">
+          {t('These are suggested hours, not saved yet. Change them to yours, then tap Save hours.')}
+        </T>
+      ) : null}
       <Field label={t('Barber name')} value={name} onChangeText={setName} maxLength={40} />
       {others.length ? (
         // A new barber usually works the same hours as someone already set up.
