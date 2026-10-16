@@ -449,6 +449,7 @@ function seed() {
   // errand blocked in Danial's afternoon. Done or no-show only once their
   // time is over, and each only where nothing else is (cancelled ones too, so
   // the list never shows two at one time), so the bookings above stay as they are.
+  // Each under a name nobody else has, so no customer's history changes.
   const extra = (b: Booked, after?: string) => {
     const minutes = b.block ? b.block[1] : (b.service!.duration_min as number);
     const start = startOf(b.day, b.at);
@@ -458,8 +459,8 @@ function seed() {
     );
     if (!taken) book(sa, { ...b, status: after && end <= now() ? after : 'confirmed' });
   };
-  extra({ barber: danial, day: 0, at: '11:00', service: haircut, guest: [WALK_IN] }, 'completed');
-  extra({ barber: aliChair, day: 0, at: '10:00', service: beard, guest: ['Haziq'] }, 'no_show');
+  extra({ barber: danial, day: 0, at: '11:00', service: haircut, guest: ['Pak Din'] }, 'completed');
+  extra({ barber: aliChair, day: 0, at: '10:00', service: beard, guest: ['Amir'] }, 'no_show');
   extra({ barber: danial, day: 0, at: '17:30', block: ['Errand', 30] });
 
   // Reviews ------------------------------------------------------------------------
