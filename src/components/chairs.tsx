@@ -40,6 +40,8 @@ export const NAMES_HEIGHT = 48;
 const TIME_WIDTH = 56;
 /** Narrower than this, a chair can't show a name and a service; two still fit on a 360-wide phone. */
 const MIN_CHAIR_WIDTH = 120;
+/** Above and below a block's words, small enough for two lines in a quarter hour. */
+const BLOCK_PADDING = 3;
 /** On a wide window the chairs spread past the page's usual width, up to this. */
 const MAX_GRID_WIDTH = 1200;
 
@@ -197,6 +199,10 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
             <View style={{ height }}>
               {hours.map((h) => {
                 const { clock, period } = clockParts(Math.floor(h / 60) % 24, 0);
+                // "tengah hari" takes two lines in the narrow column.
+                const bottom = y(h) + 2 + 16 + 14 * (period.length > 8 ? 2 : 1);
+                // The now pill says the time itself, so an hour it would half cover steps aside.
+                if (nowShown && y(nowMinute) + 10 > y(h) && y(nowMinute) - 10 < bottom) return null;
                 return (
                   <View key={h} style={[styles.hour, { top: y(h) + 2 }]}>
                     <Text style={[styles.hourClock, { color: theme.textSecondary }]}>{clock}</Text>
@@ -447,17 +453,19 @@ function ChairBlock({
   const theme = useTheme();
   const { fill, edge } = look(status, theme, fills);
   const word = statusWord(status);
-  // Lines of 18pt inside the block's padding: a quarter hour has two, half an hour four.
-  const lines = Math.floor((height - 10) / 18);
-  const sub = status === 'done' ? theme.textSecondary : theme.text;
-  const when = word && lines < 4 ? `${time} · ${word}` : time;
+  // Lines of 18pt inside the block's gap and padding: a quarter hour has two, half an hour four.
+  const lines = Math.floor((height - 2 - 2 * BLOCK_PADDING) / 18);
+  const sub = status === 'done' || status === 'noShow' ? theme.textSecondary : theme.text;
+  // Short of room, how it went comes first, as a narrow chair cuts off the end of a line.
+  const title = word && lines <= 1 ? `${name} · ${word}` : name;
+  const when = word ? `${word} · ${time}` : time;
   const rows =
     lines >= 4
       ? [detail, time, word]
       : lines === 3
         ? [detail, when]
         : lines === 2
-          ? [detail ? `${when} · ${detail}` : when]
+          ? [word || !detail ? when : `${time} · ${detail}`]
           : [];
   return (
     <Pressable
@@ -473,7 +481,7 @@ function ChairBlock({
       ]}>
       {lines >= 1 ? (
         <T variant="label" numberOfLines={1} style={{ color: sub }}>
-          {name}
+          {title}
         </T>
       ) : null}
       {rows.map((row, i) =>
@@ -520,8 +528,9 @@ function look(status: ChairStatus, theme: Palette, fills: ReturnType<typeof chai
       return { fill: fills.toMark, edge: theme.warning };
     case 'done':
       return { fill: fills.done, edge: theme.textSecondary };
+    // Over, so grey like a done one, with a red edge.
     case 'noShow':
-      return { fill: fills.noShow, edge: theme.danger };
+      return { fill: fills.done, edge: theme.danger };
     default:
       return { fill: fills.block, edge: theme.inputBorder };
   }
@@ -624,7 +633,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   nowText: { fontFamily: Fonts?.sans, fontSize: 12, fontWeight: '700' },
-  nowLine: { position: 'absolute', left: 0, right: 0, height: 2, pointerEvents: 'none' },
+  // Over free and shaded time, under bookings, so it never strikes through a name.
+  nowLine: { position: 'absolute', left: 0, right: 0, height: 2, pointerEvents: 'none', zIndex: 1 },
   shade: { position: 'absolute', left: 0, right: 0, paddingHorizontal: Spacing.sm, paddingTop: 4 },
   shadeText: { fontFamily: Fonts?.sans, fontSize: 12, fontWeight: '600' },
   gap: { position: 'absolute', left: 0, right: 0 },
@@ -646,8 +656,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     borderLeftWidth: 4,
     paddingHorizontal: Spacing.sm - 2,
-    paddingVertical: 4,
+    paddingVertical: BLOCK_PADDING,
     overflow: 'hidden',
+    zIndex: 2,
   },
   blocked: { borderWidth: 1, borderLeftWidth: 1, borderStyle: 'dashed' },
   marker: { position: 'absolute', left: 0, width: 1, height: 1 },

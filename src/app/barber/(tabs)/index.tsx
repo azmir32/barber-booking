@@ -851,7 +851,7 @@ export default function BarberBookings() {
 
       <View ref={dayHeaderRef} style={styles.dayHeader}>
         <View style={styles.dayTitle}>
-          <T variant="heading" style={styles.info}>
+          <T variant="heading" style={styles.dayName}>
             {formatDay(dayBounds(day, tz).start, tz)}
           </T>
           {/* Chairs side by side show the gaps, often to fit a walk-in; List is easier with a screen reader. */}
@@ -1448,7 +1448,9 @@ function HoursCheck({ barbers, onConfirm }: { barbers: BarberWithHours[]; onConf
 const styles = StyleSheet.create({
   list: { gap: Spacing.sm },
   dayHeader: { gap: Spacing.xs },
-  dayTitle: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  // The switch goes under the date when both don't fit (in Malay on a small phone), rather than breaking the date.
+  dayTitle: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.sm },
+  dayName: { flexGrow: 1, flexShrink: 1 },
   noWrap: { flexWrap: 'nowrap' },
   badges: { gap: Spacing.xs },
   cardRow: { flexDirection: 'row', gap: Spacing.sm },

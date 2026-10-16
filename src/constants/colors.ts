@@ -62,8 +62,8 @@ export function chairFills(c: Palette) {
     upcoming: blend(c.tint, c.card, 0.12),
     now: blend(c.success, c.card, 0.2),
     toMark: blend(c.warning, c.card, 0.16),
+    /** Done and no-show alike: over. */
     done: c.chip,
-    noShow: c.dangerSoft,
     block: blend(c.textSecondary, c.card, 0.16),
     shade: blend(c.textSecondary, c.card, 0.1),
   };
