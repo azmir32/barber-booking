@@ -1,9 +1,11 @@
 // Small set of shared building blocks so every screen looks the same.
 
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useState, type ComponentProps, type ReactNode, type Ref } from 'react';
+import { useEffect, useState, type ComponentProps, type ReactNode, type Ref } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Platform,
   Pressable,
   RefreshControl,
@@ -14,13 +16,18 @@ import {
   View,
   type TextInputProps,
   type TextProps,
+  type DimensionValue,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Fonts, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
+import { useNow } from '@/hooks/use-now';
+import { useReduceMotion } from '@/hooks/use-reduce-motion';
 import { useTheme } from '@/hooks/use-theme';
+import { staleLine } from '@/lib/cache';
+import { t } from '@/lib/lang';
 
 export function Screen({
   children,
@@ -448,6 +455,102 @@ export function Loading() {
   );
 }
 
+/**
+ * The shape of what is coming, for a first load with nothing to show yet:
+ * grey Bones laid out like the content. It pulses gently, and keeps still
+ * when the phone asks for less motion. Screen readers hear the label, busy.
+ */
+export function Skeleton({ label, children, style }: { label: string; children: ReactNode; style?: ViewStyle }) {
+  const reduceMotion = useReduceMotion();
+  const [pulse] = useState(() => new Animated.Value(1));
+  useEffect(() => {
+    pulse.setValue(1);
+    if (reduceMotion) return;
+    const step = (toValue: number) =>
+      Animated.timing(pulse, {
+        toValue,
+        duration: 800,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: Platform.OS !== 'web',
+      });
+    const loop = Animated.loop(Animated.sequence([step(0.55), step(1)]));
+    loop.start();
+    return () => loop.stop();
+  }, [pulse, reduceMotion]);
+  return (
+    <Animated.View
+      accessible
+      role="progressbar"
+      aria-busy
+      aria-label={label}
+      accessibilityLabel={label}
+      accessibilityState={{ busy: true }}
+      style={[styles.skeleton, style, { opacity: pulse }]}>
+      {children}
+    </Animated.View>
+  );
+}
+
+/** One grey shape in a Skeleton: a line of text (as tall as the text), a button or a chip. */
+export function Bone({ width = '100%', height = 14, style }: { width?: DimensionValue; height?: number; style?: ViewStyle }) {
+  const theme = useTheme();
+  return <View style={[styles.bone, { width, height, backgroundColor: theme.skeleton }, style]} />;
+}
+
+/**
+ * A screen's title. While what it shows is from last time and the server's
+ * answer is on its way, a small spinner sits at the end, in room kept for it
+ * so nothing moves when it comes and goes.
+ */
+export function ScreenTitle({ title, refreshing }: { title: string; refreshing?: boolean }) {
+  const theme = useTheme();
+  return (
+    <View style={styles.titleRow}>
+      <T variant="title" style={styles.titleText}>
+        {title}
+      </T>
+      <View style={styles.titleSpinner}>
+        {refreshing ? (
+          <ActivityIndicator size="small" color={theme.textSecondary} accessibilityLabel={t('Refreshing')} />
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * When asking the server again failed: what is on screen stays, with one
+ * line saying when it is from, and Try again.
+ */
+export function StaleNote({
+  savedAt,
+  onRetry,
+  retrying,
+  timeZone,
+}: {
+  /** When the server gave what is on screen, in ms. */
+  savedAt: number;
+  onRetry: () => void;
+  retrying?: boolean;
+  timeZone?: string;
+}) {
+  const theme = useTheme();
+  // "Yesterday" once midnight passes with the line still up.
+  const now = useNow();
+  return (
+    <View
+      role="status"
+      accessibilityLiveRegion="polite"
+      style={[styles.staleNote, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <Ionicons name="cloud-offline-outline" size={20} color={theme.warning} />
+      <T variant="small" style={styles.staleText}>
+        {staleLine(savedAt, now, timeZone)}
+      </T>
+      <Button title={t('Try again')} variant="ghost" loading={retrying} onPress={onRetry} style={styles.staleButton} />
+    </View>
+  );
+}
+
 export function ErrorText({ message }: { message: string | null }) {
   const theme = useTheme();
   if (!message) return null;
@@ -574,5 +677,21 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexWrap: 'wrap' },
   section: { gap: Spacing.md },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  skeleton: { gap: Spacing.lg },
+  bone: { borderRadius: Radius.sm },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  titleText: { flexShrink: 1 },
+  titleSpinner: { width: 24, height: 24, marginLeft: 'auto', alignItems: 'center', justifyContent: 'center' },
+  staleNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingLeft: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  staleText: { flex: 1, paddingVertical: Spacing.xs },
+  staleButton: { paddingHorizontal: Spacing.md },
   empty: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xxl },
 });

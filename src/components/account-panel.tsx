@@ -105,6 +105,7 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
     const { error } = await supabase.rpc('delete_my_account');
     setBusy(false);
     if (error) return setError(errorMessage(error));
+    // Also forgets everything this phone kept of theirs (see auth.tsx).
     await signOut();
     router.replace('/welcome');
   }

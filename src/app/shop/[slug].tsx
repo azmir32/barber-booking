@@ -6,9 +6,9 @@ import { DayPicker } from '@/components/day-picker';
 import { Distance } from '@/components/distance';
 import { RatingSummary } from '@/components/reviews';
 import { ShopReviews } from '@/components/shop-reviews';
-import { Button, Card, Chip, Empty, ErrorText, Field, Loading, Row, Screen, Section, T } from '@/components/ui';
+import { Bone, Button, Card, Chip, Empty, ErrorText, Field, Row, Screen, Section, Skeleton, T } from '@/components/ui';
 import { APP_NAME, bookingLink } from '@/constants/brand';
-import { Spacing } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
 import { addToCalendar } from '@/lib/add-to-calendar';
@@ -22,6 +22,7 @@ import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
 import { ratingAverage } from '@/lib/reviews';
+import { shopPreview } from '@/lib/shop-preview';
 import {
   formatClockOnly,
   formatDay,
@@ -64,8 +65,9 @@ export default function ShopPage() {
   // link, so signing up to book on a normal page doesn't reload it.
   const moveUser = params.move ? session?.user.id : undefined;
   const waitForAuth = Boolean(params.move) && authLoading;
-  const theme = useTheme();
   const now = useNow();
+  // What Find a barber knew about the shop, so its name and stars show while the rest loads.
+  const preview = useMemo(() => shopPreview(slug), [slug]);
 
   const [shop, setShop] = useState<Shop | null>(null);
   // Where the customer was when they opened the page, if Near me is on; it isn't asked for here.
@@ -400,13 +402,47 @@ export default function ShopPage() {
   );
 
   const header = <Stack.Screen options={{ title: shop?.name ?? params.name ?? '' }} />;
+  // Today's hours from the shop's own answer, or else from the list it was opened from.
+  const listedHours =
+    preview && preview.listed_on === todayDate ? { opens: preview.opens_today, closes: preview.closes_today } : null;
 
   if (loading) {
     return (
-      <>
+      <Screen edges={[]}>
         {header}
-        <Loading />
-      </>
+        {preview ? (
+          <>
+            <ShopHeading
+              shop={preview}
+              away={preview.distance_km == null ? null : Number(preview.distance_km)}
+              // Moving a booking shows no reviews, so no stars either.
+              rating={
+                params.move
+                  ? null
+                  : { average: preview.rating_avg == null ? null : Number(preview.rating_avg), count: preview.rating_count }
+              }
+              open={listedHours ? openStatus(listedHours.opens, listedHours.closes, now) : null}
+              // No "See reviews" until the reviews are on the page to go to.
+            />
+            <Skeleton label={t('Loading services')}>
+              <ServiceBones />
+            </Skeleton>
+          </>
+        ) : (
+          <Skeleton label={t('Loading the shop')}>
+            <View style={{ gap: Spacing.sm }}>
+              <Bone width="70%" height={28} />
+              <Bone width="55%" />
+              <Bone width="35%" />
+              <Row>
+                <Bone width={120} height={48} />
+                <Bone width={160} height={48} />
+              </Row>
+            </View>
+            <ServiceBones />
+          </Skeleton>
+        )}
+      </Screen>
     );
   }
   if (loadError) {
@@ -458,8 +494,8 @@ export default function ShopPage() {
   }
 
   const tz = shop.time_zone;
-  const openNow =
-    hoursToday?.date === todayDate && week.some(Boolean) ? openStatus(hoursToday.opens, hoursToday.closes, now, tz) : null;
+  const hours = hoursToday?.date === todayDate ? hoursToday : listedHours;
+  const openNow = hours && week.some(Boolean) ? openStatus(hours.opens, hours.closes, now, tz) : null;
   const door = shopPoint(shop);
   // Worked out here as the list's find_shops does, so both say the same.
   const away = here && door ? kmBetween(here, door) : null;
@@ -661,48 +697,17 @@ export default function ShopPage() {
     : barbers.length > 1 ? t('3. Pick a time') : t('2. Pick a time');
 
   return (
-    <Screen edges={[]} scrollRef={scrollRef} footer={footer}>
+    // Its own key, so the page starts a new scroll view rather than taking over the
+    // loading one: on the web a scroll view only fills in scrollRef when it first appears.
+    <Screen key="shop" edges={[]} scrollRef={scrollRef} footer={footer}>
       {header}
-      <View style={{ gap: Spacing.xs }}>
-        <T variant="title">{shop.name}</T>
-        <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
-          <T variant="muted" style={{ flex: 1 }}>
-            {shop.address || shop.area}
-          </T>
-          {away != null ? <Distance km={away} style={{ marginTop: 2 }} /> : null}
-        </Row>
-        {moving ? null : (
-          <RatingSummary
-            average={ratingAverage(shop.rating_sum, shop.rating_count)}
-            count={shop.rating_count}
-            onPress={scrollToReviews}
-          />
-        )}
-        {openNow ? (
-          <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
-            {openNow.label}
-          </T>
-        ) : null}
-        {shop.about ? <T>{shop.about}</T> : null}
-        <Row>
-          {/* Where it is, before booking: often what decides between two barbers. */}
-          <Button title={t('Directions')} variant="secondary" onPress={() => Linking.openURL(directionsUrl(shop))} />
-          {shop.phone ? (
-            <Button
-              title={t('WhatsApp the shop')}
-              variant="secondary"
-              onPress={() => Linking.openURL(whatsappUrl(shop.phone!))}
-            />
-          ) : null}
-          {shop.instagram ? (
-            <Button
-              title="Instagram"
-              variant="secondary"
-              onPress={() => Linking.openURL(`https://instagram.com/${shop.instagram!.replace(/^@/, '')}`)}
-            />
-          ) : null}
-        </Row>
-      </View>
+      <ShopHeading
+        shop={shop}
+        away={away}
+        rating={moving ? null : { average: ratingAverage(shop.rating_sum, shop.rating_count), count: shop.rating_count }}
+        open={openNow}
+        onReviews={scrollToReviews}
+      />
 
       {services.length === 0 || barbers.length === 0 ? (
         <Empty title={t('Not taking online bookings yet')} body={t('Message the shop to book for now.')} />
@@ -761,7 +766,18 @@ export default function ShopPage() {
                     <T variant="small">{t('No times left today. Showing {day}.', { day: dayText(day) })}</T>
                   ) : null}
                   {slotsLoading ? (
-                    <T variant="muted">{t('Checking free times…')}</T>
+                    <Skeleton label={t('Loading free times')} style={{ gap: Spacing.md }}>
+                      <Row>
+                        {[0, 1, 2].map((i) => (
+                          <Bone key={i} width={92} height={48} style={{ borderRadius: Radius.md }} />
+                        ))}
+                      </Row>
+                      <Row>
+                        {[0, 1, 2, 3, 4, 5].map((i) => (
+                          <Bone key={i} width={72} height={48} style={{ borderRadius: Radius.md }} />
+                        ))}
+                      </Row>
+                    </Skeleton>
                   ) : slotsError ? (
                     <>
                       <ErrorText message={`${t('Couldn’t load free times.')} ${slotsError}`} />
@@ -868,5 +884,79 @@ export default function ShopPage() {
         </Card>
       ) : null}
     </Screen>
+  );
+}
+
+/**
+ * The top of the page: the name, where it is, the stars, whether it is open
+ * and the ways to reach it. Shown from Find a barber's list at once, then
+ * from the shop's own answer, in the same places.
+ */
+function ShopHeading({
+  shop,
+  away,
+  rating,
+  open,
+  onReviews,
+}: {
+  shop: Pick<Shop, 'name' | 'address' | 'area' | 'about'> &
+    Partial<Pick<Shop, 'phone' | 'instagram' | 'latitude' | 'longitude'>>;
+  /** How far the shop is, in km, with Near me on. */
+  away: number | null;
+  /** Null hides the stars, e.g. while moving a booking. */
+  rating: { average: number | null; count: number } | null;
+  open: ReturnType<typeof openStatus> | null;
+  onReviews?: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <View style={{ gap: Spacing.xs }}>
+      <T variant="title">{shop.name}</T>
+      <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+        <T variant="muted" style={{ flex: 1 }}>
+          {shop.address || shop.area}
+        </T>
+        {away != null ? <Distance km={away} style={{ marginTop: 2 }} /> : null}
+      </Row>
+      {rating ? <RatingSummary average={rating.average} count={rating.count} onPress={onReviews} /> : null}
+      {open ? (
+        <T variant="label" style={{ color: open.state === 'open' ? theme.success : theme.textSecondary }}>
+          {open.label}
+        </T>
+      ) : null}
+      {shop.about ? <T>{shop.about}</T> : null}
+      <Row>
+        {/* Where it is, before booking: often what decides between two barbers. */}
+        <Button title={t('Directions')} variant="secondary" onPress={() => Linking.openURL(directionsUrl(shop))} />
+        {shop.phone ? (
+          <Button title={t('WhatsApp the shop')} variant="secondary" onPress={() => Linking.openURL(whatsappUrl(shop.phone!))} />
+        ) : null}
+        {shop.instagram ? (
+          <Button
+            title="Instagram"
+            variant="secondary"
+            onPress={() => Linking.openURL(`https://instagram.com/${shop.instagram!.replace(/^@/, '')}`)}
+          />
+        ) : null}
+      </Row>
+    </View>
+  );
+}
+
+/** The shape of the services step, while the shop loads. */
+function ServiceBones() {
+  return (
+    <View style={{ gap: Spacing.md }}>
+      <Bone width="45%" height={20} />
+      {[0, 1, 2].map((i) => (
+        <Card key={i}>
+          <Row style={{ justifyContent: 'space-between' }}>
+            <Bone width="50%" />
+            <Bone width={48} />
+          </Row>
+          <Bone width={56} height={12} />
+        </Card>
+      ))}
+    </View>
   );
 }

@@ -7,12 +7,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Distance } from '@/components/distance';
 import { RatingSummary } from '@/components/reviews';
 import { ReturningCards } from '@/components/returning-cards';
-import { Button, Card, Chip, Empty, Field, Row, T } from '@/components/ui';
+import { Bone, Button, Card, Chip, Empty, Field, Row, ScreenTitle, Skeleton, StaleNote, T } from '@/components/ui';
 import { APP_NAME } from '@/constants/brand';
 import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
+import { appCache } from '@/lib/app-cache';
 import { useAuth } from '@/lib/auth';
+import { cacheKey, GUEST } from '@/lib/cache';
 import type { LatLng } from '@/lib/distance';
 import { nextFreeLine, openStatus } from '@/lib/hours';
 import { t } from '@/lib/lang';
@@ -25,6 +27,7 @@ import {
   setNearMePosition,
   type LocateProblem,
 } from '@/lib/near-me';
+import { rememberShop } from '@/lib/shop-preview';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice, localDateString } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -51,20 +54,31 @@ type Area = { area: string; shops: number };
  * on, and what it finds stays nearest first.
  */
 type Near = 'off' | 'finding' | 'on';
+/** The first page for a search or area, as kept for next time. */
+type FirstPage = { shops: ShopListing[]; hasMore: boolean; listedOn: string };
 
 /** Shops per page. One more is asked for, to know whether there are more. */
 const PAGE = 20;
 /** The area a customer picked last time, so they land on their own area. */
 const AREA_KEY = 'potongku.area';
 
+/** Where the first page for an area and search is kept: the list itself is the same for everyone. Near me's is apart. */
+const pageKey = (uid: string | undefined, area: string | null, query: string, near: boolean) =>
+  cacheKey(uid ?? GUEST, 'find', area?.toLowerCase(), query.trim().toLowerCase(), near ? 'near' : null);
+
 export default function Explore() {
   const theme = useTheme();
   const uid = useAuth().session?.user.id;
+  // Read when an answer comes back, so the session arriving after the first load doesn't send the list again.
+  const uidRef = useRef(uid);
+  useEffect(() => {
+    uidRef.current = uid;
+  }, [uid]);
   // Keeps "Open now" and "Free now" right while the list stays on screen.
   const now = useNow();
   const [shops, setShops] = useState<ShopListing[]>([]);
   const [hasMore, setHasMore] = useState(false);
-  const [areas, setAreas] = useState<Area[]>([]);
+  const [areas, setAreas] = useState<Area[]>(() => appCache.peek<Area[]>(cacheKey(uid ?? GUEST, 'areas'))?.data ?? []);
   const [area, setArea] = useState<string | null>(null);
   const [areaRestored, setAreaRestored] = useState(false);
   // An area picked on this visit, rather than the one remembered from the last.
@@ -94,6 +108,29 @@ export default function Explore() {
   const [nearPicked, setNearPicked] = useState(false);
   // Only the newest tap of Near me counts; turning it off drops a position still on its way.
   const latestFind = useRef(0);
+  // Last time's cards show at once for whoever is signed in.
+  const [mineFor, setMineFor] = useState<string | null>(null);
+  if (uid && mineFor !== uid) {
+    setMineFor(uid);
+    const kept = appCache.peek<MyShops>(cacheKey(uid, 'my-shops'));
+    if (kept && mine?.uid !== uid) setMine({ ...kept.data, uid });
+  }
+  // The list on screen: which area and search it is for, when the server gave it, and whether that was on this visit.
+  const [shown, setShown] = useState<{ key: string; at: number; fresh: boolean } | null>(null);
+  const key = pageKey(uid, area, query, near === 'on' && here !== null);
+  // A list kept from before (last visit, or an earlier search on this one) shows at once while it is asked for again.
+  const [peeked, setPeeked] = useState<string | null>(null);
+  if (areaRestored && peeked !== key) {
+    setPeeked(key);
+    const kept = appCache.peek<FirstPage>(key);
+    if (kept && shown?.key !== key) {
+      setShops(kept.data.shops);
+      setHasMore(kept.data.hasMore);
+      setListedOn(kept.data.listedOn);
+      setShown({ key, at: kept.at, fresh: false });
+      setError(null);
+    }
+  }
 
   async function findMe(picked: boolean) {
     const request = ++latestFind.current;
@@ -138,6 +175,7 @@ export default function Explore() {
     // Nothing to say on failure: the list below is what matters, and the cards come back on the next load.
     if (request !== latestMine.current || error || !data) return;
     setMine({ ...(data as MyShops), uid: who });
+    appCache.write(cacheKey(who, 'my-shops'), data);
   }, []);
 
   const restore = useEffectEvent(async (saved: string | null, wasNear: boolean) => {
@@ -192,10 +230,16 @@ export default function Explore() {
     if (error) return setError(errorMessage(error));
     setError(null);
     const rows = (data ?? []) as ShopListing[];
-    setShops(rows.slice(0, PAGE));
-    setHasMore(rows.length > PAGE);
-    setListedOn(localDateString(new Date()));
-  }, [fetchPage, loadMine, query, areaPicked, nearPicked]);
+    const first: FirstPage = { shops: rows.slice(0, PAGE), hasMore: rows.length > PAGE, listedOn: localDateString(new Date()) };
+    setShops(first.shops);
+    setHasMore(first.hasMore);
+    setListedOn(first.listedOn);
+    const key = pageKey(uidRef.current, area, query, at !== null);
+    setShown({ key, at: Date.now(), fresh: true });
+    // A search only lasts the visit, so the box starts empty next time; so does a list
+    // nearest first, as its distances say where the customer was.
+    appCache.write(key, first, !query.trim() && !at);
+  }, [fetchPage, loadMine, query, area, at, areaPicked, nearPicked]);
 
   async function loadMore() {
     const request = latest.current;
@@ -211,8 +255,11 @@ export default function Explore() {
 
   const loadAreas = useCallback(async () => {
     const { data } = await supabase.rpc('shop_areas');
+    if (!data) return;
     // The busiest areas only; search finds the rest.
-    if (data) setAreas((data as Area[]).slice(0, 12));
+    const busiest = (data as Area[]).slice(0, 12);
+    setAreas(busiest);
+    appCache.write(cacheKey(uidRef.current ?? GUEST, 'areas'), busiest);
   }, []);
 
   // Typing waits for a short pause before searching; everything else loads at once.
@@ -229,11 +276,13 @@ export default function Explore() {
     }, [loadAreas]),
   );
 
+  // Last visit's list (maybe yesterday's) is asked for again on opening anyway; this is for one left up past midnight.
+  const keptOnly = shown !== null && !shown.fresh;
   useEffect(() => {
-    if (!areaRestored || listedOn === today) return;
+    if (!areaRestored || listedOn === today || keptOnly) return;
     const timer = setTimeout(load, 0);
     return () => clearTimeout(timer);
-  }, [areaRestored, listedOn, today, load]);
+  }, [areaRestored, listedOn, today, keptOnly, load]);
 
   function pickArea(next: string | null) {
     if (near !== 'off') stopNearMe();
@@ -256,6 +305,8 @@ export default function Explore() {
   }
 
   const searching = query.trim() !== '';
+  // Last time's list, until the server answers for it.
+  const fromCache = shown !== null && !shown.fresh && shown.key === key;
   // Only the signed-in customer's own, and out of the way while they look for something else.
   // The area or Near me remembered from last time still sorts the list, but they came back for their barber.
   const returning = !searching && !areaPicked && !nearPicked && mine && mine.uid === uid ? mine : null;
@@ -290,7 +341,8 @@ export default function Explore() {
             }}
           />
         }>
-        <T variant="title">{t('Find a barber')}</T>
+        <ScreenTitle title={t('Find a barber')} refreshing={fromCache && loading} />
+        {error && shown ? <StaleNote savedAt={shown.at} onRetry={load} retrying={loading} /> : null}
         <Field
           label={t('Search')}
           value={query}
@@ -362,12 +414,12 @@ export default function Explore() {
             }
           />
         ) : null}
-        {error ? (
+        {error && !shown ? (
           <Empty title={t('Couldn’t load barbers')} body={t('Check your connection and try again.')}>
             <Button title={t('Try again')} variant="secondary" onPress={load} />
           </Empty>
         ) : null}
-        {loading && shops.length === 0 && !error ? <T variant="muted">{t('Loading barbers…')}</T> : null}
+        {loading && shops.length === 0 && !error ? <ShopsSkeleton /> : null}
         {!loading && !error && shops.length === 0 ? (
           searching || area ? (
             <Empty title={t('No matches')} body={t('Try another name or area.')}>
@@ -398,7 +450,11 @@ export default function Explore() {
             <Card
               key={shop.id}
               role="link"
-              onPress={() => router.push({ pathname: '/shop/[slug]', params: { slug: shop.slug, name: shop.name } })}>
+              onPress={() => {
+                // Its page shows what the list knows at once, while the rest loads.
+                rememberShop({ ...shop, listed_on: listedOn });
+                router.push({ pathname: '/shop/[slug]', params: { slug: shop.slug, name: shop.name } });
+              }}>
               <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
                 <T variant="heading" style={{ flex: 1 }}>
                   {shop.name}
@@ -460,5 +516,26 @@ function NearMeProblem({ problem }: { problem: LocateProblem }) {
       </T>
       {settings ? <Button title={t('Settings')} variant="ghost" onPress={() => Linking.openSettings()} /> : null}
     </Row>
+  );
+}
+
+/** The shape of the first few shops, while the list loads for the first time. */
+function ShopsSkeleton() {
+  return (
+    <Skeleton label={t('Loading barbers')}>
+      {[0, 1, 2].map((i) => (
+        <Card key={i}>
+          <Bone width="60%" height={20} />
+          <Bone width="80%" />
+          <Bone width="90%" height={12} />
+          <Row>
+            <Bone width={72} />
+            <Bone width={84} />
+            <Bone width={64} />
+          </Row>
+          <Bone width="45%" />
+        </Card>
+      ))}
+    </Skeleton>
   );
 }

@@ -10,6 +10,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Email and password sign-in, with password reset by emailed code
 - Delete account from the Account screen (required by the App Store and Google Play)
 - English or Bahasa Melayu: follows the phone's language, with a switch on the welcome screen and under Account
+- Opens at once on a slow line: Find a barber, My bookings, the barber's Bookings tab and My shop's Takings, Customers and Reviews show what they showed last time straight away (kept on the phone for a day, for that account only, and forgotten on sign out or account deletion), with a small spinner by the title while the server's answer comes. If that fails the old answer stays, with "Couldn't refresh. Showing what you saw at 3:05 pm." and Try again; buttons that change a booking wait for the fresh list. A first visit shows grey shapes of what is coming, and a shop opened from the list shows its name, stars and address while the rest loads. In the demo, with every request taking 1.5 seconds, opening the app again shows the barbers in 0.2 seconds instead of 3.5, and My bookings in 0.1 seconds instead of 1.9
 
 **Customers**
 - Browse live barbershops, see which are open now and when each can next take you, and search by name or area
@@ -65,6 +66,8 @@ npm run build:demo
 ```
 
 This builds `dist-demo/index.html`: the whole web app in one file, with a pretend backend inside the page ([`src/demo`](src/demo)) and four sample shops around Kajang. Open it in any browser, or host it anywhere, and tap **Try as a customer** (Hakim) or **Try as a barber** (Ali of Ali Barber Sungai Chua). Nothing is sent anywhere; changes are kept in that browser until **Start the demo again**. The demo password reset code is `123456`.
+
+To see it on a weak signal, run `localStorage.setItem('potongku.demo.network', '{"delayMs":1500}')` (or `'{"offline":true}'`) in the browser console and reload; remove the key to put it back.
 
 The pretend backend copies the database rules in `supabase/migrations` (row-level security, the booking functions and their messages), so when you change a rule there, change it in `src/demo` too. `npm test` checks the demo backend through the real Supabase client.
 

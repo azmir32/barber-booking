@@ -14,7 +14,9 @@ import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
   DEMO_CUSTOMER_EMAIL,
+  DEMO_NETWORK_KEY,
   DEMO_PASSWORD,
+  DEMO_REQUESTS_KEY,
   DEMO_RESET_CODE,
   DEMO_URL,
   demoFetch,
@@ -2387,4 +2389,50 @@ test('my_shops works out the last cut, visits and usual gap at each shop, as the
   );
   assert.deepEqual(await mine(DEMO_BARBER_EMAIL), { next: null, upcoming: 0, shops: [] });
   assert.equal((await client().rpc('my_shops')).error?.code, '42501');
+});
+
+test('the demo can be slowed down or cut off, the way a phone with a weak signal is', async () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  try {
+    const c = client();
+    const list = () => c.rpc('find_shops', { p_search: null, p_area: null, p_limit: 21, p_offset: 0 });
+    saved.set(DEMO_NETWORK_KEY, JSON.stringify({ delayMs: 150 }));
+    const started = Date.now();
+    const slow = await list();
+    assert.equal(slow.error, null);
+    assert.ok(Date.now() - started >= 140, 'answered late');
+    assert.equal(slow.data.length, 4);
+
+    // No signal: no answer at all, which the app words as no connection.
+    saved.set(DEMO_NETWORK_KEY, JSON.stringify({ offline: true }));
+    const { data, error } = await list();
+    assert.equal(data, null);
+    assert.equal(error?.code, '');
+    assert.match(error!.message, /Failed to fetch/);
+
+    // Back to normal once the setting goes.
+    saved.delete(DEMO_NETWORK_KEY);
+    assert.equal((await list()).error, null);
+    assert.equal(saved.get(DEMO_REQUESTS_KEY), undefined);
+
+    // Each request's path can be noted, to count what a screen asks for.
+    saved.set(DEMO_NETWORK_KEY, JSON.stringify({ log: true }));
+    await list();
+    await c.rpc('shop_areas');
+    await list();
+    assert.deepEqual(JSON.parse(saved.get(DEMO_REQUESTS_KEY)!), [
+      '/rest/v1/rpc/find_shops',
+      '/rest/v1/rpc/shop_areas',
+      '/rest/v1/rpc/find_shops',
+    ]);
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
 });

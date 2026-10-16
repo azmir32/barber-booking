@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { Button, ErrorText, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { appCache } from '@/lib/app-cache';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { forgetSeen } from '@/lib/shop-news';
@@ -49,6 +50,8 @@ export function DemoPanel() {
     await supabase.auth.signOut();
     demo.resetDemo();
     await forgetSeen();
+    // The sample accounts keep their ids, so last time's screens would show what was undone.
+    await appCache.clear();
     setError(null);
   }
 

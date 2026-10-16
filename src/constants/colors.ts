@@ -21,6 +21,8 @@ export const Colors = {
     /** Background of destructive buttons, so Cancel never looks like Confirm. */
     dangerSoft: '#FDECEA',
     chip: '#EEECE7',
+    /** Grey shapes standing in for content still loading; only there to be seen, not read. */
+    skeleton: '#E4E1DA',
   },
   dark: {
     text: '#F3F2EF',
@@ -37,6 +39,7 @@ export const Colors = {
     danger: '#F97066',
     dangerSoft: '#3A1D20',
     chip: '#323844',
+    skeleton: '#373C48',
   },
 } as const;
 

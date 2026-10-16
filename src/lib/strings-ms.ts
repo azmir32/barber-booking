@@ -947,4 +947,22 @@ export const ms: Record<string, string> = {
     '{app} hanya mendapat lokasi anggaran anda. Hidupkan Lokasi tepat dalam Tetapan, kemudian cuba lagi.',
   'Couldn’t get your exact spot. Try again near the door or just outside.':
     'Lokasi tepat anda tidak dapat dikesan. Cuba lagi berhampiran pintu atau di luar kedai.',
+
+  // Round 9, screens that open at once: last time's answers while the server's
+  // come, the line when a refresh fails and the grey shapes of what is loading
+  // (lib/cache.ts, components/ui.tsx and the screens)
+  'Couldn’t refresh. Showing what you saw at {time}.': 'Tidak dapat dikemas kini. Ini yang anda lihat pada {time}.',
+  'Couldn’t refresh. Showing what you saw yesterday at {time}.':
+    'Tidak dapat dikemas kini. Ini yang anda lihat semalam pada {time}.',
+  'Couldn’t refresh. Showing what you saw on {day} at {time}.':
+    'Tidak dapat dikemas kini. Ini yang anda lihat pada {day}, {time}.',
+  Refreshing: 'Mengemas kini',
+  'Loading barbers': 'Memuatkan barber',
+  'Loading your bookings': 'Memuatkan tempahan anda',
+  'Loading bookings': 'Memuatkan tempahan',
+  'Loading the shop': 'Memuatkan kedai',
+  'Loading services': 'Memuatkan servis',
+  'Loading free times': 'Memuatkan masa kosong',
+  'Hi {shop}, this is {name}.': 'Hai {shop}, saya {name}.',
+  'Hi {who}, this is {shop}.': 'Hai {who}, ini {shop}.',
 };

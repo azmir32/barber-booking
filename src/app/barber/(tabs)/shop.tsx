@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Share, View, type ViewStyle } from 'react-native';
 
 import { AccountPanel } from '@/components/account-panel';
@@ -11,7 +11,7 @@ import { KeepLiveButton } from '@/components/keep-live-button';
 import { ReviewsCard } from '@/components/reviews-card';
 import { ShopForm } from '@/components/shop-form';
 import { TakingsCard } from '@/components/takings-card';
-import { Badge, Button, Card, ErrorText, Row, Screen, Section, T } from '@/components/ui';
+import { Badge, Button, Card, ErrorText, Row, Screen, ScreenTitle, Section, StaleNote, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
@@ -19,6 +19,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
+import { useShopCards } from '@/lib/shop-cards';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay } from '@/lib/time';
 import type { Shop } from '@/lib/types';
@@ -43,7 +44,30 @@ function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' |
 }
 
 export default function MyShop() {
-  const { shop, reload } = useMyShop();
+  const { shop, fresh, staleSince: shopStaleSince, reload } = useMyShop();
+  // Takings, customers and reviews: last time's numbers at once, then the server's.
+  const cards = useShopCards(shop);
+  // The shop itself is asked for once when the app opens. If that failed, last visit's
+  // status and details stay, so it is asked for again on coming here and with Try again.
+  const [askingShop, setAskingShop] = useState(false);
+  const askShop = useCallback(async () => {
+    setAskingShop(true);
+    await reload();
+    setAskingShop(false);
+  }, [reload]);
+  // Read on focus, so a retry that fails doesn't send another straight away.
+  const shopKeptOnly = useRef(false);
+  useEffect(() => {
+    shopKeptOnly.current = shopStaleSince != null;
+  }, [shopStaleSince]);
+  useFocusEffect(
+    useCallback(() => {
+      if (shopKeptOnly.current) askShop();
+    }, [askShop]),
+  );
+  // Either part kept from last visit and not refreshed: said once, with the older time.
+  const stale = [cards.staleSince, shopStaleSince].filter((at): at is number => at != null);
+  const staleSince = stale.length ? Math.min(...stale) : null;
   const theme = useTheme();
   const now = useNow();
   const [busy, setBusy] = useState(false);
@@ -114,7 +138,18 @@ export default function MyShop() {
 
   return (
     <Screen>
-      <T variant="title">{t('My shop')}</T>
+      <ScreenTitle title={t('My shop')} refreshing={cards.refreshing || askingShop} />
+      {staleSince ? (
+        <StaleNote
+          savedAt={staleSince}
+          onRetry={() => {
+            cards.reload();
+            if (shopStaleSince != null) askShop();
+          }}
+          retrying={cards.loading || askingShop}
+          timeZone={shop.time_zone}
+        />
+      ) : null}
 
       <Card>
         <Row style={{ justifyContent: 'space-between' }}>
@@ -169,11 +204,11 @@ export default function MyShop() {
         )}
       </Card>
 
-      <TakingsCard shop={shop} />
+      <TakingsCard totals={cards.takings} />
 
-      <CustomersCard />
+      <CustomersCard counts={cards.customers} />
 
-      <ReviewsCard shopId={shop.id} />
+      <ReviewsCard reviews={cards.reviews} />
 
       <ClosedDaysCard shop={shop} />
 
@@ -231,7 +266,8 @@ export default function MyShop() {
       </Card>
 
       <Section title={t('Shop details')}>
-        <ShopForm key={shop.id} shop={shop} onSaved={reload} />
+        {/* Starts again from the server's details once they arrive, so saving never puts back last visit's. */}
+        <ShopForm key={fresh ? shop.id : `${shop.id}-kept`} shop={shop} onSaved={reload} />
       </Section>
 
       <Section title={t('Account')}>
