@@ -1154,6 +1154,29 @@ export function deleteMyAccount(c: Caller) {
   if (user) deleteRows('users', [user]);
 }
 
+/**
+ * What My shop's set-up card and Go live need: how many services customers
+ * can book, and the active barbers in the team's order with whether each
+ * works at least one day a week. Only the caller's own shop; null without one.
+ */
+export function shopSetup(c: Caller) {
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  if (!shop) return null;
+  const withHours = new Set(tables().working_hours.map((h) => h.barber_id));
+  return {
+    services: tables().services.filter((v) => v.shop_id === shop.id && v.is_active === true).length,
+    barbers: tables()
+      .barbers.filter((b) => b.shop_id === shop.id && b.is_active === true)
+      .sort(
+        (a, b) =>
+          Number(a.sort_order) - Number(b.sort_order) ||
+          ms(a.created_at) - ms(b.created_at) ||
+          (String(a.id) < String(b.id) ? -1 : 1),
+      )
+      .map((b) => ({ id: b.id, name: b.name, has_hours: withHours.has(b.id) })),
+  };
+}
+
 /** A barber account with no shop yet turns into a customer one (signed up as a barber by mistake). */
 export function becomeCustomer(c: Caller) {
   if (c.uid == null) throw new PgError('42501', 'Not signed in.', 401);
@@ -1179,6 +1202,7 @@ const SIGNED_IN_ONLY = new Set([
   'shop_summary',
   'shop_customers',
   'shop_changes',
+  'shop_setup',
   'my_bookings',
   'rate_booking',
   'reply_to_review',
@@ -1233,6 +1257,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: shopCustomers(c, args) };
     case 'shop_changes':
       return { status: 200, body: shopChanges(c, args.p_since ?? null, args.p_limit ?? 5) };
+    case 'shop_setup':
+      return { status: 200, body: shopSetup(c) };
     case 'my_bookings':
       return { status: 200, body: myBookings(c, args.p_limit) };
     case 'rate_booking':

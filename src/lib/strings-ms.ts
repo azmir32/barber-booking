@@ -965,4 +965,10 @@ export const ms: Record<string, string> = {
   'Loading free times': 'Memuatkan masa kosong',
   'Hi {shop}, this is {name}.': 'Hai {shop}, saya {name}.',
   'Hi {who}, this is {shop}.': 'Hai {who}, ini {shop}.',
+
+  // Round 10, getting a new shop ready: My shop's steps to the first booking
+  // and Go live with nothing to book (barber/(tabs)/shop.tsx,
+  // components/ready-card.tsx, lib/ready.ts, the database's go-live check)
+  'Add a barber with working hours before you go live, so customers can pick a time.':
+    'Tambah barber yang ada waktu kerja dahulu sebelum buka tempahan, supaya pelanggan boleh pilih masa.',
 };
