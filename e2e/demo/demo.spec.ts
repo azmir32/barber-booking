@@ -1034,6 +1034,60 @@ test('Find a barber asks for its list once on a new day, with last night’s sho
   expect(await asked(page, '/rest/v1/rpc/my_shops')).toBe(1);
 });
 
+test('the barber sees the day as chairs side by side, opens a booking from there and adds one in a free gap', async ({
+  page,
+}) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  // Tomorrow, so every booking and gap is still to come whatever the hour.
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await expect(app.getByText('“Same as last time”')).toBeVisible();
+
+  // Chairs lays out what the list already has, so switching asks for nothing.
+  await network(page, { log: true });
+  const chairs = app.getByRole('radio', { name: 'Chairs', exact: true });
+  await chairs.click();
+  await expect(chairs).toBeChecked();
+  await expect(app.getByText('“Same as last time”')).toHaveCount(0);
+  const hakim = button(app, /^Hakim, Skin fade, 4:30 pm to 5:15 pm, with (Ali|Danial)$/);
+  await expect(hakim).toBeVisible();
+  // Danial is off on Mondays and Ali on Sundays; whoever works has Hakim, in his own column.
+  const barber = /with (\w+)$/.exec((await hakim.getAttribute('aria-label')) ?? '')![1];
+  const chair = app.getByRole('group', { name: `${barber}’s chair` });
+  await expect(button(chair, `Hakim, Skin fade, 4:30 pm to 5:15 pm, with ${barber}`)).toBeVisible();
+  await expect(button(chair, `Encik Rosli, Haircut, 11:30 am to 12:00 pm, with ${barber}`)).toBeVisible();
+  const other = barber === 'Ali' ? 'Danial' : 'Ali';
+  await expect(
+    app.getByRole('group', { name: `${other}’s chair` }).or(app.getByText(new RegExp(`^Off: ${other}`))),
+  ).toBeVisible();
+  expect(await asked(page, '/rest/v1/bookings')).toBe(0);
+  await snap(page, 'demo-34-chairs');
+
+  // A booking opens the same actions as its row in the list.
+  await hakim.click();
+  await expect(app.getByText(`4:30 pm–5:15 pm · ${barber}`)).toBeVisible();
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toBeVisible();
+  await expect(button(app, 'More actions for Hakim')).toBeVisible();
+  await snap(page, 'demo-35-chairs-booking');
+  await button(app, 'Close').click();
+  await expect(button(app, 'Remind Hakim on WhatsApp')).toHaveCount(0);
+
+  // Free time after Hakim: its first quarter hour opens Add to the day with that barber and time.
+  await chair
+    .getByRole('button', { name: new RegExp(`^Free with ${barber}, 5:15 pm to \\d{1,2}:\\d{2} pm\\. Add a booking$`) })
+    .click({ position: { x: 24, y: 8 } });
+  await expect(app.getByRole('radiogroup', { name: 'Barber' }).getByRole('radio', { name: barber, exact: true })).toBeChecked();
+  await expect(
+    app.getByRole('radiogroup', { name: `Free times for ${barber}` }).getByRole('radio', { name: '5:15 pm', exact: true }),
+  ).toBeChecked();
+  await snap(page, 'demo-36-chairs-add');
+
+  // Chairs is still the choice after a reload.
+  await page.reload();
+  await expect(app.getByRole('radio', { name: 'Chairs', exact: true })).toBeChecked();
+  await expect(app.getByRole('group', { name: /’s chair$/ }).first()).toBeVisible();
+});
+
 test.describe('on an iPhone', () => {
   // Chromium, telling the app it is Safari on an iPhone.
   test.use({ userAgent: devices['iPhone 13'].userAgent });
