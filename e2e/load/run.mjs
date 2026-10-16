@@ -41,6 +41,11 @@ const owner = (i) => client(idOf(`owner${i}`));
 
 const localDate = (offsetDays) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + offsetDays * 86_400_000));
+/** This week in Kajang, Monday to Sunday, as My shop's takings card asks for it. */
+function thisWeek() {
+  const back = (new Date(`${localDate(0)}T00:00:00Z`).getUTCDay() + 6) % 7;
+  return { from: localDate(-back), to: localDate(6 - back) };
+}
 /** Next Saturday in Kajang (a busy day), at least two days out. */
 function nextSaturday() {
   for (let d = 2; d < 10; d++) {
@@ -159,6 +164,32 @@ const SCENARIOS = {
       ),
       // The Bookings tab's number, asked every minute: as a phone that has never looked, the most to count.
       must(c.rpc('shop_changes', { p_since: null, p_limit: 5 })),
+    ]);
+  },
+  // The owner opening the app on My shop: their shop, then its cards. Every
+  // seeded shop is live, so the "Get your shop ready" card's shop_setup, which
+  // the app sends only while a shop is getting ready, is sent each time here
+  // to measure it at its most.
+  'My shop': async () => {
+    const i = pick(SHOPS);
+    const c = owner(i);
+    const shop = await must(c.from('shops').select('*').eq('owner_id', idOf(`owner${i}`)).maybeSingle());
+    const week = thisWeek();
+    return Promise.all([
+      must(c.rpc('shop_summary', { p_from: week.from, p_to: week.to })),
+      must(c.rpc('shop_customers', { p_search: null, p_limit: 1, p_offset: 0 })),
+      must(
+        c
+          .from('shops')
+          .select('rating_count, rating_sum, reviews(rating, comment, first_name)')
+          .eq('id', shop.data.id)
+          .not('reviews.comment', 'is', null)
+          .order('created_at', { referencedTable: 'reviews', ascending: false })
+          .limit(1, { referencedTable: 'reviews' })
+          .maybeSingle(),
+      ),
+      must(c.rpc('shop_closed_days', { p_shop_id: shop.data.id, p_from: localDate(0), p_to: localDate(60) })),
+      must(c.rpc('shop_setup')),
     ]);
   },
   'Book a cut': async () => {

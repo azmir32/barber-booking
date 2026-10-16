@@ -2373,6 +2373,102 @@ exception when insufficient_privilege then null;
 end $$;
 rollback;
 
+-- Getting a new shop ready ------------------------------------------------------
+-- A new shop starts hidden and goes live only once customers have a service
+-- to pick and a barber with working hours. shop_setup says what is there,
+-- to the owner only.
+begin;
+reset role;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b8', 'owner8@test', '{"role":"barber","full_name":"Hafiz"}'),
+  ('00000000-0000-0000-0000-0000000000ba', 'owner10@test', '{"role":"barber","full_name":"Zaki"}');
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b8';
+do $$ begin
+  assert shop_setup() is null, 'no shop, nothing to say';
+  insert into shops (owner_id, name, slug, is_published) values (auth.uid(), 'Live At Once', 'live-at-once', true);
+  raise exception 'a shop should not be created already live';
+exception when insufficient_privilege then null;
+end $$;
+insert into shops (owner_id, name, slug) values ('00000000-0000-0000-0000-0000000000b8', 'Hafiz Cuts', 'hafiz-cuts');
+
+do $$
+declare
+  shop uuid := (select id from shops where slug = 'hafiz-cuts');
+begin
+  assert shop_setup() = '{"services": 0, "barbers": []}'::jsonb, 'a new shop has nothing yet: ' || shop_setup()::text;
+  begin
+    update shops set is_published = true where id = shop;
+    raise exception 'a shop with nothing to book should not go live';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Add a service before you go live, so customers have something to book.', sqlerrm;
+  end;
+
+  -- A hidden service doesn't count, a shown one does.
+  insert into services (shop_id, name, duration_min, price, is_active) values (shop, 'Old menu', 30, 15, false);
+  begin
+    update shops set is_published = true where id = shop;
+    raise exception 'a hidden service is nothing to book';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Add a service before you go live, so customers have something to book.', sqlerrm;
+  end;
+  insert into services (shop_id, name, duration_min, price) values (shop, 'Haircut', 30, 20);
+  assert (shop_setup() ->> 'services')::int = 1, 'only services customers can book count';
+
+  -- The first chair, with no hours yet; one away with hours doesn't count either.
+  insert into barbers (id, shop_id, name, sort_order) values
+    ('00000000-0000-0000-0000-0000000000b0', shop, 'Hafiz', 0),
+    ('00000000-0000-0000-0000-0000000000bb', shop, 'Away Ali', 1);
+  update barbers set is_active = false where id = '00000000-0000-0000-0000-0000000000bb';
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  values ('00000000-0000-0000-0000-0000000000bb', 1, '10:00', '20:00');
+  assert shop_setup() -> 'barbers' = '[{"id": "00000000-0000-0000-0000-0000000000b0", "name": "Hafiz", "has_hours": false}]'::jsonb,
+    'active barbers only, saying who has no hours: ' || shop_setup()::text;
+  begin
+    update shops set is_published = true where id = shop;
+    raise exception 'a shop with no working hours should not go live';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Add a barber with working hours before you go live, so customers can pick a time.', sqlerrm;
+  end;
+  assert (select not is_published and published_at is null from shops where id = shop), 'still hidden';
+
+  -- One day a week is enough.
+  perform set_barber_hours('00000000-0000-0000-0000-0000000000b0',
+                           '[{"weekday": 6, "opens_at": "10:00", "closes_at": "14:00"}]'::jsonb);
+  assert (shop_setup() -> 'barbers' -> 0 ->> 'has_hours')::boolean, 'hours are noted';
+  update shops set is_published = true where id = shop;
+  assert (select is_published and published_at is not null from shops where id = shop), 'live now';
+
+  -- Emptying the menu later is the owner's call, but going back on after a pause checks again.
+  update services set is_active = false where shop_id = shop;
+  assert (select is_published from shops where id = shop), 'a live shop stays live';
+  update shops set name = 'Hafiz Cuts Kajang' where id = shop;
+  update shops set is_published = false where id = shop;
+  begin
+    update shops set is_published = true where id = shop;
+    raise exception 'a paused shop with nothing to book should not come back on';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Add a service before you go live, so customers have something to book.', sqlerrm;
+  end;
+end $$;
+
+-- Only the owner hears about their own shop.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000ba';
+do $$ begin
+  assert shop_setup() is null, 'another barber learns nothing about this shop';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert shop_setup() is null, 'nor does a customer';
+end $$;
+set role anon;
+do $$ begin
+  perform shop_setup();
+  raise exception 'guests must not call shop_setup';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
+
 -- Deleting an account ------------------------------------------------------
 reset role;
 set role anon;

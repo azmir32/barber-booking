@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRef, useState } from 'react';
+import { useRef, useState, type Ref } from 'react';
 import { Linking, Platform, View, type TextInput } from 'react-native';
 
 import { Button, Chip, ErrorText, Field, Row, T } from '@/components/ui';
@@ -43,7 +43,16 @@ const clean = (d: Details) => ({
 const sixPlaces = (n: number) => Math.round(n * 1e6) / 1e6;
 
 /** Creates the barber's shop, or edits it when `shop` is given. */
-export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () => void }) {
+export function ShopForm({
+  shop,
+  onSaved,
+  locationRef,
+}: {
+  shop?: Shop | null;
+  onSaved: () => void;
+  /** Where the location part sits in the form's parent, so a screen can scroll to it. */
+  locationRef?: Ref<View>;
+}) {
   const theme = useTheme();
   const { session, profile } = useAuth();
   const [name, setName] = useState(shop?.name ?? '');
@@ -139,8 +148,10 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
       .select()
       .single();
     if (error) return failed(error);
-    // Most shops start with the owner cutting, so give them the first chair.
-    await addBarber(data.id, profile?.full_name || t('Me'));
+    // Most shops start with the owner cutting, so give them the first chair. Its
+    // hours wait for the owner (My shop's steps lead there), so no shop goes
+    // live on hours nobody chose.
+    await addBarber(data.id, profile?.full_name || t('Me'), 0, false);
     setBusy(false);
     onSaved();
   }
@@ -211,7 +222,11 @@ export function ShopForm({ shop, onSaved }: { shop?: Shop | null; onSaved: () =>
         maxLength={200}
       />
       <Field label={t('Area')} value={area} onChangeText={setArea} maxLength={60} />
-      <View role="group" accessibilityLabel={t('Shop location')} style={{ gap: Spacing.sm }}>
+      <View
+        role="group"
+        accessibilityLabel={t('Shop location')}
+        style={{ gap: Spacing.sm }}
+        ref={locationRef}>
         <T variant="label">{t('Shop location')}</T>
         {point ? (
           <>

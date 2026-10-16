@@ -86,13 +86,14 @@ export function defaultHours(barberId: string) {
   }));
 }
 
-export async function addBarber(shopId: string, name: string, sortOrder = 0) {
+/** Adds a barber, starting with the default hours unless `withHours` is false. */
+export async function addBarber(shopId: string, name: string, sortOrder = 0, withHours = true) {
   const { data, error } = await supabase
     .from('barbers')
     .insert({ shop_id: shopId, name: name.trim(), sort_order: sortOrder })
     .select()
     .single();
-  if (error) return { error };
+  if (error || !withHours) return { error, barber: data };
   const hours = await supabase.from('working_hours').insert(defaultHours(data.id));
   return { error: hours.error, barber: data };
 }

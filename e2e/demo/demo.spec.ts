@@ -328,6 +328,159 @@ test('a new barber with a taken link gets one to try, and can carry on as a cust
   await expect(app.getByText('hafiz@test.my')).toBeVisible();
 });
 
+test('a new shop is walked to its first booking, and the steps go once it is ready', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const app = await open(page);
+  await button(app, 'Set up my shop').click();
+  await app.getByLabel('Full name', { exact: true }).fill('Nizam');
+  await app.getByLabel('Phone (WhatsApp)', { exact: true }).fill('012-777 4321');
+  await app.getByLabel('Email', { exact: true }).fill('nizam@test.my');
+  await app.getByLabel('Password', { exact: true }).fill('password123');
+  await button(app, 'Create account').click();
+  await app.getByLabel('Shop name', { exact: true }).fill('Nizam Cuts Kajang');
+  await button(app, 'Create my shop').click();
+
+  // Straight to My shop, with every step still to do.
+  const step = (title: string, state: 'done' | 'not done yet') => button(app, new RegExp(`^${title}, ${state}\\.`));
+  await expect(app.getByText('Get your shop ready')).toBeVisible();
+  await expect(app.getByText('0 of 4 done')).toBeVisible();
+  await expect(step('Add your services', 'not done yet')).toBeVisible();
+  // Steps for later show their names only; what to do is still read out.
+  await expect(step('Add your barbers and their hours', 'not done yet')).toHaveAccessibleName(
+    /Set Nizam’s working hours, so customers can pick a time\.$/,
+  );
+  await expect(step('Add your services', 'not done yet')).toContainText(
+    'What you offer, with prices, so customers have something to book.',
+  );
+  await expect(step('Set where the shop is \\(optional\\)', 'not done yet')).toBeVisible();
+  await expect(step('Go live', 'not done yet')).toBeVisible();
+  await expect(step('Share your booking link', 'not done yet')).toBeVisible();
+  await snap(page, 'demo-34-ready-new-shop');
+
+  // Go live with nothing to book says what is missing instead.
+  await button(app, 'Go live').click();
+  let dialog = app.getByRole('alertdialog');
+  await expect(dialog.getByText('Not ready to go live yet')).toBeVisible();
+  await expect(
+    dialog.getByText('Customers would have nothing to book yet. Add a service and set your working hours first.'),
+  ).toBeVisible();
+  await snap(page, 'demo-35-ready-not-yet');
+  await button(dialog, 'Not now').click();
+  await expect(app.getByText('Not live yet')).toBeVisible();
+
+  // Each step opens where it is done.
+  await step('Add your services', 'not done yet').click();
+  await button(app, '+ Haircut RM20').click();
+  await expect(app.getByText('Your menu')).toBeVisible();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await expect(app.getByText('1 of 4 done')).toBeVisible();
+  await expect(step('Add your services', 'done')).toContainText('1 service on your menu');
+
+  // Still no times to pick: Go live goes to the first chair's hours, filled in to start from.
+  await button(app, 'Go live').click();
+  dialog = app.getByRole('alertdialog');
+  await expect(dialog.getByText('Customers would have no times to pick. Set Nizam’s working hours first.')).toBeVisible();
+  await button(dialog, 'Set hours').click();
+  await expect(
+    app.getByText('These are suggested hours, not saved yet. Change them to yours, then tap Save hours.'),
+  ).toBeVisible();
+  await snap(page, 'demo-36-ready-hours');
+  await button(app, 'Save hours').click();
+  await expect(app.getByText('2 of 4 done')).toBeVisible();
+  await expect(step('Add your barbers and their hours', 'done')).toContainText('Hours set for Nizam');
+  await expect(app.getByText('Your services and hours are set. Go live when you’re ready.')).toBeVisible();
+
+  await button(app, 'Go live').click();
+  await expect(app.getByText('You are live')).toBeVisible();
+  await expect(app.getByText('3 of 4 done')).toBeVisible();
+  await expect(step('Go live', 'done')).toBeVisible();
+  await snap(page, 'demo-37-ready-live');
+
+  // Sharing the link is the last step: the card says the shop is ready, once.
+  await button(app, 'Copy').click();
+  await expect(button(app, 'Copied')).toBeVisible();
+  await expect(app.getByText('Your shop is ready.')).toBeVisible();
+  await expect(app.getByText('Customers can book you now.')).toBeVisible();
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
+  await snap(page, 'demo-38-ready-done');
+  await button(app, 'Got it').click();
+  await expect(app.getByText('Your shop is ready.')).toHaveCount(0);
+
+  // Gone for good, after the app opens again too.
+  await page.reload();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await expect(app.getByText('You are live')).toBeVisible();
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
+  await expect(app.getByText('Your shop is ready.')).toHaveCount(0);
+});
+
+test('once the shop has been called ready, its steps never come back', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const app = await open(page);
+  await button(app, 'Set up my shop').click();
+  await app.getByLabel('Full name', { exact: true }).fill('Amir');
+  await app.getByLabel('Phone (WhatsApp)', { exact: true }).fill('012-777 8765');
+  await app.getByLabel('Email', { exact: true }).fill('amir@test.my');
+  await app.getByLabel('Password', { exact: true }).fill('password123');
+  await button(app, 'Create account').click();
+  await app.getByLabel('Shop name', { exact: true }).fill('Amir Gunting Kajang');
+  await button(app, 'Create my shop').click();
+
+  const step = (title: string, state: 'done' | 'not done yet') => button(app, new RegExp(`^${title}, ${state}\\.`));
+  await step('Add your services', 'not done yet').click();
+  await button(app, '+ Haircut RM20').click();
+  await expect(app.getByText('Your menu')).toBeVisible();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await step('Add your barbers and their hours', 'not done yet').click();
+  await button(app, 'Save hours').click();
+  await expect(app.getByText('2 of 4 done')).toBeVisible();
+  await button(app, 'Go live').click();
+  await expect(app.getByText('You are live')).toBeVisible();
+  await button(app, 'Copy').click();
+  await expect(app.getByText('Your shop is ready.')).toBeVisible();
+
+  // It stays until Got it, coming back to My shop too.
+  await app.getByRole('tab', { name: /Services/ }).click();
+  await expect(app.getByRole('heading', { name: 'Your menu' })).toBeVisible();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await expect(app.getByText('Your shop is ready.')).toBeVisible();
+
+  // Paused before Got it: no longer true, so it goes, rather than list a step again.
+  await button(app, 'Pause bookings').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Pause bookings', exact: true }).click();
+  await expect(app.getByText('Bookings paused')).toBeVisible();
+  await expect(app.getByText('Your shop is ready.')).toHaveCount(0);
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
+  await expect(app.getByText('3 of 4 done')).toHaveCount(0);
+  await snap(page, 'demo-39-ready-paused');
+  await button(app, 'Turn bookings back on').click();
+  await expect(app.getByText('You are live')).toBeVisible();
+  await expect(app.getByText('Your shop is ready.')).toHaveCount(0);
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
+});
+
+test('a barber set off all week stays off when their hours are opened again', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+  // Ali, then Danial.
+  await expect(button(app, 'Hours')).toHaveCount(2);
+  await button(app, 'Hours').nth(1).click();
+  await expect(app.getByLabel('Barber name', { exact: true })).toHaveValue('Danial');
+  for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']) {
+    await app.getByRole('group', { name: day, exact: true }).getByRole('radio', { name: 'Off', exact: true }).click();
+  }
+  await button(app, 'Save hours').click();
+  await expect(app.getByText('No hours set, so not bookable')).toBeVisible();
+
+  // Opened again: what is saved, not hours suggested for a new shop.
+  await button(app, 'Hours').nth(1).click();
+  await expect(app.getByLabel('Barber name', { exact: true })).toHaveValue('Danial');
+  await expect(app.getByRole('radio', { name: 'Off', exact: true, checked: true })).toHaveCount(7);
+  await expect(app.getByText(/suggested hours/)).toHaveCount(0);
+  await snap(page, 'demo-40-hours-off-all-week');
+});
+
 test('closing over bookings shows who is booked, and the barber cancels and tells them first', async ({ page, context }) => {
   await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
   const app = await open(page);
@@ -499,6 +652,8 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   await app.getByRole('tab', { name: /My shop/ }).click();
   await expect(app.getByText('You are live')).toBeVisible();
   await expect(app.getByText(/Free trial: 2\d days left/)).toBeVisible();
+  // Set up long ago: no steps to get ready.
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
   await snap(page, 'demo-08-my-shop');
 
   // Pause bookings, then start over: the shop is live again.
@@ -507,6 +662,7 @@ test('one tap across to the barber side, and the demo starts over cleanly', asyn
   // Paused, not new: bookings already made still stand.
   await expect(app.getByText('Bookings paused')).toBeVisible();
   await expect(button(app, 'Turn bookings back on')).toBeVisible();
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
   await button(app, 'See the customer side').click();
   await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
   await expect(listed(app, 'Ali Barber Sungai Chua')).toHaveCount(0);

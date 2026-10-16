@@ -1013,6 +1013,83 @@ test('a new barber signs up, sets up a shop and goes live', async () => {
   assert.equal(sneaky.error?.code, '42501');
 });
 
+test('a new shop goes live only with something to book, and its owner can see what is missing', async () => {
+  const c = client();
+  const signUp = await c.auth.signUp({
+    email: 'ready@shop.my',
+    password: 'password123',
+    options: { data: { role: 'barber', full_name: 'Hafiz' } },
+  });
+  assert.equal(signUp.error, null);
+  const owner = signUp.data.user!.id;
+  assert.equal((await c.rpc('shop_setup')).data, null);
+
+  // Not already live: going live is an update, which checks.
+  const atOnce = await c.from('shops').insert({ name: 'Live At Once', slug: 'live-at-once', owner_id: owner, is_published: true });
+  assert.equal(atOnce.error?.code, '42501');
+  const { data: shop } = await c.from('shops').insert({ name: 'Hafiz Cuts', slug: 'hafiz-cuts', owner_id: owner }).select().single();
+  assert.deepEqual((await c.rpc('shop_setup')).data, { services: 0, barbers: [] });
+  const goLive = () => c.from('shops').update({ is_published: true }).eq('id', shop.id);
+  const noService = 'Add a service before you go live, so customers have something to book.';
+  const noHours = 'Add a barber with working hours before you go live, so customers can pick a time.';
+  let refused = await goLive();
+  assert.equal(refused.error?.code, 'P0001');
+  assert.equal(refused.error?.message, noService);
+
+  // A hidden service doesn't count, a shown one does.
+  await c.from('services').insert({ shop_id: shop.id, name: 'Old menu', duration_min: 30, price: 15, is_active: false });
+  assert.equal((await goLive()).error?.message, noService);
+  await c.from('services').insert({ shop_id: shop.id, name: 'Haircut', duration_min: 30, price: 20 });
+
+  // The first chair with no hours yet, and one away with hours, which doesn't count either.
+  const { data: first } = await c.from('barbers').insert({ shop_id: shop.id, name: 'Hafiz', sort_order: 0 }).select().single();
+  const { data: away } = await c
+    .from('barbers')
+    .insert({ shop_id: shop.id, name: 'Away Ali', sort_order: 1, is_active: false })
+    .select()
+    .single();
+  await c.from('working_hours').insert({ barber_id: away.id, weekday: 1, opens_at: '10:00', closes_at: '20:00' });
+  assert.deepEqual((await c.rpc('shop_setup')).data, {
+    services: 1,
+    barbers: [{ id: first.id, name: 'Hafiz', has_hours: false }],
+  });
+  refused = await goLive();
+  assert.equal(refused.error?.message, noHours);
+  const kept = await shopBySlug(c, 'hafiz-cuts');
+  assert.equal(kept.is_published, false);
+  assert.equal(kept.published_at, null);
+
+  // One day a week is enough.
+  await c.rpc('set_barber_hours', {
+    p_barber_id: first.id,
+    p_hours: [{ weekday: 6, opens_at: '10:00', closes_at: '14:00' }],
+  });
+  assert.equal((await c.rpc('shop_setup')).data.barbers[0].has_hours, true);
+  assert.equal((await goLive()).error, null);
+  assert.ok((await shopBySlug(c, 'hafiz-cuts')).published_at);
+
+  // Emptying the menu later is the owner's call, but coming back on after a pause checks again.
+  await c.from('services').update({ is_active: false }).eq('shop_id', shop.id);
+  assert.equal((await c.from('shops').update({ name: 'Hafiz Cuts Kajang' }).eq('id', shop.id)).error, null);
+  assert.equal((await shopBySlug(c, 'hafiz-cuts')).is_published, true);
+  await c.from('shops').update({ is_published: false }).eq('id', shop.id);
+  assert.equal((await goLive()).error?.message, noService);
+
+  // Only the owner hears about their own shop.
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const alis = (await ali.rpc('shop_setup')).data;
+  assert.equal(alis.services, 5);
+  assert.deepEqual(
+    alis.barbers.map((b: { name: string; has_hours: boolean }) => [b.name, b.has_hours]),
+    [
+      ['Ali', true],
+      ['Danial', true],
+    ],
+  );
+  assert.equal((await (await signedIn(DEMO_CUSTOMER_EMAIL)).rpc('shop_setup')).data, null);
+  assert.equal((await client().rpc('shop_setup')).error?.code, '42501');
+});
+
 test('a barber account with no shop can become a customer one, but an owner can\'t', async () => {
   const c = client();
   const signUp = await c.auth.signUp({

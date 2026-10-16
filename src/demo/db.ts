@@ -703,7 +703,7 @@ export function updateRows(table: TableName, rows: Row[], patch: Row, guard?: (r
   for (const row of rows) {
     const next = { ...row, ...coerced };
     guard?.(next);
-    beforeWrite(table, next);
+    beforeWrite(table, next, row);
     if (next.id !== row.id) {
       // ON UPDATE NO ACTION: an id other rows point at can't change.
       for (const fk of FOREIGN_KEYS) {
@@ -795,9 +795,27 @@ function recountReviews(all: Tables) {
   }
 }
 
-/** The shops_first_published trigger: notes when a shop first goes live, and keeps it while paused. */
-function beforeWrite(table: TableName, row: Row) {
-  if (table === 'shops' && row.is_published === true && row.published_at == null) row.published_at = nowIso();
+/**
+ * The shops' before triggers: shops_first_published notes when a shop first
+ * goes live and keeps it while paused, and shops_ready_to_go_live (on an
+ * update, `before` being the row as it was) only lets a shop go live with
+ * something customers can book.
+ */
+function beforeWrite(table: TableName, row: Row, before?: Row) {
+  if (table !== 'shops') return;
+  if (row.is_published === true && row.published_at == null) row.published_at = nowIso();
+  if (before && row.is_published === true && before.is_published !== true) readyToGoLive(row);
+}
+
+function readyToGoLive(shop: Row) {
+  const all = tables();
+  if (!all.services.some((v) => v.shop_id === shop.id && v.is_active === true)) {
+    throw new PgError('P0001', 'Add a service before you go live, so customers have something to book.', 400);
+  }
+  const team = new Set(all.barbers.filter((b) => b.shop_id === shop.id && b.is_active === true).map((b) => b.id));
+  if (!all.working_hours.some((h) => team.has(h.barber_id))) {
+    throw new PgError('P0001', 'Add a barber with working hours before you go live, so customers can pick a time.', 400);
+  }
 }
 
 /** The on_auth_user_created trigger: every new user gets a profile. */

@@ -46,6 +46,9 @@ test.describe('on a phone set to Malay', () => {
     await expect(page.getByText('Sediakan kedai anda')).toBeVisible();
     await field(page, 'Nama kedai').fill(`Gunting Hafiz ${run}`);
     await button(page, 'Cipta kedai saya').click();
+    await expect(page.getByText('Siapkan kedai anda')).toBeVisible();
+    await expect(page.getByText('0 daripada 4 selesai')).toBeVisible();
+    await page.getByRole('tab', { name: 'Tempahan' }).click();
     await expect(page.getByText('Bersedia untuk menerima tempahan')).toBeVisible();
     await expect(choice(page, /^Hari ini/)).toBeVisible();
     await snap(page, 'ms-03-bookings');
@@ -57,9 +60,12 @@ test.describe('on a phone set to Malay', () => {
     await snap(page, 'ms-04-services');
 
     await page.getByRole('tab', { name: /Barber/ }).click();
-    await expect(page.getByText('Isn–Sab · 10.00 pagi–8.00 malam')).toBeVisible();
+    await expect(page.getByText('Waktu belum ditetapkan, jadi tidak boleh ditempah')).toBeVisible();
     await button(page, 'Waktu kerja').click();
     await expect(button(page, '+ Tambah rehat (cth. solat Jumaat)')).toBeVisible();
+    await expect(
+      page.getByText('Ini waktu cadangan, belum disimpan. Tukar kepada waktu anda, kemudian tekan Simpan waktu.'),
+    ).toBeVisible();
     // Times read the Malay way, and the picker groups them by pagi, tengah hari, petang and malam.
     await expect(button(page, 'Dari: 10.00 pagi')).toHaveCount(6);
     await button(page, 'Hingga: 8.00 malam').first().click();
@@ -71,7 +77,8 @@ test.describe('on a phone set to Malay', () => {
     await expect(picker.getByRole('radio', { name: '8.00 malam', exact: true })).toBeChecked();
     await picker.getByRole('button', { name: 'Batal', exact: true }).click();
     await snap(page, 'ms-05-hours');
-    await button(page, 'Batal').click();
+    await button(page, 'Simpan waktu').click();
+    await expect(page.getByText('Isn–Sab · 10.00 pagi–8.00 malam')).toBeVisible();
 
     await page.getByRole('tab', { name: /Kedai saya/ }).click();
     await expect(page.getByText('Percubaan percuma: tinggal 30 hari')).toBeVisible();

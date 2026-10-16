@@ -1,5 +1,5 @@
 import { Redirect, router, Stack } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 
 import { LanguagePicker } from '@/components/account-panel';
@@ -27,6 +27,13 @@ export default function BarberLayout() {
 
 function BarberStack() {
   const { shop, loading, reload } = useMyShop();
+  // Set once the form below makes the shop: the barber lands on My shop, where its steps to the first booking are.
+  const created = useRef(false);
+  useEffect(() => {
+    if (!created.current || !shop) return;
+    created.current = false;
+    router.navigate('/barber/shop');
+  }, [shop]);
 
   if (loading) return <Loading />;
   if (!shop) {
@@ -34,7 +41,12 @@ function BarberStack() {
       <Screen>
         <T variant="title">{t('Set up your shop')}</T>
         <T variant="muted">{t('This is what customers see. You can change any of it later.')}</T>
-        <ShopForm onSaved={reload} />
+        <ShopForm
+          onSaved={() => {
+            created.current = true;
+            return reload();
+          }}
+        />
         <SetUpWayOut />
       </Screen>
     );

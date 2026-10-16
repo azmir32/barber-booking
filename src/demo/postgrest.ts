@@ -85,7 +85,8 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
 const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'delete', string[]>>>> = {
   profiles: { update: ['full_name', 'phone'] },
   shops: {
-    insert: ['owner_id', 'name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram', 'is_published'],
+    // A new shop starts hidden: going live is an update, which checks it has something to book.
+    insert: ['owner_id', 'name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram'],
     update: ['name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram', 'is_published'],
   },
   bookings: { insert: [], update: [], delete: [] },

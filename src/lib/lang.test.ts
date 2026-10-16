@@ -77,6 +77,8 @@ const DYNAMIC_KEYS = [
   'Please keep your comment under 280 characters.',
   'Please keep your reply under 280 characters.',
   'Review not found.',
+  'Add a service before you go live, so customers have something to book.',
+  'Add a barber with working hours before you go live, so customers can pick a time.',
 ];
 
 test('every piece of UI text has a Malay translation', () => {
