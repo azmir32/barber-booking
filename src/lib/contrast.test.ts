@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { Colors } from '../constants/colors.ts';
+import { blend, chairFills, Colors } from '../constants/colors.ts';
 
 // WCAG contrast: text needs 4.5:1 against what is behind it, and the edges
 // of buttons and fields need 3:1, in both light and dark mode.
@@ -37,6 +37,10 @@ for (const [mode, c] of Object.entries(Colors)) {
       ['success on card', c.success, c.card],
       ['warning on card', c.warning, c.card],
     ];
+    // The barber's day as chairs: names, services and times on each kind of fill.
+    for (const [fill, bg] of Object.entries(chairFills(c))) {
+      text.push([`text on the chairs’ ${fill} fill`, c.text, bg], [`secondary text on the chairs’ ${fill} fill`, c.textSecondary, bg]);
+    }
     for (const [what, fg, bg] of text) {
       assert.ok(contrast(fg, bg) >= 4.5, `${what}: ${contrast(fg, bg).toFixed(2)}:1`);
     }
@@ -49,3 +53,9 @@ for (const [mode, c] of Object.entries(Colors)) {
     }
   });
 }
+
+test('blend lays one colour over another as a solid one', () => {
+  assert.equal(blend('#FFFFFF', '#000000', 0), '#000000');
+  assert.equal(blend('#FFFFFF', '#000000', 1), '#FFFFFF');
+  assert.equal(blend('#C8283C', '#FFFFFF', 0.5), '#E4949E');
+});

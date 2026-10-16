@@ -1190,6 +1190,86 @@ test('Find a barber asks for its list once on a new day, with last night’s sho
   expect(await asked(page, '/rest/v1/rpc/my_shops')).toBe(1);
 });
 
+test('the barber sees the day as chairs side by side, opens a booking from there and adds one in a free gap', async ({
+  page,
+}) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  // Tomorrow, so every booking and gap is still to come whatever the hour.
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await expect(app.getByText('“Same as last time”')).toBeVisible();
+
+  // Chairs lays out what the list already has, so switching asks for nothing.
+  await network(page, { log: true });
+  const chairs = app.getByRole('radio', { name: 'Chairs', exact: true });
+  await chairs.click();
+  await expect(chairs).toBeChecked();
+  await expect(app.getByText('“Same as last time”')).toHaveCount(0);
+  const hakim = button(app, /^Hakim, Skin fade, 4:30 pm to 5:15 pm, with (Ali|Danial)$/);
+  await expect(hakim).toBeVisible();
+  // Danial is off on Mondays and Ali on Sundays; whoever works has Hakim, in his own column.
+  const barber = /with (\w+)$/.exec((await hakim.getAttribute('aria-label')) ?? '')![1];
+  const chair = app.getByRole('group', { name: `${barber}’s chair` });
+  await expect(button(chair, `Hakim, Skin fade, 4:30 pm to 5:15 pm, with ${barber}`)).toBeVisible();
+  await expect(button(chair, `Encik Rosli, Haircut, 11:30 am to 12:00 pm, with ${barber}`)).toBeVisible();
+  const other = barber === 'Ali' ? 'Danial' : 'Ali';
+  await expect(
+    app.getByRole('group', { name: `${other}’s chair` }).or(app.getByText(new RegExp(`^Off: ${other}`))),
+  ).toBeVisible();
+  expect(await asked(page, '/rest/v1/bookings')).toBe(0);
+  // Nothing a keyboard can reach is hidden from screen readers (free time is one stop, not one per quarter hour).
+  await expect(app.locator('[aria-hidden="true"][tabindex="0"], [aria-hidden="true"] [tabindex="0"]')).toHaveCount(0);
+  await snap(page, 'demo-34-chairs');
+
+  // A booking opens the same actions as its row in the list, as a dialog that takes focus.
+  await hakim.click();
+  const actions = app.getByRole('dialog', { name: `Hakim, Skin fade, 4:30 pm to 5:15 pm, with ${barber}` });
+  await expect(actions.getByRole('heading', { name: `4:30 pm–5:15 pm · ${barber}` })).toBeFocused();
+  await expect(button(actions, 'Remind Hakim on WhatsApp')).toBeVisible();
+  await expect(button(actions, 'More actions for Hakim')).toBeVisible();
+  await snap(page, 'demo-35-chairs-booking');
+  await button(actions, 'Close').click();
+  await expect(actions).toHaveCount(0);
+  await expect(hakim).toBeFocused();
+
+  // Scrolled down, the names stay on top and take their own taps: Hakim's block under them can't be hit.
+  const frame = (await page.locator('#app').boundingBox())!;
+  const before = (await hakim.boundingBox())!;
+  await page.mouse.move(frame.x + frame.width / 2, frame.y + frame.height / 2);
+  await page.mouse.wheel(0, before.y - frame.y - 16);
+  const pinned = { x: before.x - frame.x + before.width / 2, y: 30 };
+  await expect
+    .poll(() =>
+      app.locator('body').evaluate((_, { x, y }) => {
+        const hit = document.elementFromPoint(x, y);
+        const pressable = hit?.closest('[role="button"]');
+        return { names: hit?.closest('[aria-hidden="true"]')?.textContent ?? '', button: pressable ? (pressable.getAttribute('aria-label') ?? 'a button') : null };
+      }, pinned),
+    )
+    .toEqual({ names: expect.stringContaining(barber), button: null });
+  const under = (await hakim.boundingBox())!;
+  expect(under.y - frame.y).toBeLessThan(pinned.y);
+  expect(under.y + under.height - frame.y).toBeGreaterThan(pinned.y);
+
+  // Free time after Hakim: the quarter hour pressed opens Add to the day with that barber and time.
+  const free = chair.getByRole('button', {
+    name: new RegExp(`^Free with ${barber}, 5:15 pm to \\d{1,2}:\\d{2} pm\\. Add a booking$`),
+  });
+  await free.scrollIntoViewIfNeeded();
+  // Its second quarter hour: the gap starts at 5:15 and each quarter hour is 44 high.
+  await free.click({ position: { x: 24, y: 44 + 22 } });
+  await expect(app.getByRole('radiogroup', { name: 'Barber' }).getByRole('radio', { name: barber, exact: true })).toBeChecked();
+  await expect(
+    app.getByRole('radiogroup', { name: `Free times for ${barber}` }).getByRole('radio', { name: '5:30 pm', exact: true }),
+  ).toBeChecked();
+  await snap(page, 'demo-36-chairs-add');
+
+  // Chairs is still the choice after a reload.
+  await page.reload();
+  await expect(app.getByRole('radio', { name: 'Chairs', exact: true })).toBeChecked();
+  await expect(app.getByRole('group', { name: /’s chair$/ }).first()).toBeVisible();
+});
+
 test.describe('on an iPhone', () => {
   // Chromium, telling the app it is Safari on an iPhone.
   test.use({ userAgent: devices['iPhone 13'].userAgent });

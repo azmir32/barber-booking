@@ -1022,4 +1022,26 @@ export const ms: Record<string, string> = {
     'Servis dan waktu kerja anda sudah ditetapkan. Buka tempahan apabila anda sudah sedia.',
   'These are suggested hours, not saved yet. Change them to yours, then tap Save hours.':
     'Ini waktu cadangan, belum disimpan. Tukar kepada waktu anda, kemudian tekan Simpan waktu.',
+
+  // Round 10: the barber's day as chairs side by side (barber/(tabs)/index.tsx,
+  // components/chairs.tsx)
+  'Show the day as': 'Papar hari sebagai',
+  List: 'Senarai',
+  Chairs: 'Kerusi',
+  'Off: {names}': 'Tidak bekerja: {names}',
+  'Away: {names}': 'Bercuti: {names}',
+  Break: 'Rehat',
+  Free: 'Kosong',
+  '{name}’s chair': 'Kerusi {name}',
+  '{name}, {service}, {from} to {to}, with {barber}': '{name}, {service}, {from} hingga {to}, bersama {barber}',
+  'Blocked, {from} to {to}, with {barber}': 'Disekat, {from} hingga {to}, bersama {barber}',
+  'Blocked, {reason}, {from} to {to}, with {barber}': 'Disekat, {reason}, {from} hingga {to}, bersama {barber}',
+  'Free with {barber}, {from} to {to}. Add a booking': '{barber} lapang, {from} hingga {to}. Tambah tempahan',
+  // Time before or after a barber's hours: not on leave ("Cuti"), just not in yet or gone home.
+  'Not working': 'Tidak bekerja',
+  'Blocked all day': 'Disekat seharian',
+  'Blocked all day, with {barber}': 'Disekat seharian, bersama {barber}',
+  'Blocked all day, {reason}, with {barber}': 'Disekat seharian, {reason}, bersama {barber}',
+  'Nobody is working this day': 'Tiada sesiapa bekerja pada hari itu',
+  '{name} isn’t working this day': '{name} tidak bekerja pada hari itu',
 };
