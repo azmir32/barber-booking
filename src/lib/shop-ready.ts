@@ -31,7 +31,7 @@ const joined = (a: ReadyMemory, b: ReadyMemory): ReadyMemory => ({
  * only while the shop isn't live or the card can still show, so a shop that
  * is up and running sends nothing more.
  */
-export function useShopReady(shop: Shop | null) {
+export function useShopReady(shop: Shop | null, now: number) {
   const uid = useAuth().session?.user.id;
   const shopId = shop?.id;
   const key = uid && shopId ? cacheKey(uid, 'shop-setup', shopId) : null;
@@ -69,7 +69,17 @@ export function useShopReady(shop: Shop | null) {
   }, [shopId]);
 
   const mem = memory && memory.shopId === shopId ? memory.value : null;
-  const showsCard = Boolean(shop && mem && readyCardShows(shop, mem));
+  const listed = Boolean(shop && mem && readyCardShows(shop, mem));
+  const allDone = Boolean(shop && setup && mem && readyProgress(readySteps(shop, setup, mem, now)).ready);
+  // Every step done, by the server's answer: from then on the card only says
+  // the shop is ready, until Got it. Should that stop being true first (paused,
+  // a service gone), the card goes rather than list the steps again.
+  const [told, setTold] = useState<{ shopId: string; saying: boolean } | null>(null);
+  const toldHere = told && told.shopId === shopId ? told : null;
+  if (shopId && !toldHere && listed && fresh && allDone) setTold({ shopId, saying: true });
+  else if (toldHere?.saying && !allDone) setTold({ ...toldHere, saying: false });
+  const saidReady = Boolean(toldHere?.saying && allDone);
+  const showsCard = toldHere ? saidReady : listed;
   // Go live and Turn bookings back on check the shop has something to book first.
   const needed = Boolean(shop && (!shop.is_published || showsCard));
 
@@ -111,14 +121,12 @@ export function useShopReady(shop: Shop | null) {
     }, [needed, load]),
   );
 
-  // Every step done, by the server's answer: the card says so until Got it,
-  // and the phone already forgets it, so it is gone the next time the app opens.
-  const saidReady = Boolean(showsCard && fresh && shop && setup && mem && readyProgress(readySteps(shop, setup, mem)).ready);
+  // Closed on the phone as soon as it is said, so it is gone the next time the app opens, Got it or not.
   useEffect(() => {
-    if (saidReady && shopId && mem) {
-      AsyncStorage.setItem(readyKey(shopId), JSON.stringify({ ...mem, closed: true })).catch(() => {});
+    if (toldHere && mem && !mem.closed) {
+      AsyncStorage.setItem(readyKey(toldHere.shopId), JSON.stringify({ ...mem, closed: true })).catch(() => {});
     }
-  }, [saidReady, shopId, mem]);
+  }, [toldHere, mem]);
 
   return {
     setup,
@@ -139,6 +147,9 @@ export function useShopReady(shop: Shop | null) {
       if (showsCard && !mem?.shared) remember({ shared: true });
     },
     /** Hidden early, or closed after it said the shop is ready. */
-    hide: () => remember({ closed: true }),
+    hide: () => {
+      if (toldHere) setTold({ ...toldHere, saying: false });
+      remember({ closed: true });
+    },
   };
 }

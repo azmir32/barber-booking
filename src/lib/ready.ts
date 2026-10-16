@@ -49,17 +49,33 @@ export function readyCardShows(shop: Pick<Shop, 'published_at'>, memory: ReadyMe
   return !memory.closed && (shop.published_at == null || Boolean(memory.started));
 }
 
-/** The steps in the order they are done. Where the shop is helps, but a shop can open without it. */
+/** Subscribed, or still in the free month. */
+export const paidUp = (shop: Pick<Shop, 'subscription_status' | 'trial_ends_at'>, now: number) =>
+  shop.subscription_status === 'active' ||
+  (shop.subscription_status === 'trialing' && Date.parse(shop.trial_ends_at) > now);
+
+/** Customers can find the shop and book: published and paid up, as the database decides (shop_is_live). */
+export const takesBookings = (
+  shop: Pick<Shop, 'is_published' | 'subscription_status' | 'trial_ends_at'>,
+  now: number,
+) => shop.is_published && paidUp(shop, now);
+
+/**
+ * The steps in the order they are done. Where the shop is helps, but a shop
+ * can open without it. Live only counts while customers can book, so a shop
+ * hidden for being unpaid is never called ready.
+ */
 export function readySteps(
-  shop: Pick<Shop, 'latitude' | 'is_published'>,
+  shop: Pick<Shop, 'latitude' | 'is_published' | 'subscription_status' | 'trial_ends_at'>,
   setup: ShopSetup,
   memory: ReadyMemory,
+  now: number,
 ): ReadyStep[] {
   return [
     { id: 'services', done: setup.services > 0, optional: false },
     { id: 'barbers', done: setup.barbers.some((b) => b.has_hours), optional: false },
     { id: 'location', done: shop.latitude != null, optional: true },
-    { id: 'live', done: shop.is_published, optional: false },
+    { id: 'live', done: takesBookings(shop, now), optional: false },
     { id: 'share', done: Boolean(memory.shared), optional: false },
   ];
 }

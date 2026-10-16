@@ -50,10 +50,11 @@ function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' |
 
 export default function MyShop() {
   const { shop, fresh, staleSince: shopStaleSince, reload } = useMyShop();
+  const now = useNow();
   // Takings, customers and reviews: last time's numbers at once, then the server's.
   const cards = useShopCards(shop);
   // A new shop's steps to its first booking, and what Go live still needs.
-  const ready = useShopReady(shop);
+  const ready = useShopReady(shop, now);
   // The shop itself is asked for once when the app opens. If that failed, last visit's
   // status and details stay, so it is asked for again on coming here and with Try again.
   const [askingShop, setAskingShop] = useState(false);
@@ -76,7 +77,6 @@ export default function MyShop() {
   const stale = [cards.staleSince, shopStaleSince, ready.staleSince].filter((at): at is number => at != null);
   const staleSince = stale.length ? Math.min(...stale) : null;
   const theme = useTheme();
-  const now = useNow();
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -223,6 +223,7 @@ export default function MyShop() {
           setup={ready.setup}
           memory={ready.memory}
           saidReady={ready.saidReady}
+          now={now}
           failed={ready.failed}
           retrying={ready.loading}
           onRetry={ready.reload}

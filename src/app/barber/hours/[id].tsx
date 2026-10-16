@@ -24,9 +24,12 @@ export default function Hours() {
   const { shop } = useMyShop();
   const navigation = useNavigation();
   const shopId = shop?.id;
+  // A shop that has never been live: a barber with no hours is one not set up yet, like its first chair.
+  // Anywhere else no hours means off all week on purpose, which is what the days show.
+  const neverLive = shop != null && shop.published_at == null;
   const [name, setName] = useState('');
   const [week, setWeek] = useState<DayPlan[] | null>(null);
-  // No hours saved yet (a new shop's first chair): the usual week is filled in to start from.
+  // Not set up yet: the usual week is filled in to start from.
   const [suggested, setSuggested] = useState(false);
   // As loaded, so leaving with changes asks first.
   const [saved, setSaved] = useState('');
@@ -54,16 +57,18 @@ export default function Hours() {
       const barbers = (data ?? []) as BarberWithHours[];
       const barber = barbers.find((b) => b.id === id);
       if (!barber) return setError(t('Barber not found.'));
-      const none = !barber.working_hours?.length;
-      const loaded = weekFrom(none ? defaultHours(barber.id).map((h) => ({ ...h, id: '' })) : barber.working_hours);
+      const suggest = neverLive && !barber.working_hours?.length;
+      const loaded = weekFrom(
+        suggest ? defaultHours(barber.id).map((h) => ({ ...h, id: '' })) : (barber.working_hours ?? []),
+      );
       setName(barber.name);
       setWeek(loaded);
-      setSuggested(none);
+      setSuggested(suggest);
       // Leaving without saving keeps them unsaved, which the note and My shop's steps say.
       setSaved(JSON.stringify([barber.name, loaded]));
       setOthers(barbers.filter((b) => b.id !== id && b.working_hours?.length));
     })();
-  }, [id, shopId]);
+  }, [id, shopId, neverLive]);
 
   const dirty = week !== null && JSON.stringify([name, week]) !== saved;
 

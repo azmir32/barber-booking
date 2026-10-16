@@ -8,9 +8,11 @@ import { t } from '@/lib/lang';
 import {
   barberWithoutHours,
   nextStep,
+  paidUp,
   progressText,
   readyProgress,
   readySteps,
+  takesBookings,
   type ReadyMemory,
   type ReadyStep,
   type ShopSetup,
@@ -28,6 +30,7 @@ export function ReadyCard({
   setup,
   memory,
   saidReady,
+  now,
   failed,
   retrying,
   onRetry,
@@ -38,6 +41,8 @@ export function ReadyCard({
   setup: ShopSetup | null;
   memory: ReadyMemory;
   saidReady: boolean;
+  /** Whether the free month is over decides if going live is done. */
+  now: number;
   /** Couldn't be loaded, with nothing from last time to show. */
   failed: boolean;
   retrying: boolean;
@@ -89,7 +94,7 @@ export function ReadyCard({
     );
   }
 
-  const steps = readySteps(shop, setup, memory);
+  const steps = readySteps(shop, setup, memory, now);
   const progress = readyProgress(steps);
   const next = nextStep(steps);
 
@@ -114,7 +119,13 @@ export function ReadyCard({
       </View>
       <View>
         {steps.map((step) => (
-          <StepRow key={step.id} step={step} next={step.id === next} text={stepText(step, shop, setup)} onPress={() => onStep(step.id)} />
+          <StepRow
+            key={step.id}
+            step={step}
+            next={step.id === next}
+            text={stepText(step, shop, setup, now)}
+            onPress={() => onStep(step.id)}
+          />
         ))}
       </View>
       <Button title={t('Hide these steps')} variant="ghost" onPress={onHide} style={styles.start} />
@@ -160,7 +171,8 @@ function StepRow({
 }
 
 /** Each step's name, and a line on what is there or what to do. */
-function stepText(step: ReadyStep, shop: Shop, setup: ShopSetup): { title: string; detail: string } {
+function stepText(step: ReadyStep, shop: Shop, setup: ShopSetup, now: number): { title: string; detail: string } {
+  const live = takesBookings(shop, now);
   switch (step.id) {
     case 'services':
       return {
@@ -191,14 +203,19 @@ function stepText(step: ReadyStep, shop: Shop, setup: ShopSetup): { title: strin
     case 'live':
       return {
         title: t('Go live'),
-        detail: step.done ? t('Customers can find you and book.') : t('So customers can find your shop and book.'),
+        detail: step.done
+          ? t('Customers can find you and book.')
+          : // Published or not, an unpaid shop is hidden from customers.
+            !paidUp(shop, now)
+            ? t('You can go live once you subscribe.')
+            : t('So customers can find your shop and book.'),
       };
     case 'share':
       return {
         title: t('Share your booking link'),
         detail: step.done
           ? t('Shared. Keep it in your Instagram bio and WhatsApp status.')
-          : shop.is_published
+          : live
             ? t('Share or copy it, or print the poster for your counter.')
             : t('Once you’re live: share or copy it, or print the poster.'),
       };

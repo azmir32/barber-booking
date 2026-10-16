@@ -414,6 +414,73 @@ test('a new shop is walked to its first booking, and the steps go once it is rea
   await expect(app.getByText('Your shop is ready.')).toHaveCount(0);
 });
 
+test('once the shop has been called ready, its steps never come back', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const app = await open(page);
+  await button(app, 'Set up my shop').click();
+  await app.getByLabel('Full name', { exact: true }).fill('Amir');
+  await app.getByLabel('Phone (WhatsApp)', { exact: true }).fill('012-777 8765');
+  await app.getByLabel('Email', { exact: true }).fill('amir@test.my');
+  await app.getByLabel('Password', { exact: true }).fill('password123');
+  await button(app, 'Create account').click();
+  await app.getByLabel('Shop name', { exact: true }).fill('Amir Gunting Kajang');
+  await button(app, 'Create my shop').click();
+
+  const step = (title: string, state: 'done' | 'not done yet') => button(app, new RegExp(`^${title}, ${state}\\.`));
+  await step('Add your services', 'not done yet').click();
+  await button(app, '+ Haircut RM20').click();
+  await expect(app.getByText('Your menu')).toBeVisible();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await step('Add your barbers and their hours', 'not done yet').click();
+  await button(app, 'Save hours').click();
+  await expect(app.getByText('2 of 4 done')).toBeVisible();
+  await button(app, 'Go live').click();
+  await expect(app.getByText('You are live')).toBeVisible();
+  await button(app, 'Copy').click();
+  await expect(app.getByText('Your shop is ready.')).toBeVisible();
+
+  // It stays until Got it, coming back to My shop too.
+  await app.getByRole('tab', { name: /Services/ }).click();
+  await expect(app.getByText('Your menu')).toBeVisible();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await expect(app.getByText('Your shop is ready.')).toBeVisible();
+
+  // Paused before Got it: no longer true, so it goes, rather than list a step again.
+  await button(app, 'Pause bookings').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Pause bookings', exact: true }).click();
+  await expect(app.getByText('Bookings paused')).toBeVisible();
+  await expect(app.getByText('Your shop is ready.')).toHaveCount(0);
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
+  await expect(app.getByText('3 of 4 done')).toHaveCount(0);
+  await snap(page, 'demo-39-ready-paused');
+  await button(app, 'Turn bookings back on').click();
+  await expect(app.getByText('You are live')).toBeVisible();
+  await expect(app.getByText('Your shop is ready.')).toHaveCount(0);
+  await expect(app.getByText('Get your shop ready')).toHaveCount(0);
+});
+
+test('a barber set off all week stays off when their hours are opened again', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+  await expect(app.getByText('Danial', { exact: true })).toBeVisible();
+  // Ali, then Danial.
+  await button(app, 'Hours').nth(1).click();
+  await expect(app.getByLabel('Barber name', { exact: true })).toHaveValue('Danial');
+  for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']) {
+    await app.getByRole('group', { name: day, exact: true }).getByRole('radio', { name: 'Off', exact: true }).click();
+  }
+  await button(app, 'Save hours').click();
+  await expect(app.getByText('No hours set, so not bookable')).toBeVisible();
+
+  // Opened again: what is saved, not hours suggested for a new shop.
+  await button(app, 'Hours').nth(1).click();
+  await expect(app.getByLabel('Barber name', { exact: true })).toHaveValue('Danial');
+  await expect(app.getByRole('radio', { name: 'Off', exact: true, checked: true })).toHaveCount(7);
+  await expect(app.getByText(/suggested hours/)).toHaveCount(0);
+  await snap(page, 'demo-40-hours-off-all-week');
+});
+
 test('closing over bookings shows who is booked, and the barber cancels and tells them first', async ({ page, context }) => {
   await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
   const app = await open(page);
