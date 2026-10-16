@@ -191,11 +191,13 @@ export default function Explore() {
     }, [loadAreas]),
   );
 
+  // Last visit's list (maybe yesterday's) is asked for again on opening anyway; this is for one left up past midnight.
+  const keptOnly = shown !== null && !shown.fresh;
   useEffect(() => {
-    if (!areaRestored || listedOn === today) return;
+    if (!areaRestored || listedOn === today || keptOnly) return;
     const timer = setTimeout(load, 0);
     return () => clearTimeout(timer);
-  }, [areaRestored, listedOn, today, load]);
+  }, [areaRestored, listedOn, today, keptOnly, load]);
 
   function pickArea(next: string | null) {
     setArea(next);

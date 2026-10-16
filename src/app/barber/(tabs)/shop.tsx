@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Share, View, type ViewStyle } from 'react-native';
 
 import { AccountPanel } from '@/components/account-panel';
@@ -44,9 +44,30 @@ function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' |
 }
 
 export default function MyShop() {
-  const { shop, fresh, reload } = useMyShop();
+  const { shop, fresh, staleSince: shopStaleSince, reload } = useMyShop();
   // Takings, customers and reviews: last time's numbers at once, then the server's.
   const cards = useShopCards(shop);
+  // The shop itself is asked for once when the app opens. If that failed, last visit's
+  // status and details stay, so it is asked for again on coming here and with Try again.
+  const [askingShop, setAskingShop] = useState(false);
+  const askShop = useCallback(async () => {
+    setAskingShop(true);
+    await reload();
+    setAskingShop(false);
+  }, [reload]);
+  // Read on focus, so a retry that fails doesn't send another straight away.
+  const shopKeptOnly = useRef(false);
+  useEffect(() => {
+    shopKeptOnly.current = shopStaleSince != null;
+  }, [shopStaleSince]);
+  useFocusEffect(
+    useCallback(() => {
+      if (shopKeptOnly.current) askShop();
+    }, [askShop]),
+  );
+  // Either part kept from last visit and not refreshed: said once, with the older time.
+  const stale = [cards.staleSince, shopStaleSince].filter((at): at is number => at != null);
+  const staleSince = stale.length ? Math.min(...stale) : null;
   const theme = useTheme();
   const now = useNow();
   const [busy, setBusy] = useState(false);
@@ -117,7 +138,18 @@ export default function MyShop() {
 
   return (
     <Screen>
-      <ScreenTitle title={t('My shop')} refreshing={cards.refreshing} />
+      <ScreenTitle title={t('My shop')} refreshing={cards.refreshing || askingShop} />
+      {staleSince ? (
+        <StaleNote
+          savedAt={staleSince}
+          onRetry={() => {
+            cards.reload();
+            if (shopStaleSince != null) askShop();
+          }}
+          retrying={cards.loading || askingShop}
+          timeZone={shop.time_zone}
+        />
+      ) : null}
 
       <Card>
         <Row style={{ justifyContent: 'space-between' }}>
@@ -171,10 +203,6 @@ export default function MyShop() {
           />
         )}
       </Card>
-
-      {cards.staleSince ? (
-        <StaleNote savedAt={cards.staleSince} onRetry={cards.reload} retrying={cards.loading} timeZone={shop.time_zone} />
-      ) : null}
 
       <TakingsCard totals={cards.takings} />
 

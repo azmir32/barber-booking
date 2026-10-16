@@ -927,4 +927,6 @@ export const ms: Record<string, string> = {
   'Loading the shop': 'Memuatkan kedai',
   'Loading services': 'Memuatkan servis',
   'Loading free times': 'Memuatkan masa kosong',
+  'Hi {shop}, this is {name}.': 'Hai {shop}, saya {name}.',
+  'Hi {who}, this is {shop}.': 'Hai {who}, ini {shop}.',
 };

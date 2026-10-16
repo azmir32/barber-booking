@@ -183,17 +183,29 @@ function handleAuth(method: string, route: string, url: URL, headers: Headers, b
 /**
  * A slow or lost connection, for trying what the app shows then (e2e/demo):
  * `{"delayMs": 3000}` answers every request 3 seconds late, `{"offline": true}`
- * fails them the way a phone with no signal does. Read on each request, so it
- * can change while the page is open and holds across a reload.
+ * fails them the way a phone with no signal does, and `{"log": true}` adds
+ * each request's path to DEMO_REQUESTS_KEY, to count what a screen asks for.
+ * Read on each request, so it can change while the page is open and holds
+ * across a reload.
  */
 export const DEMO_NETWORK_KEY = 'potongku.demo.network';
+export const DEMO_REQUESTS_KEY = 'potongku.demo.requests';
 
-function network(): { delayMs?: number; offline?: boolean } {
+function network(): { delayMs?: number; offline?: boolean; log?: boolean } {
   try {
     const saved = typeof localStorage === 'undefined' ? null : localStorage.getItem(DEMO_NETWORK_KEY);
     return saved ? JSON.parse(saved) : {};
   } catch {
     return {};
+  }
+}
+
+function logRequest(path: string) {
+  try {
+    const list = JSON.parse(localStorage.getItem(DEMO_REQUESTS_KEY) ?? '[]') as string[];
+    localStorage.setItem(DEMO_REQUESTS_KEY, JSON.stringify([...list, path]));
+  } catch {
+    // Only for counting; the request goes ahead either way.
   }
 }
 
@@ -208,6 +220,7 @@ export async function demoFetch(input: RequestInfo | URL, init: RequestInit = {}
   const method = (init.method ?? 'GET').toUpperCase();
   const headers = new Headers(init.headers);
   const net = network();
+  if (net.log) logRequest(url.pathname);
   await latency(net.delayMs);
   if (net.offline) throw new TypeError('Failed to fetch');
   let body: unknown;

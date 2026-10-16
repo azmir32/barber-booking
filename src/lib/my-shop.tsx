@@ -11,6 +11,8 @@ type MyShopState = {
   loading: boolean;
   /** False while the shop shown is the one kept from last time, until the server answers. */
   fresh: boolean;
+  /** When the kept shop on screen is from, once asking the server for it again has failed; null otherwise. */
+  staleSince: number | null;
   reload: () => Promise<void>;
 };
 
@@ -28,9 +30,11 @@ export function MyShopProvider({ children }: { children: ReactNode }) {
   const [shop, setShop] = useState<Shop | null>(kept?.data ?? null);
   const [loading, setLoading] = useState(!kept);
   const [fresh, setFresh] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   const reload = useCallback(async () => {
     const { shop: s, error } = await fetchShop(userId);
+    setFailed(Boolean(error));
     // Without a connection the shop on screen stays, rather than the set-up form.
     if (error) return;
     setShop(s);
@@ -41,6 +45,7 @@ export function MyShopProvider({ children }: { children: ReactNode }) {
     let active = true;
     fetchShop(userId).then(({ shop: s, error }) => {
       if (!active) return;
+      setFailed(Boolean(error));
       if (!error) {
         setShop(s);
         setFresh(true);
@@ -52,7 +57,10 @@ export function MyShopProvider({ children }: { children: ReactNode }) {
     };
   }, [userId]);
 
-  return <MyShopContext.Provider value={{ shop, loading, fresh, reload }}>{children}</MyShopContext.Provider>;
+  const staleSince = failed && !fresh && kept ? kept.at : null;
+  return (
+    <MyShopContext.Provider value={{ shop, loading, fresh, staleSince, reload }}>{children}</MyShopContext.Provider>
+  );
 }
 
 async function fetchShop(userId: string | undefined): Promise<{ shop: Shop | null; error: unknown }> {

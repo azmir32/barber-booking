@@ -409,9 +409,14 @@ export default function ShopPage() {
           <>
             <ShopHeading
               shop={preview}
-              rating={{ average: preview.rating_avg == null ? null : Number(preview.rating_avg), count: preview.rating_count }}
+              // Moving a booking shows no reviews, so no stars either.
+              rating={
+                params.move
+                  ? null
+                  : { average: preview.rating_avg == null ? null : Number(preview.rating_avg), count: preview.rating_count }
+              }
               open={listedHours ? openStatus(listedHours.opens, listedHours.closes, now) : null}
-              onReviews={scrollToReviews}
+              // No "See reviews" until the reviews are on the page to go to.
             />
             <Skeleton label={t('Loading services')}>
               <ServiceBones />
@@ -887,7 +892,7 @@ function ShopHeading({
   /** Null hides the stars, e.g. while moving a booking. */
   rating: { average: number | null; count: number } | null;
   open: ReturnType<typeof openStatus> | null;
-  onReviews: () => void;
+  onReviews?: () => void;
 }) {
   const theme = useTheme();
   return (

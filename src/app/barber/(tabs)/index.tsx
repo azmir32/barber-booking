@@ -352,7 +352,14 @@ export default function BarberBookings() {
 
   const whatsapp = (b: ShopBooking) => {
     const phone = phoneOf(b);
-    if (phone) openWhatsApp(phone, t('Hi {who}, this is {shop} about your {service} on {day} at {time}.', messageVars(b)));
+    if (!phone) return;
+    openWhatsApp(
+      phone,
+      // Until the server answers for the day, the booking may have moved since last visit, so no time is named.
+      freshFor === day
+        ? t('Hi {who}, this is {shop} about your {service} on {day} at {time}.', messageVars(b))
+        : t('Hi {who}, this is {shop}.', messageVars(b)),
+    );
   };
 
   /** The shop had to cancel: sorry, and an offer of another time. */

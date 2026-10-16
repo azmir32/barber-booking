@@ -742,7 +742,7 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
  * Slows the demo's server down, or cuts it off, the way a weak signal does
  * (see DEMO_NETWORK_KEY in src/demo/server.ts); null puts it back.
  */
-const network = (page: Page, value: { delayMs?: number; offline?: boolean } | null) =>
+const network = (page: Page, value: { delayMs?: number; offline?: boolean; log?: boolean } | null) =>
   page.evaluate(
     (value) =>
       value
@@ -814,11 +814,46 @@ test('on a slow line the barbers’ cards show their shape first, and a shop ope
   await listed(app, 'Kemas Barber Kajang').click();
   const services = app.getByRole('progressbar', { name: 'Loading services' });
   await expect(services).toBeVisible();
-  await expect(app.getByRole('link', { name: /^Rated \d\.\d out of 5 from \d+ reviews\. See reviews$/ })).toBeVisible();
+  // The stars come from the list; "See reviews" waits until there are reviews on the page to go to.
+  await expect(app.getByRole('img', { name: /^Rated \d\.\d out of 5 from \d+ reviews$/ })).toBeVisible();
+  await expect(app.getByRole('link', { name: /See reviews$/ })).toHaveCount(0);
   await snap(page, 'demo-27-shop-opening');
   await network(page, null);
   await expect(app.getByRole('radio', { name: /^Haircut RM/ })).toBeVisible({ timeout: 15_000 });
   await expect(services).toHaveCount(0);
+  await expect(app.getByRole('link', { name: /^Rated \d\.\d out of 5 from \d+ reviews\. See reviews$/ })).toBeVisible();
+});
+
+/** How many times the app has asked the demo's server for `path` since `network(page, { log: true })`. */
+const asked = (page: Page, path: string) =>
+  page.evaluate(
+    (path) => (JSON.parse(localStorage.getItem('potongku.demo.requests') ?? '[]') as string[]).filter((p) => p === path).length,
+    path,
+  );
+
+test('Find a barber asks for its list once on a new day, with last night’s showing meanwhile', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await expect(app.getByRole('progressbar', { name: 'Refreshing' })).toHaveCount(0);
+
+  // The list kept on the phone, as if seen last night.
+  await page.evaluate(() => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith('potongku.cache.') && k.includes('.find|'))!;
+    const kept = JSON.parse(localStorage.getItem(key)!);
+    const yesterday = new Date(Date.now() - 86_400_000);
+    kept.data.listedOn = yesterday.toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+    localStorage.setItem(key, JSON.stringify(kept));
+  });
+  await network(page, { log: true });
+  await page.reload();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await expect.poll(() => asked(page, '/rest/v1/rpc/find_shops')).toBe(1);
+  await expect(app.getByRole('progressbar', { name: 'Refreshing' })).toHaveCount(0);
+  // A second ask would have gone out alongside the first.
+  await page.waitForTimeout(500);
+  expect(await asked(page, '/rest/v1/rpc/find_shops')).toBe(1);
+  expect(await asked(page, '/rest/v1/rpc/my_shops')).toBe(1);
 });
 
 test.describe('on an iPhone', () => {

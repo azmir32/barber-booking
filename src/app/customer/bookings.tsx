@@ -256,6 +256,7 @@ function MyBookings() {
 
   // Cancel and Add to calendar wait for the server's list rather than act on last visit's,
   // where the time may have moved: dimmed until it comes (the title's spinner says it is coming).
+  // WhatsApp the shop still opens, as it may be the way through on a weak line, but without the time.
   const hold = fromCache ? { disabled: true } : {};
 
   return (
@@ -282,16 +283,19 @@ function MyBookings() {
           {upcoming.map((b) => {
             const shop = b.shops;
             const { day, time } = when(b);
-            // So the barber knows which booking the chat is about without asking.
+            // So the barber knows which booking the chat is about without asking; on last
+            // visit's list only hello, as the time may have moved since.
             const hello =
               shop && profile
-                ? t('Hi {shop}, this is {name}. I booked {service} on {day} at {time}.', {
-                    shop: shop.name,
-                    name: profile.full_name,
-                    service: b.service_name,
-                    day,
-                    time,
-                  })
+                ? fromCache
+                  ? t('Hi {shop}, this is {name}.', { shop: shop.name, name: profile.full_name })
+                  : t('Hi {shop}, this is {name}. I booked {service} on {day} at {time}.', {
+                      shop: shop.name,
+                      name: profile.full_name,
+                      service: b.service_name,
+                      day,
+                      time,
+                    })
                 : undefined;
             return (
               <Card key={b.id}>

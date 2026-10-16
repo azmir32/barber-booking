@@ -15,6 +15,7 @@ import {
   DEMO_CUSTOMER_EMAIL,
   DEMO_NETWORK_KEY,
   DEMO_PASSWORD,
+  DEMO_REQUESTS_KEY,
   DEMO_RESET_CODE,
   DEMO_URL,
   demoFetch,
@@ -2302,6 +2303,18 @@ test('the demo can be slowed down or cut off, the way a phone with a weak signal
     // Back to normal once the setting goes.
     saved.delete(DEMO_NETWORK_KEY);
     assert.equal((await list()).error, null);
+    assert.equal(saved.get(DEMO_REQUESTS_KEY), undefined);
+
+    // Each request's path can be noted, to count what a screen asks for.
+    saved.set(DEMO_NETWORK_KEY, JSON.stringify({ log: true }));
+    await list();
+    await c.rpc('shop_areas');
+    await list();
+    assert.deepEqual(JSON.parse(saved.get(DEMO_REQUESTS_KEY)!), [
+      '/rest/v1/rpc/find_shops',
+      '/rest/v1/rpc/shop_areas',
+      '/rest/v1/rpc/find_shops',
+    ]);
   } finally {
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
     reloadTables();
