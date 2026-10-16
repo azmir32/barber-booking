@@ -185,6 +185,41 @@ create table public.working_hours (
   )
 );
 
+-- A shop goes live only with something customers can book: a service, and a
+-- barber who works at least one day a week. Without them it was listed with
+-- no prices and closed every day, and its page had nothing to pick. Checked
+-- when it goes live or back on after a pause, which owners do with an update
+-- (they can't create a shop already live, see the grants below). Hiding
+-- services or marking barbers away later is the owner's call; the shop's
+-- page then says it isn't taking online bookings.
+create function public.shops_ready_to_go_live()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (select 1 from services v where v.shop_id = new.id and v.is_active) then
+    raise exception 'Add a service before you go live, so customers have something to book.' using errcode = 'P0001';
+  end if;
+  if not exists (
+    select 1 from barbers b
+    where b.shop_id = new.id and b.is_active
+      and exists (select 1 from working_hours wh where wh.barber_id = b.id)
+  ) then
+    raise exception 'Add a barber with working hours before you go live, so customers can pick a time.'
+      using errcode = 'P0001';
+  end if;
+  return new;
+end;
+$$;
+revoke execute on function public.shops_ready_to_go_live() from public, anon, authenticated;
+
+create trigger shops_ready_to_go_live
+  before update of is_published on public.shops
+  for each row when (new.is_published and not old.is_published)
+  execute function public.shops_ready_to_go_live();
+
 -- Bookings ------------------------------------------------------------------
 
 create table public.bookings (
@@ -377,7 +412,9 @@ create policy "read reviews of visible shops, and your own" on public.reviews
 revoke update on public.profiles from anon, authenticated;
 grant update (full_name, phone) on public.profiles to authenticated;
 revoke insert, update on public.shops from anon, authenticated;
-grant insert (owner_id, name, slug, about, address, area, latitude, longitude, phone, instagram, is_published)
+-- A new shop starts hidden: going live is an update, which checks it has
+-- something to book (shops_ready_to_go_live).
+grant insert (owner_id, name, slug, about, address, area, latitude, longitude, phone, instagram)
   on public.shops to authenticated;
 grant update (name, slug, about, address, area, latitude, longitude, phone, instagram, is_published)
   on public.shops to authenticated;
@@ -1678,6 +1715,35 @@ begin
 end;
 $$;
 
+-- What My shop's "Get your shop ready" card and its Go live button need:
+-- how many services customers can book, and the active barbers in the
+-- team's order with whether each works at least one day a week (so the card
+-- can open the hours of one who doesn't). Only the caller's own shop; null
+-- without one. The app asks only while the shop isn't live or the card can
+-- still show, and it is a lookup of one shop's few barbers and services.
+create function public.shop_setup()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'services', (select count(*)::int from services v where v.shop_id = s.id and v.is_active),
+    'barbers', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', b.id,
+               'name', b.name,
+               'has_hours', exists (select 1 from working_hours wh where wh.barber_id = b.id)
+             ) order by b.sort_order, b.created_at, b.id)
+      from barbers b
+      where b.shop_id = s.id and b.is_active
+    ), '[]'::jsonb)
+  )
+  from shops s
+  where s.owner_id = auth.uid();
+$$;
+
 -- A customer's own bookings, newest first, each with its shop and barber.
 -- Customers can only read live shops (and their barbers), so a plain select
 -- of bookings with shops(...) lost the shop's name, address and phone the
@@ -2026,6 +2092,8 @@ revoke execute on function public.shop_customers(text, int, int) from public, an
 grant execute on function public.shop_customers(text, int, int) to authenticated;
 revoke execute on function public.shop_changes(timestamptz, int) from public, anon;
 grant execute on function public.shop_changes(timestamptz, int) to authenticated;
+revoke execute on function public.shop_setup() from public, anon;
+grant execute on function public.shop_setup() to authenticated;
 revoke execute on function public.review_first_name(text) from public, anon, authenticated;
 revoke execute on function public.rate_booking(uuid, int, text, text) from public, anon;
 grant execute on function public.rate_booking(uuid, int, text, text) to authenticated;
