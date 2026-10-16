@@ -111,7 +111,7 @@ test.describe.serial('booking flow', () => {
     // Services: quick add a haircut.
     await page.getByRole('tab', { name: /Services/ }).click();
     await button(page, '+ Haircut RM20').click();
-    await expect(page.getByText('Your menu')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your menu' })).toBeVisible();
     await expect(page.getByText('30 min', { exact: true })).toBeVisible();
     await snap(page, '05-services');
 

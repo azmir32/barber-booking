@@ -49,7 +49,7 @@ test.describe('on a phone set to Malay', () => {
     await expect(page.getByText('Siapkan kedai anda')).toBeVisible();
     await expect(page.getByText('0 daripada 4 selesai')).toBeVisible();
     await page.getByRole('tab', { name: 'Tempahan' }).click();
-    await expect(page.getByText('Bersedia untuk menerima tempahan')).toBeVisible();
+    await expect(page.getByText('Belum menerima tempahan')).toBeVisible();
     await expect(choice(page, /^Hari ini/)).toBeVisible();
     await snap(page, 'ms-03-bookings');
 

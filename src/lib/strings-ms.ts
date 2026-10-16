@@ -1041,6 +1041,7 @@ export const ms: Record<string, string> = {
   // Round 10, the Bookings tab points a shop that can't take bookings to My shop (barber/(tabs)/index.tsx)
   'Customers can book once your shop is live. The steps are on My shop.':
     'Pelanggan boleh menempah sebaik sahaja kedai anda dibuka untuk tempahan. Langkah-langkahnya ada di Kedai saya.',
+  'Not taking bookings yet': 'Belum menerima tempahan',
   'Customers can’t book right now': 'Pelanggan tidak boleh menempah sekarang',
   'My shop says what to do.': 'Kedai saya menerangkan apa yang perlu dibuat.',
 };

@@ -536,7 +536,10 @@ export default function BarberBookings() {
   const ready = services !== null && services > 0 && activeBarbers.length > 0 && hasHours && shop.is_published;
   const notTaking =
     shop.published_at == null
-      ? { title: t('Get your shop ready'), body: t('Customers can book once your shop is live. The steps are on My shop.') }
+      ? {
+          title: t('Not taking bookings yet'),
+          body: t('Customers can book once your shop is live. The steps are on My shop.'),
+        }
       : { title: t('Customers can’t book right now'), body: t('My shop says what to do.') };
 
   // The day's list ---------------------------------------------------------
