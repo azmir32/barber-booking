@@ -1809,6 +1809,13 @@ test('the customer list works out visits, usual gaps and who is due, as the data
   ]);
   assert.ok(all.every((r) => r.total_count === 18 && r.due_count === 4));
   assert.deepEqual(names(all.filter((r) => r.is_due)), ['Median', 'Zaki', 'Ben', 'Abu']);
+  // My shop's card counts the same people without the list.
+  const cardCounts = async () => (await ali.rpc('shop_cards', { p_from: today(), p_to: today() })).data.customers;
+  const listCounts = async () => {
+    const [first] = await customers(ali, null, 1);
+    return { total: first.total_count, due: first.due_count };
+  };
+  assert.deepEqual(await cardCounts(), { total: 18, due: 4 });
   const row = (name: string) => all.find((r) => r.name === name)!;
   assert.deepEqual(
     { ...row('Ben'), last_visit_at: Date.parse(row('Ben').last_visit_at!) },
@@ -1905,6 +1912,25 @@ test('the customer list works out visits, usual gaps and who is due, as the data
   }
   assert.equal((await customers(ali, null, 1000)).length, 50);
   assert.equal((await customers(ali, null, 1))[0].total_count, 78);
+  // One visit 28 to 89 days ago is due: guests 28 to 60.
+  assert.deepEqual(await cardCounts(), { total: 78, due: 37 });
+  assert.deepEqual(await cardCounts(), await listCounts());
+
+  // Moved bookings count where they are now: Chong's next cut moves later and
+  // stays to come; Zaki's last cut moves to 20 days ago, too soon to be due.
+  const moveBy = (which: (b: Row) => boolean, days: number) => {
+    const b = tables().bookings.find(which)!;
+    Object.assign(b, {
+      starts_at: new Date(Date.parse(String(b.starts_at)) + days * 86_400_000).toISOString(),
+      ends_at: new Date(Date.parse(String(b.ends_at)) + days * 86_400_000).toISOString(),
+      customer_change: 'moved',
+      customer_changed_at: new Date().toISOString(),
+    });
+  };
+  moveBy((b) => b.customer_id === chong.id && b.status === 'confirmed', 3);
+  moveBy((b) => b.guest_name === 'Zaki', 20);
+  assert.deepEqual(await cardCounts(), { total: 78, due: 36 });
+  assert.deepEqual(await cardCounts(), await listCounts());
 
   // Nobody else sees them: not a customer, another shop's owner, or a guest.
   assert.deepEqual(await customers(await signedIn(DEMO_CUSTOMER_EMAIL)), []);
@@ -1948,6 +1974,122 @@ test('the sample shop has regulars, and a few are due for a cut whatever the day
   const one = await customers(ali, null, 1);
   assert.deepEqual(one, [all[0]]);
   assert.deepEqual((await customers(ali, 'daniel')).map((r) => r.name), ['Daniel Tan']);
+});
+
+// My shop's cards ------------------------------------------------------------
+
+type ShopCards = {
+  takings: Record<string, number>;
+  customers: { total: number; due: number };
+  reviews: { count: number; sum: number; newest: { rating: number; comment: string; first_name: string } | null };
+  closures: { day: string; reason: string | null }[];
+};
+
+test('My shop’s cards come in one answer, the same numbers as the screens behind them', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const cards = async (from: string, to: string) => {
+    const { data, error } = await ali.rpc('shop_cards', { p_from: from, p_to: to });
+    assert.equal(error, null);
+    return data as ShopCards;
+  };
+  // What My shop asked for before, one request for each card.
+  const before = async (from: string, to: string): Promise<ShopCards> => {
+    const takings = await ali.rpc('shop_summary', { p_from: from, p_to: to });
+    const [first] = (await ali.rpc('shop_customers', { p_search: null, p_limit: 1, p_offset: 0 })).data;
+    const reviews = await ali
+      .from('shops')
+      .select('rating_count, rating_sum, reviews(rating, comment, first_name)')
+      .eq('id', shop.id)
+      .not('reviews.comment', 'is', null)
+      .order('created_at', { referencedTable: 'reviews', ascending: false })
+      .limit(1, { referencedTable: 'reviews' })
+      .single();
+    const closed = await ali.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: today(), p_to: addDays(today(), 60) });
+    return {
+      takings: takings.data.totals,
+      customers: { total: first.total_count, due: first.due_count },
+      reviews: {
+        count: reviews.data!.rating_count,
+        sum: reviews.data!.rating_sum,
+        newest: reviews.data!.reviews[0] ?? null,
+      },
+      closures: (closed.data as { day: string; reason: string | null; is_closure: boolean }[])
+        .filter((d) => d.is_closure)
+        .map(({ day, reason }) => ({ day, reason })),
+    };
+  };
+
+  // The sample shop has walk-ins, cancellations, no-shows, a moved booking and
+  // a guest booked under a customer's number.
+  const mine = tables().bookings.filter((b) => b.shop_id === shop.id);
+  assert.ok(mine.some((b) => b.customer_change === 'moved'));
+  for (const status of ['completed', 'cancelled', 'no_show', 'confirmed']) {
+    assert.ok(mine.some((b) => b.status === status));
+  }
+  const week = periodDays('week', Date.now(), TZ);
+  const month = periodDays('month', Date.now(), TZ);
+  const periods: [string, string][] = [
+    [week.from, week.to],
+    [addDays(week.from, -7), addDays(week.from, -1)],
+    [today(), today()],
+    [month.from, month.to],
+    [addDays(today(), -92), today()],
+  ];
+  for (const [from, to] of periods) assert.deepEqual(await cards(from, to), await before(from, to));
+  const first = await cards(week.from, week.to);
+  assert.ok(first.takings.done > 0 && first.reviews.newest != null);
+  assert.deepEqual(first.customers.due, 4);
+  assert.deepEqual(first.closures, []);
+
+  // Days closed from today to 60 days ahead, each with its reason, in order.
+  assert.equal((await ali.rpc('close_shop_days', { p_from: addDays(today(), 30), p_days: 2, p_reason: 'Hari Raya' })).error, null);
+  assert.equal((await ali.rpc('close_shop_days', { p_from: addDays(today(), 60), p_days: 1, p_reason: 'Kenduri' })).error, null);
+  insertRow('shop_closures', { shop_id: shop.id, day: addDays(today(), -1), reason: 'Yesterday' });
+  insertRow('shop_closures', { shop_id: shop.id, day: addDays(today(), 61), reason: 'Too far' });
+  assert.deepEqual((await cards(week.from, week.to)).closures, [
+    { day: addDays(today(), 30), reason: 'Hari Raya' },
+    { day: addDays(today(), 31), reason: 'Hari Raya' },
+    { day: addDays(today(), 60), reason: 'Kenduri' },
+  ]);
+  assert.deepEqual(await cards(week.from, week.to), await before(week.from, week.to));
+
+  // A cut marked done shows on coming back.
+  const weekStart = dayBounds(week.from, TZ).start.getTime();
+  const over = tables().bookings.find(
+    (b) =>
+      b.shop_id === shop.id &&
+      !b.is_block &&
+      b.status === 'confirmed' &&
+      Date.parse(String(b.starts_at)) >= weekStart &&
+      Date.parse(String(b.ends_at)) <= Date.now(),
+  );
+  if (over) {
+    assert.equal((await ali.rpc('set_booking_status', { p_booking_id: over.id, p_status: 'completed' })).error, null);
+    assert.equal((await cards(week.from, week.to)).takings.done, first.takings.done + 1);
+    assert.deepEqual(await cards(week.from, week.to), await before(week.from, week.to));
+  }
+
+  // No review with a comment: the count and total still, and no comment.
+  for (const r of tables().reviews) if (r.shop_id === shop.id) r.comment = null;
+  const quiet = await cards(week.from, week.to);
+  assert.equal(quiet.reviews.newest, null);
+  assert.ok(quiet.reviews.count > 0);
+  assert.deepEqual(quiet, await before(week.from, week.to));
+
+  // The same checks as shop_summary, and only for the shop's owner.
+  const long = await ali.rpc('shop_cards', { p_from: addDays(today(), -93), p_to: today() });
+  assert.deepEqual([long.error?.code, long.error?.message], ['22023', 'Pick a period of up to 93 days.']);
+  assert.equal((await ali.rpc('shop_cards', { p_from: null, p_to: today() })).error?.code, '22023');
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const notOwner = await hakim.rpc('shop_cards', { p_from: today(), p_to: today() });
+  assert.deepEqual([notOwner.error?.code, notOwner.error?.message], ['P0002', 'Set up your shop first.']);
+  assert.equal((await client().rpc('shop_cards', { p_from: today(), p_to: today() })).error?.code, '42501');
+  // Another owner gets their own shop's.
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  const kemas = await shopBySlug(rahman, 'kemas-barber-kajang');
+  const theirs = (await rahman.rpc('shop_cards', { p_from: week.from, p_to: week.to })).data as ShopCards;
+  assert.deepEqual([theirs.reviews.count, theirs.reviews.sum, theirs.closures], [kemas.rating_count, kemas.rating_sum, []]);
 });
 
 // Reviews ----------------------------------------------------------------------

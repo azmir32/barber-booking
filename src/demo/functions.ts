@@ -904,12 +904,13 @@ const descNullsLast = (a: number | null, b: number | null) => (a === b ? 0 : a =
 const ascNullsLast = (a: string | null, b: string | null) =>
   a === b ? 0 : a == null ? 1 : b == null ? -1 : a < b ? -1 : 1;
 
-export function shopCustomers(c: Caller, args: Record<string, unknown>) {
-  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
-  if (!shop) return [];
+/**
+ * Everyone shop_customers finds at the shop for a search (lower case and
+ * trimmed, or null for everyone), unsorted, with what it sorts them by.
+ */
+function customersOf(shop: Row, search: string | null) {
   const tz = String(shop.time_zone);
   const today = localDateString(new Date(now()), tz);
-  const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
   // Only something typed like a number looks at phone numbers, so "Ali 2"
   // doesn't find everyone with a 2 in theirs.
   const digits = search != null && /^[0-9 +()-]+$/.test(search) ? search.replace(/\D/g, '') || null : null;
@@ -995,6 +996,13 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
       },
     ];
   });
+  return found;
+}
+
+export function shopCustomers(c: Caller, args: Record<string, unknown>) {
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  if (!shop) return [];
+  const found = customersOf(shop, blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase());
 
   // Due first, longest overdue first, then everyone by their last visit.
   found.sort(
@@ -1011,6 +1019,38 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
   return found
     .slice(offset, offset + limit)
     .map(({ row }) => ({ ...row, total_count: found.length, due_count: dueCount }));
+}
+
+// My shop's cards -------------------------------------------------------------
+
+/**
+ * shop_cards: everything My shop's cards show, in one answer: shop_summary's
+ * totals for p_from to p_to, how many customers shop_customers lists and how
+ * many of them are due, the shop's review count and sum with its newest
+ * comment, and the days closed from today to 60 days ahead.
+ */
+export function shopCards(c: Caller, fromArg: unknown, toArg: unknown) {
+  const shop = myShop(c);
+  const { totals } = shopSummary(c, fromArg, toArg);
+  const customers = customersOf(shop, null);
+  const newest = tables()
+    .reviews.filter((r) => r.shop_id === shop.id && r.comment != null)
+    .sort((a, b) => ms(b.created_at) - ms(a.created_at))[0];
+  const today = localDateString(new Date(now()), String(shop.time_zone));
+  const last = addDays(today, 60);
+  return {
+    takings: totals,
+    customers: { total: customers.length, due: customers.filter((f) => f.row.is_due).length },
+    reviews: {
+      count: shop.rating_count,
+      sum: shop.rating_sum,
+      newest: newest ? { rating: newest.rating, comment: newest.comment, first_name: newest.first_name } : null,
+    },
+    closures: tables()
+      .shop_closures.filter((cl) => cl.shop_id === shop.id && String(cl.day) >= today && String(cl.day) <= last)
+      .map((cl) => ({ day: String(cl.day), reason: (cl.reason as string | null) ?? null }))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)),
+  };
 }
 
 // What customers changed ------------------------------------------------------
@@ -1201,6 +1241,7 @@ const SIGNED_IN_ONLY = new Set([
   'reopen_shop_days',
   'shop_summary',
   'shop_customers',
+  'shop_cards',
   'shop_changes',
   'shop_setup',
   'my_bookings',
@@ -1255,6 +1296,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: shopSummary(c, args.p_from, args.p_to) };
     case 'shop_customers':
       return { status: 200, body: shopCustomers(c, args) };
+    case 'shop_cards':
+      return { status: 200, body: shopCards(c, args.p_from, args.p_to) };
     case 'shop_changes':
       return { status: 200, body: shopChanges(c, args.p_since ?? null, args.p_limit ?? 5) };
     case 'shop_setup':
