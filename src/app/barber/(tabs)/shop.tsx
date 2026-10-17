@@ -51,7 +51,7 @@ function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' |
 export default function MyShop() {
   const { shop, fresh, staleSince: shopStaleSince, reload } = useMyShop();
   const now = useNow();
-  // Takings, customers and reviews: last time's numbers at once, then the server's.
+  // Takings, customers, reviews and closed days: last time's at once, then the server's.
   const cards = useShopCards(shop);
   // A new shop's steps to its first booking, and what Go live still needs.
   const ready = useShopReady(shop, now);
@@ -293,7 +293,7 @@ export default function MyShop() {
 
       <ReviewsCard reviews={cards.reviews} />
 
-      <ClosedDaysCard shop={shop} />
+      <ClosedDaysCard days={cards.closures} loadError={cards.error} reload={cards.reload} />
 
       <View ref={linkRef}>
         <Card>
