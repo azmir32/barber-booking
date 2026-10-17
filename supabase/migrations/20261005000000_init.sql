@@ -1483,7 +1483,9 @@ $$;
 -- (31,000 bookings, 3,800 customers, with 100,000 profiles on the platform)
 -- took 100 to 120 ms on a test machine, and a shop with 3,000 bookings 25 to
 -- 40 ms. total_count and due_count are for every customer the search
--- matches, not just the page, so My shop asks for a single row to show them.
+-- matches, not just the page. My shop's card gets the same two numbers from
+-- shop_customer_counts below, without the list: change the two together
+-- (booking_test.sql checks they agree).
 create function public.shop_customers(
   p_search text default null,
   p_limit int default 30,
@@ -1639,6 +1641,192 @@ begin
   offset greatest(coalesce(p_offset, 0), 0);
 end;
 $$;
+
+-- Each profile's number in the one form shop_customers compares numbers in,
+-- so a walk-in's number finds the online customer it belongs to in one
+-- lookup (shop_customer_counts).
+create index profiles_phone_key_idx on public.profiles
+  ((nullif(regexp_replace(regexp_replace(coalesce(phone, ''), '\D', '', 'g'), '^0', '60'), '') collate "C"))
+  where phone is not null;
+
+-- How many customers a shop has and how many are due for a cut: the
+-- total_count and due_count shop_customers gives with no search, for My
+-- shop's card, which needs nothing else. Same rules, less work: no names or
+-- order, each guest number looked up once instead of every online
+-- customer's profile, a visit day worked out once per booking, and the
+-- median gap only for someone who could be due. On the e2e/load data (2,820
+-- bookings, all online) that is 4 ms instead of 20; for a shop with 33,000
+-- bookings in two years, a fifth of them walk-ins, 60 ms instead of 100.
+-- JIT is off for it: on that shop, compiling the query took 600 ms, ten
+-- times as long as running it.
+create function public.shop_customer_counts(p_shop_id uuid)
+returns table (total int, due int)
+language plpgsql
+stable
+security definer
+set search_path = public
+set jit = off
+as $$
+declare
+  v_tz text;
+  v_today date;
+begin
+  select s.time_zone into v_tz from shops s where s.id = p_shop_id;
+  if not found then
+    return;
+  end if;
+  v_today := (now() at time zone v_tz)::date;
+
+  return query
+  with scanned as materialized (
+    -- The same bookings as shop_customers, with the day of each visit.
+    select b.customer_id, b.guest_name, b.guest_phone, b.status, b.starts_at,
+           case when b.status = 'completed' or (b.status = 'confirmed' and b.starts_at <= now())
+                then (b.starts_at at time zone v_tz)::date end as day
+    from bookings b
+    where b.shop_id = p_shop_id
+      and b.starts_at >= now() - interval '2 years'
+      and b.starts_at < now() + interval '1 year'
+      and not b.is_block
+      and b.status <> 'cancelled'
+      and (b.customer_id is not null or b.guest_name <> 'Deleted account')
+  ),
+  numbers as materialized (
+    -- Each number guests gave as typed, in one form, and the one online
+    -- customer of the shop with it on their profile, if there is exactly one.
+    select g.guest_phone, k.phone_key, m.customer_id
+    from (select distinct s.guest_phone from scanned s where s.customer_id is null and s.guest_phone is not null) g
+    cross join lateral (
+      select nullif(regexp_replace(regexp_replace(g.guest_phone, '\D', '', 'g'), '^0', '60'), '') collate "C" as phone_key
+    ) k
+    left join lateral (
+      select min(p.id::text)::uuid as customer_id
+      from profiles p
+      where (nullif(regexp_replace(regexp_replace(coalesce(p.phone, ''), '\D', '', 'g'), '^0', '60'), '') collate "C")
+              = k.phone_key
+        and p.phone is not null
+        and exists (
+          select 1 from bookings x
+          where x.customer_id = p.id and x.shop_id = p_shop_id
+            and x.starts_at >= now() - interval '2 years'
+            and x.starts_at < now() + interval '1 year'
+            and not x.is_block
+            and x.status <> 'cancelled'
+        )
+      having count(*) = 1
+    ) m on true
+  ),
+  people as (
+    -- One row per person, keyed as in shop_customers.
+    select bool_or(r.status = 'confirmed' and r.starts_at > now()) as booked,
+           max(r.day) as last_day,
+           array_agg(distinct r.day) filter (where r.day is not null) as days
+    from (
+      select coalesce(s.customer_id, n.customer_id, '00000000-0000-0000-0000-000000000000') as customer_id,
+             case when s.customer_id is null and n.customer_id is null then
+               coalesce('p:' || n.phone_key, 'n:' || lower(regexp_replace(trim(s.guest_name), '\s+', ' ', 'g')))
+             else '' end collate "C" as guest_key,
+             s.status, s.starts_at, s.day
+      from scanned s
+      left join numbers n on s.customer_id is null and n.guest_phone = s.guest_phone
+      where not (s.customer_id is null and n.phone_key is null and lower(trim(s.guest_name)) = 'walk-in')
+    ) r
+    group by r.customer_id, r.guest_key
+  )
+  -- Due: nothing booked and their usual gap (at least a week) passed, but
+  -- not three gaps or 90 days. One visit means a gap of four weeks.
+  select count(*)::int,
+         (count(*) filter (where
+            not p.booked and v_today - p.last_day >= 7
+            and case when cardinality(p.days) = 1 then v_today - p.last_day between 28 and 89
+                else (select v_today - p.last_day >= x.gap and v_today - p.last_day < greatest(3 * x.gap, 90)
+                      from (select greatest(round(percentile_cont(0.5) within group (order by p.days[i] - p.days[i - 1])::numeric)::int, 7) as gap
+                            from generate_subscripts(p.days, 1) i
+                            where i > 1) x)
+                end))::int
+  from people p;
+end;
+$$;
+-- Only shop_cards uses it.
+revoke execute on function public.shop_customer_counts(uuid) from public, anon, authenticated;
+
+-- Everything My shop's cards show, in one answer: the totals shop_summary
+-- gives for p_from to p_to (the app asks for this week), how many customers
+-- and how many are due (shop_customer_counts), the review count and total
+-- with the newest comment, and the days the shop is closed from today to 60
+-- days ahead with the reason (the closures shop_closed_days gives). It was
+-- five requests, one of them making the whole customer list to read two
+-- numbers from it: on the e2e/load data each owner's visit took 23 ms of
+-- database time, now 5. Only the caller's own shop.
+create function public.shop_cards(p_from date, p_to date)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_days int := p_to - p_from + 1;
+  v_start timestamptz;
+  v_end timestamptz;
+  v_today date;
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    raise exception 'Set up your shop first.' using errcode = 'P0002';
+  end if;
+  if v_days is null or v_days < 1 or v_days > 93 then
+    raise exception 'Pick a period of up to 93 days.' using errcode = '22023';
+  end if;
+  v_start := p_from::timestamp at time zone v_shop.time_zone;
+  v_end := (p_to + 1)::timestamp at time zone v_shop.time_zone;
+  v_today := (now() at time zone v_shop.time_zone)::date;
+
+  return jsonb_build_object(
+    -- As shop_summary's totals.
+    'takings', (
+      select jsonb_build_object(
+        'done', count(*) filter (where status = 'completed'),
+        'takings', coalesce(sum(price) filter (where status = 'completed'), 0),
+        'no_shows', count(*) filter (where status = 'no_show'),
+        'no_show_value', coalesce(sum(price) filter (where status = 'no_show'), 0),
+        'cancelled', count(*) filter (where status = 'cancelled'),
+        'to_come', count(*) filter (where status = 'confirmed' and ends_at > now()),
+        'to_come_value', coalesce(sum(price) filter (where status = 'confirmed' and ends_at > now()), 0),
+        'unmarked', count(*) filter (where status = 'confirmed' and ends_at <= now()),
+        'unmarked_value', coalesce(sum(price) filter (where status = 'confirmed' and ends_at <= now()), 0)
+      )
+      from bookings bk
+      where bk.shop_id = v_shop.id
+        and bk.starts_at >= v_start
+        and bk.starts_at < v_end
+        and not bk.is_block
+    ),
+    'customers', (
+      select jsonb_build_object('total', c.total, 'due', c.due) from public.shop_customer_counts(v_shop.id) c
+    ),
+    'reviews', jsonb_build_object(
+      'count', v_shop.rating_count,
+      'sum', v_shop.rating_sum,
+      'newest', (
+        select jsonb_build_object('rating', r.rating, 'comment', r.comment, 'first_name', r.first_name)
+        from reviews r
+        where r.shop_id = v_shop.id and r.comment is not null
+        order by r.created_at desc
+        limit 1
+      )
+    ),
+    'closures', coalesce((
+      select jsonb_agg(jsonb_build_object('day', c.day, 'reason', c.reason) order by c.day)
+      from shop_closures c
+      where c.shop_id = v_shop.id and c.day between v_today and v_today + 60
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+revoke execute on function public.shop_cards(date, date) from public, anon;
+grant execute on function public.shop_cards(date, date) to authenticated;
 
 -- What customers booked, moved or cancelled at the owner's shop since a phone
 -- last looked, for the badge on the Bookings tab and the card at its top:
