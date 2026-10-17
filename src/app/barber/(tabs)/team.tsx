@@ -4,6 +4,8 @@ import { View } from 'react-native';
 
 import { Badge, Button, Card, Empty, ErrorText, Field, Row, Screen, Section, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
+import { barberAbout, BARBER_ABOUT_MAX_LENGTH } from '@/lib/barbers';
 import { confirmAction } from '@/lib/confirm';
 import { summarizeWeek } from '@/lib/hours';
 import { t } from '@/lib/lang';
@@ -168,6 +170,7 @@ export default function Team() {
                 <T variant="label">{b.name}</T>
                 {b.is_active ? null : <Badge label={t('Away')} tone="warning" />}
               </Row>
+              <BarberIntro barber={b} onSaved={(about) => setBarbers((team) => team.map((x) => (x.id === b.id ? { ...x, about } : x)))} />
               <T variant="small">{b.is_active ? summarizeWeek(b.working_hours) : t('Away, not taking bookings')}</T>
               {booked ? (
                 <T variant="small">
@@ -244,5 +247,106 @@ export default function Team() {
         </Section>
       ) : null}
     </Screen>
+  );
+}
+
+/**
+ * The line customers see under a barber's name when they pick one, e.g.
+ * "Skin fades and beard trims, 8 years": shown here with Edit, or "+ Add an
+ * intro", opening a box for it right in the card.
+ */
+function BarberIntro({ barber, onSaved }: { barber: Barber; onSaved: (about: string | null) => void }) {
+  const theme = useTheme();
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const { name, about } = barber;
+
+  // Blank takes it away.
+  async function save(typed: string) {
+    setSaving(true);
+    setError(null);
+    const line = barberAbout(typed);
+    const { error } = await supabase.from('barbers').update({ about: line }).eq('id', barber.id);
+    setSaving(false);
+    if (error) return setError(errorMessage(error));
+    onSaved(line);
+    setEditing(false);
+    setDone(line ? t('Intro saved.') : t('Intro removed.'));
+  }
+
+  if (editing) {
+    return (
+      <View style={{ gap: Spacing.sm }}>
+        <Field
+          label={t('{name}’s intro', { name })}
+          hint={t('Customers see it under the name when they pick a barber. One line, up to 60 characters.')}
+          value={text}
+          onChangeText={setText}
+          placeholder={t('e.g. Skin fades and beard trims, 8 years')}
+          maxLength={BARBER_ABOUT_MAX_LENGTH}
+          onSubmitEditing={() => save(text)}
+          autoFocus
+        />
+        <ErrorText message={error} />
+        <Row style={{ flexWrap: 'nowrap' }}>
+          <Button
+            title={t('Cancel')}
+            variant="secondary"
+            onPress={() => {
+              setEditing(false);
+              setError(null);
+            }}
+          />
+          <Button
+            title={t('Save intro')}
+            onPress={() => save(text)}
+            loading={saving}
+            disabled={!barberAbout(text) && !about}
+            style={{ flex: 1 }}
+          />
+        </Row>
+        {about ? <Button title={t('Remove intro')} variant="ghost" tone="danger" onPress={() => save('')} /> : null}
+      </View>
+    );
+  }
+
+  const open = () => {
+    setText(about ?? '');
+    setDone(null);
+    setEditing(true);
+  };
+  return (
+    <View style={{ gap: Spacing.xs }}>
+      {about ? (
+        <Row style={{ flexWrap: 'nowrap' }}>
+          <T variant="muted" style={{ flex: 1 }}>
+            {about}
+          </T>
+          <Button
+            title={t('Edit')}
+            variant="ghost"
+            accessibilityLabel={t('Edit {name}’s intro', { name })}
+            onPress={open}
+            style={{ paddingHorizontal: Spacing.md }}
+          />
+        </Row>
+      ) : (
+        <Button
+          title={t('+ Add an intro')}
+          variant="ghost"
+          accessibilityLabel={t('Add an intro for {name}', { name })}
+          onPress={open}
+          style={{ alignSelf: 'flex-start', paddingHorizontal: 0 }}
+        />
+      )}
+      {done ? (
+        <T variant="small" role="status" accessibilityLiveRegion="polite" style={{ color: theme.success }}>
+          {done}
+        </T>
+      ) : null}
+    </View>
   );
 }

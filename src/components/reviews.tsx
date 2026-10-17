@@ -2,13 +2,15 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { Button, ErrorText, Field, Row, T } from '@/components/ui';
+import { Button, Chip, ErrorText, Field, Row, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
+import { barberChipLabel, ownerStarsText, type BarberStars } from '@/lib/barbers';
 import { t } from '@/lib/lang';
 import {
   firstName,
+  MIN_REVIEWS_SHOWN,
   ratingSummary,
   reviewAge,
   REVIEW_MAX_LENGTH,
@@ -80,6 +82,52 @@ export function RatingSummary({
       style={({ pressed }) => [styles.summaryLink, pressed && { opacity: 0.6 }]}>
       {text}
     </Pressable>
+  );
+}
+
+/**
+ * "Everyone · Ali · Danial" over a shop's reviews, to read one barber's.
+ * Nothing when fewer than two barbers have reviews (pass reviewFilters'
+ * list). For the shop's owner each chip also gives its stars, "4.8 ★ (12)",
+ * however few.
+ */
+export function BarberFilter({
+  barbers,
+  selected,
+  onSelect,
+  shopStars,
+}: {
+  barbers: (BarberStars & { id: string; name: string })[];
+  /** The barber picked; null for everyone. */
+  selected: string | null;
+  onSelect: (barberId: string | null) => void;
+  /** The owner's view: the shop's own figures, under Everyone. */
+  shopStars?: BarberStars;
+}) {
+  if (barbers.length === 0) return null;
+  const owner = shopStars !== undefined;
+  const stars = (b: BarberStars) => (owner ? (ownerStarsText(b) ?? undefined) : undefined);
+  return (
+    <Row role="radiogroup" accessibilityLabel={t('Reviews for')}>
+      <Chip
+        label={t('Everyone')}
+        sublabel={shopStars && stars(shopStars)}
+        accessibilityLabel={shopStars ? barberChipLabel({ ...shopStars, name: t('Everyone') }, true) : undefined}
+        selected={selected === null}
+        onPress={() => onSelect(null)}
+      />
+      {barbers.map((b) => (
+        <Chip
+          key={b.id}
+          label={b.name}
+          sublabel={stars(b)}
+          // Customers hear a barber's stars once they would see them.
+          accessibilityLabel={barberChipLabel(b, owner || b.rating_count >= MIN_REVIEWS_SHOWN)}
+          selected={selected === b.id}
+          onPress={() => onSelect(b.id)}
+        />
+      ))}
+    </Row>
   );
 }
 

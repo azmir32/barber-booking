@@ -1050,4 +1050,17 @@ export const ms: Record<string, string> = {
   // barber/(tabs)/team.tsx, barber/reviews.tsx, components/shop-reviews.tsx,
   // lib/barbers.ts)
   '{name}, rated {avg} out of 5 from {reviews}': '{name}, penilaian {avg} daripada 5, dari {reviews}',
+  'Whoever is free at the time you pick': 'Sesiapa yang lapang pada masa yang anda pilih',
+  'Reviews for': 'Ulasan untuk',
+  '+ Add an intro': '+ Tambah pengenalan',
+  'Add an intro for {name}': 'Tambah pengenalan untuk {name}',
+  'Edit {name}’s intro': 'Ubah pengenalan {name}',
+  '{name}’s intro': 'Pengenalan {name}',
+  'Customers see it under the name when they pick a barber. One line, up to 60 characters.':
+    'Pelanggan melihatnya di bawah nama semasa memilih barber. Satu baris, hingga 60 aksara.',
+  'e.g. Skin fades and beard trims, 8 years': 'cth. Skin fade dan rapi janggut, 8 tahun',
+  'Save intro': 'Simpan pengenalan',
+  'Remove intro': 'Buang pengenalan',
+  'Intro saved.': 'Pengenalan disimpan.',
+  'Intro removed.': 'Pengenalan dibuang.',
 };
