@@ -43,8 +43,9 @@ join (values
   (18, 'Alor Setar', 6.1248, 100.3678), (19, 'Kuching', 1.5535, 110.3593)
 ) t(n, area, lat, lng) on t.n = i % 20;
 
-insert into public.barbers (id, shop_id, name, sort_order)
-select md5('barber' || i || '-' || j)::uuid, md5('shop' || i)::uuid, 'Barber ' || j, j
+insert into public.barbers (id, shop_id, name, about, sort_order)
+select md5('barber' || i || '-' || j)::uuid, md5('shop' || i)::uuid, 'Barber ' || j,
+       (array['Fades and skin fades, 8 years', 'Kids'' cuts, patient with first-timers', null])[j], j
 from generate_series(1, :shops) i, generate_series(1, 3) j;
 
 insert into public.services (id, shop_id, name, duration_min, price, sort_order)
@@ -86,7 +87,8 @@ where extract(dow from current_date + d) <> 0
 \echo › reviews
 -- About one in seven finished cuts is rated a few hours later, mostly four
 -- or five stars, half with a comment. The counting trigger is off while
--- they go in, and each shop's count and total are added up once at the end.
+-- they go in, and each shop's and barber's count and total are added up
+-- once at the end.
 alter table public.reviews disable trigger reviews_count;
 insert into public.reviews (booking_id, shop_id, barber_id, customer_id, rating, comment, first_name,
                             created_at, updated_at)
@@ -100,6 +102,9 @@ alter table public.reviews enable trigger reviews_count;
 update public.shops s set rating_count = x.n, rating_sum = x.total
 from (select shop_id, count(*)::int as n, sum(rating)::int as total from public.reviews group by shop_id) x
 where x.shop_id = s.id;
+update public.barbers b set rating_count = x.n, rating_sum = x.total
+from (select barber_id, count(*)::int as n, sum(rating)::int as total from public.reviews group by barber_id) x
+where x.barber_id = b.id;
 
 analyze;
 \echo › done
