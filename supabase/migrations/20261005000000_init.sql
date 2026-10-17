@@ -1656,7 +1656,7 @@ create index profiles_phone_key_idx on public.profiles
 -- customer's profile, a visit day worked out once per booking, and the
 -- median gap only for someone who could be due. On the e2e/load data (2,820
 -- bookings, all online) that is 4 ms instead of 20; for a shop with 33,000
--- bookings in two years, a fifth of them walk-ins, 60 ms instead of 100.
+-- bookings in two years, a fifth of them walk-ins, 70 ms instead of 100.
 -- JIT is off for it: on that shop, compiling the query took 600 ms, ten
 -- times as long as running it.
 create function public.shop_customer_counts(p_shop_id uuid)
@@ -1755,9 +1755,9 @@ revoke execute on function public.shop_customer_counts(uuid) from public, anon, 
 -- and how many are due (shop_customer_counts), the review count and total
 -- with the newest comment, and the days the shop is closed from today to 60
 -- days ahead with the reason (the closures shop_closed_days gives). It was
--- five requests, one of them making the whole customer list to read two
--- numbers from it: on the e2e/load data each owner's visit took 23 ms of
--- database time, now 5. Only the caller's own shop.
+-- four requests, one of them making the whole customer list to read two
+-- numbers from it: on the e2e/load data they took 23 ms of database time
+-- for each visit, now 4. Only the caller's own shop.
 create function public.shop_cards(p_from date, p_to date)
 returns jsonb
 language plpgsql

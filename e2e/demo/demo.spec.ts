@@ -1190,6 +1190,50 @@ test('Find a barber asks for its list once on a new day, with last night’s sho
   expect(await asked(page, '/rest/v1/rpc/my_shops')).toBe(1);
 });
 
+test('My shop asks for all its cards at once, and opens with last time’s, closed days too', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await expect(app.getByRole('radio', { name: /^Tomorrow/ })).toBeVisible();
+  await network(page, { log: true });
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  const customers = app.getByRole('link', { name: /^Customers: \d+ customers · 4 due for a cut$/ });
+  await expect(customers).toBeVisible();
+  const noHolidays = app.getByText(/^Closing for Hari Raya or a holiday\?/);
+  await expect(noHolidays).toBeVisible();
+  await expect.poll(() => asked(page, '/rest/v1/rpc/shop_cards')).toBe(1);
+  for (const before of ['shop_summary', 'shop_customers', 'shop_closed_days']) {
+    expect(await asked(page, `/rest/v1/rpc/${before}`)).toBe(0);
+  }
+
+  // A day closed shows on coming back.
+  await button(app, 'Close for a few days').click();
+  await app.getByRole('radiogroup', { name: 'Day', exact: true }).getByRole('radio').last().click();
+  await app.getByLabel('Reason (optional)', { exact: true }).fill('Kenduri');
+  await button(app, 'Close for 1 day').click();
+  const kenduri = app.getByText('Kenduri', { exact: true });
+  await expect(kenduri).toBeVisible();
+  await expect(noHolidays).toHaveCount(0);
+
+  // Opened again with no connection, the cards and the closed day are there at once, with when they are from.
+  await network(page, { offline: true });
+  await page.reload();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await expect(customers).toBeVisible();
+  await expect(kenduri).toBeVisible();
+  const stale = app.getByRole('status').filter({ hasText: /Couldn’t refresh\. Showing what you saw/ });
+  await expect(stale).toBeVisible();
+  await snap(page, 'demo-41-my-shop-offline');
+
+  // Back online, reopening takes it off.
+  await network(page, null);
+  await stale.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(stale).toHaveCount(0);
+  await button(app, /^Reopen /).click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Reopen', exact: true }).click();
+  await expect(kenduri).toHaveCount(0);
+  await expect(noHolidays).toBeVisible();
+});
+
 test('the barber sees the day as chairs side by side, opens a booking from there and adds one in a free gap', async ({
   page,
 }) => {
