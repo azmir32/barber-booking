@@ -579,8 +579,9 @@ test('a returning customer sees their next cut and their barbers, and books the 
   // Book again opens the shop on the same service and barber, ready to pick a time.
   await button(app, 'Book again at Kemas Barber Kajang').click();
   await expect(app.getByRole('radio', { name: /^Haircut RM18/ })).toBeChecked();
-  await expect(app.getByRole('radio', { name: 'Rahman', exact: true })).toBeChecked();
-  await expect(app.getByRole('radio', { name: 'Any barber', exact: true })).not.toBeChecked();
+  // Read with his intro and stars, as he is listed.
+  await expect(app.getByRole('radio', { name: /^Rahman\. / })).toBeChecked();
+  await expect(app.getByRole('radio', { name: /^Any barber\./ })).not.toBeChecked();
   await expect(app.getByRole('heading', { name: '3. Pick a time' })).toBeVisible();
   await snap(page, 'demo-02c-book-again');
 });
@@ -1268,6 +1269,97 @@ test('the barber sees the day as chairs side by side, opens a booking from there
   await page.reload();
   await expect(app.getByRole('radio', { name: 'Chairs', exact: true })).toBeChecked();
   await expect(app.getByRole('group', { name: /’s chair$/ }).first()).toBeVisible();
+});
+
+test('customers pick a barber by their intro and stars and read one barber’s reviews; the owner writes the intros', async ({
+  page,
+}) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+
+  // Each barber with the line their owner wrote and their stars, after Any barber, which stays picked.
+  // (Whatever the day: Danial is still listed on a Monday, when he's off.)
+  const team = app.getByRole('radiogroup', { name: 'Barber', exact: true }).getByRole('radio');
+  await expect(team).toHaveCount(3);
+  await expect(team.nth(0)).toHaveAccessibleName('Any barber. Whoever is free at the time you pick');
+  await expect(team.nth(0)).toBeChecked();
+  await expect(team.nth(1)).toHaveAccessibleName(
+    /^Ali\. Skin fades and beard trims, cutting since 2015\. Rated \d\.\d out of 5 from \d+ reviews$/,
+  );
+  await expect(team.nth(2)).toHaveAccessibleName(/^Danial\. Kids’ cuts, patient with first-timers\. Rated \d\.\d out of 5 from \d+ reviews$/);
+  await expect(app.getByText('Kids’ cuts, patient with first-timers', { exact: true })).toBeVisible();
+  await snap(page, 'demo-41-pick-barber');
+  await team.nth(2).click();
+  await expect(team.nth(2)).toBeChecked();
+  await expect(team.nth(0)).not.toBeChecked();
+
+  // The reviews narrow to Danial's, newest first, a page at a time.
+  const whose = app.getByRole('radiogroup', { name: 'Reviews for' }).getByRole('radio');
+  await expect(whose).toHaveText(['Everyone', 'Ali', 'Danial']);
+  await expect(whose.nth(0)).toBeChecked();
+  await expect(app.getByText(/ · with Ali$/).first()).toBeVisible();
+  const [, average, count] = /^Danial, rated (\d\.\d) out of 5 from (\d+) reviews$/.exec(
+    (await whose.nth(2).getAttribute('aria-label')) ?? '',
+  )!;
+  expect(Number(count)).toBeGreaterThan(3);
+  await whose.nth(2).click();
+  await expect(whose.nth(2)).toBeChecked();
+  // His stars over his reviews, as on his card in the barber step above.
+  await expect(app.getByRole('img', { name: `Rated ${average} out of 5 from ${count} reviews`, exact: true })).toHaveCount(2);
+  await expect(app.getByText(/ · with Ali$/)).toHaveCount(0);
+  const danials = app.getByText(/ · with Danial$/);
+  await expect(danials).toHaveCount(3);
+  await expect(app.getByText('Danial was so patient with my son. His first haircut without tears!')).toBeVisible();
+  await snap(page, 'demo-42-danials-reviews');
+  await button(app, 'Show more reviews').click();
+  await expect(danials).toHaveCount(Math.min(Number(count), 13));
+  const ages = await danials.allTextContents();
+  expect(ages[0]).toMatch(/^(Today|Yesterday|\d days ago) · /);
+  expect(ages.at(-1)).toMatch(/^\d (days|weeks) ago · /);
+  // Everyone again.
+  await whose.nth(0).click();
+  await expect(app.getByText(/ · with Ali$/).first()).toBeVisible();
+
+  // Ali writes Danial a new line on the Barbers tab.
+  await page.reload();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  // The customer side has a Barbers tab too: wait for his.
+  await expect(app.getByRole('tab', { name: /My shop/ })).toBeVisible();
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+  await expect(app.getByText('Skin fades and beard trims, cutting since 2015', { exact: true })).toBeVisible();
+  await button(app, 'Edit Danial’s intro').click();
+  const intro = app.getByLabel('Danial’s intro', { exact: true });
+  await expect(intro).toHaveValue('Kids’ cuts, patient with first-timers');
+  await intro.fill('Kids’ cuts and skin fades, patient with first-timers');
+  await button(app, 'Save intro').click();
+  await expect(app.getByText('Intro saved.')).toBeVisible();
+  await expect(app.getByText('Kids’ cuts and skin fades, patient with first-timers', { exact: true })).toBeVisible();
+  await snap(page, 'demo-43-team-intro');
+
+  // His Reviews has the same chips, each with that barber's stars.
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await app.getByRole('link', { name: /^Reviews: / }).click();
+  const chips = app.getByRole('radiogroup', { name: 'Reviews for' }).getByRole('radio');
+  await expect(chips.nth(0)).toHaveAccessibleName(/^Everyone, rated \d\.\d out of 5 from \d+ reviews$/);
+  await expect(chips.nth(2)).toHaveAccessibleName(`Danial, rated ${average} out of 5 from ${count} reviews`);
+  await expect(chips.nth(2)).toContainText(`${average} ★ (${count})`);
+  await chips.nth(2).click();
+  await expect(app.getByText(/ · with Ali$/)).toHaveCount(0);
+  await expect(app.getByText(/ · with Danial$/).first()).toBeVisible();
+  await snap(page, 'demo-44-owner-reviews-danial');
+
+  // The shop's page has the new line.
+  await app.getByLabel('Go back').click();
+  await button(app, 'See the customer side').click();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await expect(
+    app.getByRole('radio', { name: /^Danial\. Kids’ cuts and skin fades, patient with first-timers\. Rated \d\.\d out of 5/ }),
+  ).toBeVisible();
+  await expect(app.getByText('Kids’ cuts and skin fades, patient with first-timers', { exact: true })).toBeVisible();
 });
 
 test.describe('on an iPhone', () => {

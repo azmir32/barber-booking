@@ -99,6 +99,7 @@ const SCENARIOS = {
     const shop = await must(anon.from('shops').select('*').eq('slug', `kedai-gunting-${i}`).maybeSingle());
     await Promise.all([
       must(anon.from('services').select('*').eq('shop_id', shop.data.id).eq('is_active', true).order('sort_order').order('name')),
+      // With each barber's intro and stars, so the barber step needs no request of its own.
       must(
         anon
           .from('barbers')
