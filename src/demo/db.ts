@@ -117,8 +117,13 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     id,
     shop_id: req('uuid'),
     name: req('text'),
+    // A demo saved before barbers had a line gets the sample barbers' own.
+    about: { ...opt('text'), backfill: (r) => sampleValue('barbers', r.id, 'about') },
     is_active: req('bool', () => true),
     sort_order: req('int', () => 0),
+    // Kept by the reviews_count trigger (countReview below).
+    rating_count: req('int', () => 0),
+    rating_sum: req('int', () => 0),
     created_at: createdAt,
   },
   services: {
@@ -189,6 +194,8 @@ export const pgTrim = (s: string) => s.replace(/^ +| +$/g, '');
 const len = (v: unknown) => (v == null ? null : [...String(v)].length);
 const between = (n: number | null, lo: number, hi: number) => n == null || (n >= lo && n <= hi);
 const atMost = (v: unknown, max: number) => v == null || (len(v) as number) <= max;
+/** What Postgres's [[:cntrl:]] matches. */
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /** CHECK constraints, by name. A null result passes, as in Postgres. */
 const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
@@ -212,7 +219,14 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['shops_phone_check', (r) => atMost(r.phone, 20)],
     ['shops_instagram_check', (r) => atMost(r.instagram, 60)],
   ],
-  barbers: [['barbers_name_check', (r) => between(len(pgTrim(String(r.name))), 1, 40)]],
+  barbers: [
+    ['barbers_name_check', (r) => between(len(pgTrim(String(r.name))), 1, 40)],
+    // One line of plain text: no line breaks, tabs or other control characters.
+    [
+      'barbers_about_check',
+      (r) => r.about == null || (atMost(r.about, 60) && pgTrim(String(r.about)) !== '' && !CONTROL.test(String(r.about))),
+    ],
+  ],
   services: [
     ['services_name_check', (r) => between(len(pgTrim(String(r.name))), 1, 60)],
     ['services_duration_min_check', (r) => between(r.duration_min as number, 5, 480)],
@@ -729,6 +743,7 @@ export function updateRows(table: TableName, rows: Row[], patch: Row, guard?: (r
       countReview(row, -1);
       countReview(next, 1);
     }
+    if (table === 'bookings' && next.barber_id !== row.barber_id) reviewFollowsCut(next);
     updated.push(next);
   }
   return updated;
@@ -772,26 +787,37 @@ export function deleteRows(table: TableName, rows: Row[]) {
   for (const [t, set] of doomed) all[t] = all[t].filter((r) => !set.has(r));
 }
 
-/** The reviews_count trigger: adds a review to its shop's count and total, or (sign -1) takes it off. */
+/**
+ * The reviews_count trigger: adds a review to its shop's and its barber's
+ * count and total, or (sign -1) takes it off.
+ */
 function countReview(review: Row, sign: 1 | -1) {
-  const shop = findById('shops', review.shop_id);
-  if (!shop) return;
-  shop.rating_count = (shop.rating_count as number) + sign;
-  shop.rating_sum = (shop.rating_sum as number) + sign * (review.rating as number);
+  for (const row of [findById('shops', review.shop_id), findById('barbers', review.barber_id)]) {
+    if (!row) continue;
+    row.rating_count = (row.rating_count as number) + sign;
+    row.rating_sum = (row.rating_sum as number) + sign * (review.rating as number);
+  }
 }
 
-/** Every shop's count and total worked out afresh, for a saved demo whose reviews were laid out again. */
+/** The bookings_review_barber trigger: a rated cut put right to another barber takes its review along. */
+function reviewFollowsCut(booking: Row) {
+  const review = tables().reviews.find((r) => r.booking_id === booking.id);
+  if (review) updateRows('reviews', [review], { barber_id: booking.barber_id });
+}
+
+/** Every shop's and barber's count and total worked out afresh, for a saved demo whose reviews were laid out again. */
 function recountReviews(all: Tables) {
-  const byShop = new Map<unknown, Row>(all.shops.map((s) => [s.id, s]));
-  for (const shop of all.shops) {
-    shop.rating_count = 0;
-    shop.rating_sum = 0;
+  const byId = new Map<unknown, Row>([...all.shops, ...all.barbers].map((r) => [r.id, r]));
+  for (const row of [...all.shops, ...all.barbers]) {
+    row.rating_count = 0;
+    row.rating_sum = 0;
   }
   for (const review of all.reviews) {
-    const shop = byShop.get(review.shop_id);
-    if (!shop) continue;
-    shop.rating_count = (shop.rating_count as number) + 1;
-    shop.rating_sum = (shop.rating_sum as number) + (review.rating as number);
+    for (const row of [byId.get(review.shop_id), byId.get(review.barber_id)]) {
+      if (!row) continue;
+      row.rating_count = (row.rating_count as number) + 1;
+      row.rating_sum = (row.rating_sum as number) + (review.rating as number);
+    }
   }
 }
 

@@ -1044,4 +1044,10 @@ export const ms: Record<string, string> = {
   'Not taking bookings yet': 'Belum menerima tempahan',
   'Customers can’t book right now': 'Pelanggan tidak boleh menempah sekarang',
   'My shop says what to do.': 'Kedai saya menerangkan apa yang perlu dibuat.',
+
+  // Round 11, choosing a barber by more than a name: each barber's line and
+  // stars, and reviews narrowed to one barber (shop/[slug].tsx,
+  // barber/(tabs)/team.tsx, barber/reviews.tsx, components/shop-reviews.tsx,
+  // lib/barbers.ts)
+  '{name}, rated {avg} out of 5 from {reviews}': '{name}, penilaian {avg} daripada 5, dari {reviews}',
 };

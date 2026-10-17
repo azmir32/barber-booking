@@ -89,6 +89,11 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
     insert: ['owner_id', 'name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram'],
     update: ['name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram', 'is_published'],
   },
+  // Each barber's review count and total are the database's.
+  barbers: {
+    insert: ['id', 'shop_id', 'name', 'about', 'is_active', 'sort_order'],
+    update: ['name', 'about', 'is_active', 'sort_order'],
+  },
   bookings: { insert: [], update: [], delete: [] },
   shop_closures: { insert: [], update: [], delete: [] },
   reviews: { insert: [], update: [], delete: [] },
