@@ -1338,6 +1338,15 @@ test('customers pick a barber by their intro and stars and read one barber’s r
   await expect(app.getByText('Intro saved.')).toBeVisible();
   await expect(app.getByText('Kids’ cuts and skin fades, patient with first-timers', { exact: true })).toBeVisible();
   await snap(page, 'demo-43-team-intro');
+  // Emptied and sent with Enter, his own goes; Enter in an empty box with nothing to take away just closes it.
+  await button(app, 'Edit Ali’s intro').click();
+  await app.getByLabel('Ali’s intro', { exact: true }).fill('');
+  await app.getByLabel('Ali’s intro', { exact: true }).press('Enter');
+  await expect(app.getByText('Intro removed.')).toBeVisible();
+  await button(app, 'Add an intro for Ali').click();
+  await app.getByLabel('Ali’s intro', { exact: true }).press('Enter');
+  await expect(button(app, 'Add an intro for Ali')).toBeVisible();
+  await expect(app.getByText('Intro removed.')).toHaveCount(0);
 
   // His Reviews has the same chips, each with that barber's stars.
   await app.getByRole('tab', { name: /My shop/ }).click();
@@ -1360,6 +1369,8 @@ test('customers pick a barber by their intro and stars and read one barber’s r
     app.getByRole('radio', { name: /^Danial\. Kids’ cuts and skin fades, patient with first-timers\. Rated \d\.\d out of 5/ }),
   ).toBeVisible();
   await expect(app.getByText('Kids’ cuts and skin fades, patient with first-timers', { exact: true })).toBeVisible();
+  // Ali, without one now, is his name and stars.
+  await expect(app.getByRole('radio', { name: /^Ali\. Rated \d\.\d out of 5 from \d+ reviews$/ })).toBeVisible();
 });
 
 test.describe('on an iPhone', () => {

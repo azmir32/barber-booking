@@ -264,11 +264,18 @@ function BarberIntro({ barber, onSaved }: { barber: Barber; onSaved: (about: str
   const [done, setDone] = useState<string | null>(null);
   const { name, about } = barber;
 
-  // Blank takes it away.
+  // Blank takes it away. Done on the keyboard goes by the Save button's rule:
+  // with nothing there to take away, it just closes the box.
   async function save(typed: string) {
+    const line = barberAbout(typed);
+    if (saving) return;
+    if (!line && !about) {
+      setEditing(false);
+      setError(null);
+      return;
+    }
     setSaving(true);
     setError(null);
-    const line = barberAbout(typed);
     const { error } = await supabase.from('barbers').update({ about: line }).eq('id', barber.id);
     setSaving(false);
     if (error) return setError(errorMessage(error));
