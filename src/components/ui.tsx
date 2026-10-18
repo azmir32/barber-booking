@@ -28,6 +28,8 @@ import { useReduceMotion } from '@/hooks/use-reduce-motion';
 import { useTheme } from '@/hooks/use-theme';
 import { staleLine } from '@/lib/cache';
 import { t } from '@/lib/lang';
+import { fitText, scaleText } from '@/lib/text-size';
+import { useTextScale } from '@/lib/text-size-provider';
 
 export function Screen({
   children,
@@ -99,15 +101,39 @@ export function Screen({
 
 type Variant = 'title' | 'heading' | 'body' | 'muted' | 'small' | 'label';
 
-export function T({ variant = 'body', style, ...rest }: TextProps & { variant?: Variant }) {
+export function T({
+  variant = 'body',
+  style,
+  maxScale,
+  ...rest
+}: TextProps & {
+  variant?: Variant;
+  /**
+   * The most this text may grow, the phone's text size and the app's
+   * together, where wrapping would break the layout (a booking's block in
+   * the chairs). Without it, it grows as much as asked.
+   */
+  maxScale?: number;
+}) {
   const theme = useTheme();
+  const fit = fitText(useTextScale(), maxScale);
   const color = variant === 'muted' || variant === 'small' ? theme.textSecondary : theme.text;
   // Titles and headings are headings to screen readers too (h1/h2 on the web).
   const heading =
     variant === 'title' || variant === 'heading'
       ? ({ role: 'heading', 'aria-level': variant === 'title' ? 1 : 2 } as TextProps)
       : null;
-  return <Text {...heading} style={[{ color, fontFamily: Fonts?.sans }, textStyles[variant], style]} {...rest} />;
+  // Font size and line height grow together, so bigger lines never overlap.
+  const sized =
+    fit.scale === 1 ? [textStyles[variant], style] : scaleText(StyleSheet.flatten([textStyles[variant], style]), fit.scale);
+  return (
+    <Text
+      {...heading}
+      maxFontSizeMultiplier={fit.maxFontSizeMultiplier}
+      style={[{ color, fontFamily: Fonts?.sans }, sized]}
+      {...rest}
+    />
+  );
 }
 
 /**
@@ -143,6 +169,7 @@ export function Button({
   iconColor?: string;
 }) {
   const theme = useTheme();
+  const text = scaleText(styles.buttonText, useTextScale());
   const bg =
     variant === 'primary'
       ? theme.accent
@@ -171,10 +198,10 @@ export function Button({
       {icon ? (
         <View style={[styles.buttonInner, { opacity: loading ? 0 : 1 }]}>
           <Ionicons name={icon} size={20} color={iconColor ?? fg} />
-          <Text style={[styles.buttonText, styles.buttonTextBesideIcon, { color: fg }]}>{title}</Text>
+          <Text style={[text, styles.buttonTextBesideIcon, { color: fg }]}>{title}</Text>
         </View>
       ) : (
-        <Text style={[styles.buttonText, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
+        <Text style={[text, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
       )}
       {loading ? <ActivityIndicator color={fg} style={StyleSheet.absoluteFill} /> : null}
     </Pressable>
@@ -196,6 +223,7 @@ export function Field({
   ref?: Ref<TextInput>;
 }) {
   const theme = useTheme();
+  const scale = useTextScale();
   const [focused, setFocused] = useState(false);
   return (
     <View style={styles.field}>
@@ -216,7 +244,7 @@ export function Field({
           props.onBlur?.(e);
         }}
         style={[
-          styles.input,
+          scaleText(styles.input, scale),
           {
             color: theme.text,
             backgroundColor: theme.card,
@@ -225,7 +253,7 @@ export function Field({
           },
           // The coloured border shows focus, so the browser's own outline is not needed.
           Platform.OS === 'web' && ({ outlineStyle: 'none' } as unknown as TextStyle),
-          props.multiline && { minHeight: 88, textAlignVertical: 'top' },
+          props.multiline && { minHeight: 88 * scale, textAlignVertical: 'top' },
           props.style,
         ]}
       />
@@ -335,6 +363,8 @@ export function Chip({
   style?: ViewStyle;
 }) {
   const theme = useTheme();
+  const scale = useTextScale();
+  const text = scaleText(styles.chipText, scale);
   const choice = selected !== undefined;
   const look = selected
     ? { box: { backgroundColor: theme.accent, borderColor: theme.accent }, text: theme.accentText, sub: theme.accentText }
@@ -363,12 +393,12 @@ export function Chip({
       {icon ? (
         <View style={styles.buttonInner}>
           <Ionicons name={icon} size={18} color={look.text} />
-          <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+          <Text style={[text, { color: look.text }]}>{label}</Text>
         </View>
       ) : (
-        <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+        <Text style={[text, { color: look.text }]}>{label}</Text>
       )}
-      {sublabel ? <Text style={[styles.chipSub, { color: look.sub }]}>{sublabel}</Text> : null}
+      {sublabel ? <Text style={[scaleText(styles.chipSub, scale), { color: look.sub }]}>{sublabel}</Text> : null}
     </Pressable>
   );
 }
@@ -406,11 +436,12 @@ export function IconButton({
 
 export function Badge({ label, tone = 'neutral' }: { label: string; tone?: 'neutral' | 'success' | 'warning' | 'danger' }) {
   const theme = useTheme();
+  const text = scaleText(styles.badgeText, useTextScale());
   const color =
     tone === 'success' ? theme.success : tone === 'warning' ? theme.warning : tone === 'danger' ? theme.danger : theme.textSecondary;
   return (
     <View style={[styles.badge, { borderColor: color }]}>
-      <Text style={[styles.badgeText, { color }]}>{label}</Text>
+      <Text style={[text, { color }]}>{label}</Text>
     </View>
   );
 }
@@ -553,9 +584,14 @@ export function StaleNote({
 
 export function ErrorText({ message }: { message: string | null }) {
   const theme = useTheme();
+  const scale = useTextScale();
   if (!message) return null;
   return (
-    <Text role="alert" accessibilityLiveRegion="polite" style={{ color: theme.danger }}>
+    <Text
+      role="alert"
+      accessibilityLiveRegion="polite"
+      // Text's own size, 14, grown with the rest.
+      style={[{ color: theme.danger }, scale === 1 ? null : { fontSize: 14 * scale }]}>
       {message}
     </Text>
   );
@@ -602,6 +638,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     borderWidth: 1,
     paddingHorizontal: Spacing.lg,
+    // Room above and below a label that wraps to more lines than the height holds, at large text.
+    paddingVertical: Spacing.xs,
     alignItems: 'center',
     justifyContent: 'center',
   },

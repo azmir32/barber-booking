@@ -1063,4 +1063,13 @@ export const ms: Record<string, string> = {
   'Remove intro': 'Buang pengenalan',
   'Intro saved.': 'Pengenalan disimpan.',
   'Intro removed.': 'Pengenalan dibuang.',
+
+  // Round 12: text size, and every screen readable with large text and a
+  // screen reader (components/account-panel.tsx, components/ui.tsx,
+  // lib/text-size.ts, welcome.tsx)
+  'Text size': 'Saiz teks',
+  Normal: 'Biasa',
+  Large: 'Besar',
+  Largest: 'Paling besar',
+  'Your phone’s own text size makes it bigger still.': 'Saiz teks telefon anda menjadikannya lebih besar lagi.',
 };

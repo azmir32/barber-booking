@@ -2,7 +2,7 @@ import { Redirect, router, Stack } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 
-import { LanguagePicker } from '@/components/account-panel';
+import { LanguagePicker, TextSizePicker } from '@/components/account-panel';
 import { ShopForm } from '@/components/shop-form';
 import { Button, ErrorText, Loading, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
@@ -70,7 +70,7 @@ function BarberStack() {
 /**
  * Under the set-up form, which is all a barber account without a shop sees:
  * who is signed in, a way out for anyone who picked "Barber / shop owner" by
- * mistake or wants another account, and the language.
+ * mistake or wants another account, the language and the text size.
  */
 function SetUpWayOut() {
   const { session, signOut, refreshProfile } = useAuth();
@@ -113,6 +113,7 @@ function SetUpWayOut() {
         }}
       />
       <LanguagePicker />
+      <TextSizePicker />
     </View>
   );
 }

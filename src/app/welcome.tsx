@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
+import { TextSizePicker } from '@/components/account-panel';
 import { DemoPanel } from '@/components/demo-panel';
 import { Button, Screen, T } from '@/components/ui';
 import { APP_NAME } from '@/constants/brand';
@@ -15,8 +16,15 @@ export default function Welcome() {
   return (
     <Screen edges={['top', 'bottom']}>
       <View style={styles.hero}>
-        <View style={[styles.logo, { backgroundColor: theme.accent }]}>
-          <T style={[styles.logoText, { color: theme.accentText }]}>✂</T>
+        {/* Only a picture: the name under it says what it is. It stays its size, like any picture. */}
+        <View
+          aria-hidden
+          importantForAccessibility="no-hide-descendants"
+          accessibilityElementsHidden
+          style={[styles.logo, { backgroundColor: theme.accent }]}>
+          <T maxScale={1} style={[styles.logoText, { color: theme.accentText }]}>
+            ✂
+          </T>
         </View>
         <T variant="title" style={styles.center}>
           {APP_NAME}
@@ -51,6 +59,7 @@ export default function Welcome() {
         variant="ghost"
         onPress={() => setLang(lang === 'ms' ? 'en' : 'ms')}
       />
+      <TextSizePicker />
     </Screen>
   );
 }

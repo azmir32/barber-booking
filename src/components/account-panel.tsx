@@ -1,5 +1,6 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
+import { Platform } from 'react-native';
 
 import { DemoSwitch } from '@/components/demo-panel';
 import { Button, Card, Chip, ErrorText, Field, Row, T } from '@/components/ui';
@@ -9,9 +10,11 @@ import { confirmAction } from '@/lib/confirm';
 import { useLanguage } from '@/lib/i18n';
 import { LANGUAGES, t } from '@/lib/lang';
 import { demo, errorMessage, supabase } from '@/lib/supabase';
+import { TEXT_SIZES } from '@/lib/text-size';
+import { useTextSize } from '@/lib/text-size-provider';
 import type { Profile } from '@/lib/types';
 
-/** Language, name, phone, sign out and delete account. Shared by the customer and barber apps. */
+/** Language, text size, name, phone, sign out and delete account. Shared by the customer and barber apps. */
 export function AccountPanel() {
   const { session, profile } = useAuth();
   return (
@@ -34,6 +37,7 @@ export function AccountPanel() {
         </>
       )}
       <LanguagePicker />
+      <TextSizePicker />
     </>
   );
 }
@@ -49,6 +53,26 @@ export function LanguagePicker() {
           <Chip key={l.code} label={l.name} selected={lang === l.code} onPress={() => setLang(l.code)} />
         ))}
       </Row>
+    </Card>
+  );
+}
+
+/**
+ * Normal, Large or Largest, for the whole app and kept on this phone. Also
+ * on the shop set-up screen and the welcome screen.
+ */
+export function TextSizePicker() {
+  const { size, setSize } = useTextSize();
+  return (
+    <Card>
+      <T variant="label">{t('Text size')}</T>
+      <Row role="radiogroup" accessibilityLabel={t('Text size')}>
+        {TEXT_SIZES.map((s) => (
+          <Chip key={s.key} label={t(s.name)} selected={size === s.key} onPress={() => setSize(s.key)} />
+        ))}
+      </Row>
+      {/* The web page never hears of the phone's setting, so only the app's own counts there. */}
+      {Platform.OS === 'web' ? null : <T variant="small">{t('Your phone’s own text size makes it bigger still.')}</T>}
     </Card>
   );
 }
