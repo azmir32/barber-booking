@@ -567,7 +567,8 @@ function seed() {
   // parents and young men he cut in the last few weeks. New faces with one
   // cut each, so nobody's history above changes, and none is due for a cut
   // yet. Each cut takes the first time on its days that Danial works and
-  // nobody else has, and keeps its id whichever that is.
+  // nobody else has, and keeps its id whichever that is. A demo saved before
+  // they came gets them too (CAME_IN in db.ts).
   const danialCut = (customer: Row, days: number[], service: Row) => {
     const id = `${HISTORY_ID}${String(900_000 + ++nextRated).padStart(12, '0')}`;
     for (const day of days) {

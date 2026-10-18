@@ -446,6 +446,22 @@ export function setSeed(fn: () => void) {
 /** How the ids of the sample bookings from before yesterday start (seed.ts); see moveToToday. */
 export const HISTORY_ID = 'd0000000-0000-4000-9000-';
 
+/** Saved with the demo, so a later one can tell which sample customers it has had. */
+const VERSION = 3;
+/**
+ * The sample customers that came in after the first saved demos, with the
+ * version that brought them (seed.ts). A demo saved before then gets them
+ * when it opens; any other sample customer it lacks was deleted in it, and
+ * stays deleted.
+ */
+const CAME_IN: Record<string, number> = {
+  // Danial's own customers, so both of Ali's barbers show their stars.
+  'siti@demo.potongku.my': 3,
+  'izzat@demo.potongku.my': 3,
+  'kevin@demo.potongku.my': 3,
+  'nurul@demo.potongku.my': 3,
+};
+
 function storage(): Storage | null {
   try {
     return typeof localStorage === 'undefined' ? null : localStorage;
@@ -474,12 +490,14 @@ function seeded(): Tables {
  * are laid out again for the new day instead: moved by a day, Ali would have
  * worked his Sundays off and Takings would name the wrong busy days. Nobody
  * can change those bookings in the app any more, so nothing is lost.
- * A demo saved before reviews came in is laid out again the same day, so
- * it gets the sample ones.
+ * A demo saved before reviews or some sample customers came in is laid out
+ * again the same day, so it gets them.
  */
-function moveToToday(saved: Tables, savedOn: string) {
+function moveToToday(saved: Tables, savedOn: string, version: number) {
   const days = Math.round((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${savedOn}T00:00:00Z`)) / 86_400_000);
-  if (!Number.isFinite(days) || (days === 0 && Array.isArray(saved.reviews))) return;
+  const has = new Set((saved.users ?? []).map((u) => u.email));
+  const newcomers = Object.keys(CAME_IN).filter((email) => CAME_IN[email] > version && !has.has(email));
+  if (!Number.isFinite(days) || (days === 0 && Array.isArray(saved.reviews) && newcomers.length === 0)) return;
   for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
     const moved = Object.keys(columns).filter((c) => columns[c].type === 'timestamptz');
     const dates = Object.keys(columns).filter((c) => columns[c].type === 'date');
@@ -498,6 +516,17 @@ function moveToToday(saved: Tables, savedOn: string) {
   }
 
   const past = sampleHistory();
+  // Newcomers join as the seed has them today, so the cuts and reviews laid
+  // out below are theirs. Their ids hang on the weekday too, and the saved
+  // demo may have given one to someone else.
+  const sample = sampleTables();
+  const taken = new Set((saved.users ?? []).map((u) => u.id));
+  for (const user of sample.users.filter((u) => newcomers.includes(String(u.email)))) {
+    const id = taken.has(user.id) ? newId() : user.id;
+    (saved.users ??= []).push({ ...user, id });
+    const profile = sample.profiles.find((p) => p.id === user.id);
+    if (profile) (saved.profiles ??= []).push({ ...profile, id });
+  }
   const kept = saved.bookings.filter((b) => !String(b.id).startsWith(HISTORY_ID));
   const barbers = new Set((saved.barbers ?? []).map((b) => b.id));
   // The sample customers added after the first bookings get ids that
@@ -579,10 +608,11 @@ export function tables(): Tables {
   if (current) return current;
   try {
     const saved = storage()?.getItem(STORAGE_KEY);
-    const parsed = saved ? (JSON.parse(saved) as { tables?: Tables; seededOn?: string }) : null;
+    const parsed = saved ? (JSON.parse(saved) as { tables?: Tables; seededOn?: string; version?: number }) : null;
     if (parsed?.tables && Array.isArray(parsed.tables.bookings)) {
       const hadReviews = Array.isArray(parsed.tables.reviews);
-      if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn);
+      const version = Number(parsed.version) || 0;
+      if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn, version);
       // A demo saved before a table was added has no list for it yet,
       // and one saved before a column was added has it empty.
       current = { ...emptyTables(), ...parsed.tables };
@@ -595,7 +625,7 @@ export function tables(): Tables {
       }
       recountReviews(current);
       seededOn = today();
-      if (parsed.seededOn !== seededOn || !hadReviews) save();
+      if (parsed.seededOn !== seededOn || !hadReviews || version < VERSION) save();
     }
   } catch {
     // Unreadable or blocked storage: start fresh.
@@ -607,7 +637,7 @@ export function tables(): Tables {
 
 export function save() {
   try {
-    storage()?.setItem(STORAGE_KEY, JSON.stringify({ version: 2, seededOn, tables: current }));
+    storage()?.setItem(STORAGE_KEY, JSON.stringify({ version: VERSION, seededOn, tables: current }));
   } catch {
     // Storage full or blocked: the demo keeps working until the page closes.
   }

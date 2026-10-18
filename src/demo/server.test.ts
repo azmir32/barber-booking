@@ -2522,6 +2522,97 @@ test('a demo saved before barbers had a line gets the sample ones, and each barb
   }
 });
 
+test('a demo saved before Danial’s own customers came gets them, their cuts and their reviews, while a deleted account stays deleted', async () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  const newcomers = ['siti', 'izzat', 'kevin', 'nurul'].map((n) => `${n}@demo.potongku.my`);
+  // The copy as a demo saved before them has it: none of the four, their cuts or their reviews.
+  const before = (json: string) => {
+    const old = JSON.parse(json);
+    old.version = 2;
+    const gone = new Set(old.tables.users.filter((u: Row) => newcomers.includes(String(u.email))).map((u: Row) => u.id));
+    assert.equal(gone.size, newcomers.length);
+    const cuts = new Set(old.tables.bookings.filter((b: Row) => gone.has(b.customer_id)).map((b: Row) => b.id));
+    old.tables.users = old.tables.users.filter((u: Row) => !gone.has(u.id));
+    old.tables.profiles = old.tables.profiles.filter((p: Row) => !gone.has(p.id));
+    old.tables.bookings = old.tables.bookings.filter((b: Row) => !cuts.has(b.id));
+    old.tables.reviews = old.tables.reviews.filter((r: Row) => !cuts.has(r.booking_id));
+    return JSON.stringify(old);
+  };
+  const theirs = () => {
+    const danial = barberNamed('ali-barber', 'Danial');
+    for (const email of newcomers) {
+      const user = tables().users.find((u) => u.email === email);
+      assert.ok(user && tables().profiles.some((p) => p.id === user.id), email);
+      const cuts = tables().bookings.filter((b) => b.customer_id === user.id);
+      assert.deepEqual(
+        cuts.map((b) => [b.barber_id, b.status]),
+        [[danial.id, 'completed']],
+        email,
+      );
+      assert.ok(tables().reviews.some((r) => r.booking_id === cuts[0].id && r.customer_id === user.id), email);
+    }
+    assert.ok((danial.rating_count as number) >= 3, `Danial has ${danial.rating_count} reviews`);
+    for (const b of tables().barbers) assert.deepEqual([b.rating_count, b.rating_sum], barberTotals(b.id));
+  };
+  const day = 86_400_000;
+  try {
+    resetDemo();
+    const [key, json] = [...saved.entries()][0];
+    // Opened again the same day, and saved with them...
+    const old = JSON.parse(before(json));
+    // (Someone who signed up in it has the id Siti has today, and keeps it.)
+    const siti = (JSON.parse(json).tables.users as Row[]).find((u) => u.email === newcomers[0])!;
+    old.tables.users.push({ ...siti, email: 'visitor@example.com' });
+    old.tables.profiles.push({ id: siti.id, role: 'customer', full_name: 'Visitor', phone: null, created_at: siti.created_at });
+    saved.set(key, JSON.stringify(old));
+    reloadTables();
+    theirs();
+    assert.ok(!tables().bookings.some((b) => b.guest_name === 'Deleted account'));
+    assert.equal(tables().users.find((u) => u.id === siti.id)?.email, 'visitor@example.com');
+    assert.equal(tables().profiles.find((p) => p.id === siti.id)?.full_name, 'Visitor');
+    assert.equal(JSON.parse(saved.get(key)!).tables.users.filter((u: Row) => newcomers.includes(String(u.email))).length, 4);
+    // ...so a day later they are still there.
+    setClock(() => Date.now() + day);
+    reloadTables();
+    theirs();
+    assert.ok(!tables().bookings.some((b) => b.guest_name === 'Deleted account'));
+    // Opened first on a later day.
+    saved.set(key, before(json));
+    reloadTables();
+    theirs();
+    assert.ok(!tables().bookings.some((b) => b.guest_name === 'Deleted account'));
+
+    // Hakim deleted his account in it: he doesn't come back with them.
+    setClock(() => Date.now());
+    resetDemo();
+    const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+    assert.equal((await hakim.rpc('delete_my_account')).error, null);
+    save();
+    const without = before(saved.get(key)!);
+    for (const later of [0, day]) {
+      setClock(() => Date.now() + later);
+      saved.set(key, without);
+      reloadTables();
+      theirs();
+      assert.ok(!tables().users.some((u) => u.email === DEMO_CUSTOMER_EMAIL));
+      assert.ok(!tables().profiles.some((p) => p.full_name === 'Hakim'));
+    }
+    const gone = await client().auth.signInWithPassword({ email: DEMO_CUSTOMER_EMAIL, password: DEMO_PASSWORD });
+    assert.equal(gone.error?.message, 'Invalid login credentials');
+    await signedIn('siti@demo.potongku.my');
+  } finally {
+    setClock(() => Date.now());
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});
+
 test('Find a barber gives Hakim his next cut and his barbers, with what Book again needs', async () => {
   const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
   const { data, error } = await hakim.rpc('my_shops');
