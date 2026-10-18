@@ -2918,6 +2918,414 @@ exception when insufficient_privilege then null;
 end $$;
 rollback;
 
+-- Waiting list -------------------------------------------------------------------
+-- A customer who finds a day full asks to hear if a time frees up; the shop
+-- sees who is waiting that day and WhatsApps them a time. Ali works
+-- 08:00-22:00 every day by now and Danial has no hours. Days are a month
+-- out, clear of everything above, so it reads the same at any hour. Dawud is
+-- a customer and Rahman another shop's owner, both for this part only.
+begin;
+reset role;
+delete from bookings
+where starts_at >= ((now() at time zone 'Asia/Kuala_Lumpur')::date + 25)::timestamp at time zone 'Asia/Kuala_Lumpur'
+   or (customer_id = '00000000-0000-0000-0000-0000000000c1' and starts_at > now());
+update shops set is_published = true, trial_ends_at = now() + interval '30 days'
+where id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000c5', 'cust5@test', '{"role":"customer","full_name":"Dawud","phone":"011-222 3333"}'),
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug, is_published) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts', true);
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000005b', 'Rahman');
+insert into services (id, shop_id, name, duration_min, price) values
+  ('00000000-0000-0000-0000-0000000000e3', '00000000-0000-0000-0000-00000000005b', 'Fade', 45, 30),
+  ('00000000-0000-0000-0000-0000000000e4', '00000000-0000-0000-0000-00000000005a', 'Old style', 30, 20);
+update services set is_active = false where id = '00000000-0000-0000-0000-0000000000e4';
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a3', d, '10:00', '18:00' from generate_series(0, 6) d;
+-- A request from a day gone by, written straight in: nothing clears it on a
+-- timer, so every list has to leave it out.
+insert into waitlist (shop_id, customer_id, day, service_id, created_at) values
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000c1',
+   (now() at time zone 'Asia/Kuala_Lumpur')::date - 1, '00000000-0000-0000-0000-0000000000e1', now() - interval '2 days');
+
+-- Guests can't ask, and nobody reads or writes the table itself.
+set role anon;
+do $$ begin
+  perform join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date + 30);
+  raise exception 'guests must not join a waiting list';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform my_waitlist();
+  raise exception 'guests must not call my_waitlist';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform shop_waitlist((now() at time zone 'Asia/Kuala_Lumpur')::date + 30);
+  raise exception 'guests must not call shop_waitlist';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform leave_waitlist(gen_random_uuid());
+  raise exception 'guests must not call leave_waitlist';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform mark_waitlist_offered(gen_random_uuid());
+  raise exception 'guests must not call mark_waitlist_offered';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform max_waiting_per_customer();
+  raise exception 'max_waiting_per_customer is only for the functions';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform 1 from waitlist;
+  raise exception 'guests must not read the waiting list';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform 1 from waitlist;
+  raise exception 'customers must not read the waiting list directly';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  insert into waitlist (shop_id, customer_id, day, service_id)
+  values ('00000000-0000-0000-0000-00000000005a', auth.uid(), (now() at time zone 'Asia/Kuala_Lumpur')::date + 30,
+          '00000000-0000-0000-0000-0000000000e1');
+  raise exception 'customers must not write the waiting list directly';
+exception when insufficient_privilege then null;
+end $$;
+
+-- Ben joins for day 30 with any barber and day 31 with Ali.
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+  w waitlist;
+begin
+  w := join_waitlist('00000000-0000-0000-0000-0000000000e1', d);
+  assert w.customer_id = auth.uid() and w.shop_id = '00000000-0000-0000-0000-00000000005a' and w.day = d
+     and w.barber_id is null and w.offered_at is null and w.created_at = now(), 'a request for any barber: ' || w::text;
+  perform set_config('test.ben_any', w.id::text, false);
+  w := join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 1, '00000000-0000-0000-0000-0000000000a1');
+  assert w.barber_id = '00000000-0000-0000-0000-0000000000a1', 'a request for Ali';
+  perform set_config('test.ben_ali', w.id::text, false);
+
+  -- Once a day per shop, whatever the service or barber.
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d, '00000000-0000-0000-0000-0000000000a1');
+    raise exception 'one request a day per shop';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'You''re already on the waiting list for that day.', sqlerrm;
+  end;
+
+  -- Only a day they could book.
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date - 1);
+    raise exception 'a day gone by should be refused';
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'Pick a day from today up to 60 days ahead.', sqlerrm;
+  end;
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date + 61);
+    raise exception 'a day past the booking horizon should be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e4', d + 2);
+    raise exception 'a hidden service should be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'This service is no longer available.', sqlerrm;
+  end;
+  begin
+    perform join_waitlist(gen_random_uuid(), d + 2);
+    raise exception 'an unknown service should be refused';
+  exception when sqlstate 'P0002' then null;
+  end;
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 2, '00000000-0000-0000-0000-0000000000a3');
+    raise exception 'another shop''s barber should be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'Barber not found.', sqlerrm;
+  end;
+  -- Danial has no hours, so his days are never full: there is nothing to wait for.
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 2, '00000000-0000-0000-0000-0000000000a2');
+    raise exception 'a barber who doesn''t work that day should be refused';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'The shop isn''t taking bookings that day.', sqlerrm;
+  end;
+  assert jsonb_array_length(my_waitlist()) = 2, 'nothing refused was kept: ' || my_waitlist()::text;
+end $$;
+
+-- Closed days, a whole day off, a paused shop.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+begin
+  perform close_shop_days(d + 3, 1, 'Kenduri');
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d + 4, '00:00', 1440, p_is_block => true);
+  -- Half a day off still leaves the evening.
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d + 5, '08:00', 360, p_is_block => true);
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c5';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+  w waitlist;
+begin
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 3);
+    raise exception 'a closed day should be refused';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'The shop isn''t taking bookings that day.', sqlerrm;
+  end;
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 4);
+    raise exception 'a day everyone has off should be refused';
+  exception when sqlstate 'P0001' then null;
+  end;
+  w := join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 5, '00000000-0000-0000-0000-0000000000a1');
+  assert w.day = d + 5, 'half a day off is still a working day';
+end $$;
+reset role;
+update shops set is_published = false where id = '00000000-0000-0000-0000-00000000005b';
+set role authenticated;
+do $$ begin
+  perform join_waitlist('00000000-0000-0000-0000-0000000000e3', (now() at time zone 'Asia/Kuala_Lumpur')::date + 30);
+  raise exception 'a paused shop''s waiting list should be refused';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'This service is no longer available.', sqlerrm;
+end $$;
+reset role;
+update shops set is_published = true where id = '00000000-0000-0000-0000-00000000005b';
+set role authenticated;
+
+-- Chong already has his four bookings on day 2: no waiting for a day he has a time.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  perform join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date + 2);
+  raise exception 'someone booked that day should be refused';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'You already have a booking here that day.', sqlerrm;
+end $$;
+
+-- Three days at a time across every shop; the day gone by doesn't count and goes.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+  w waitlist;
+begin
+  w := join_waitlist('00000000-0000-0000-0000-0000000000e3', d + 6, '00000000-0000-0000-0000-0000000000a3');
+  perform set_config('test.ben_kemas', w.id::text, false);
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 7);
+    raise exception 'a fourth waiting list should be refused';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'You can be on 3 waiting lists at a time. Leave one to join another.', sqlerrm;
+  end;
+end $$;
+reset role;
+do $$ begin
+  assert (select count(*) from waitlist where customer_id = '00000000-0000-0000-0000-0000000000c1') = 3,
+    'the day gone by was cleared when he joined';
+end $$;
+-- Another day gone by, to show lists leave it out.
+insert into waitlist (shop_id, customer_id, day, service_id) values
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000c1',
+   (now() at time zone 'Asia/Kuala_Lumpur')::date - 1, '00000000-0000-0000-0000-0000000000e1'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000c5',
+   (now() at time zone 'Asia/Kuala_Lumpur')::date - 1, '00000000-0000-0000-0000-0000000000e1');
+set role authenticated;
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+  r jsonb;
+begin
+
+  -- His own, soonest first, with each shop, service and barber.
+  r := my_waitlist();
+  assert jsonb_array_length(r) = 3, 'Ben''s three: ' || r::text;
+  assert r -> 0 ->> 'id' = current_setting('test.ben_any') and r -> 0 ->> 'day' = d::text
+     and r -> 0 ->> 'shop_id' = '00000000-0000-0000-0000-00000000005a'
+     and r -> 0 ->> 'service_id' = '00000000-0000-0000-0000-0000000000e1'
+     and r -> 0 ->> 'service_name' = 'Haircut' and r -> 0 -> 'barber_id' = 'null' and r -> 0 -> 'barber_name' = 'null'
+     and r -> 0 -> 'shop' = '{"name": "Ali Cuts", "slug": "ali-cuts", "time_zone": "Asia/Kuala_Lumpur"}'
+     and (r -> 0 ->> 'created_at')::timestamptz = now(), 'any barber at Ali Cuts: ' || (r -> 0)::text;
+  assert r -> 1 ->> 'barber_name' = 'Ali' and r -> 2 ->> 'service_name' = 'Fade'
+     and r -> 2 -> 'shop' ->> 'name' = 'Kemas Cuts', 'Ali on day 31, Rahman''s Fade on day 36: ' || r::text;
+end $$;
+
+-- Leaving: his own, twice over is fine; Chong can't take Ben off.
+do $$ begin
+  perform leave_waitlist(current_setting('test.ben_kemas')::uuid);
+  perform leave_waitlist(current_setting('test.ben_kemas')::uuid);
+  assert jsonb_array_length(my_waitlist()) = 2, 'Ben left Kemas Cuts';
+  perform join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date + 37);
+  assert jsonb_array_length(my_waitlist()) = 3, 'leaving one makes room for another';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  assert my_waitlist() = '[]', 'Chong sees nobody else''s';
+  perform leave_waitlist(current_setting('test.ben_any')::uuid);
+  assert not exists (select 1 from shop_waitlist((now() at time zone 'Asia/Kuala_Lumpur')::date + 30)),
+    'customers see no shop''s list';
+end $$;
+
+-- Dawud joins day 30 after Ben, with Ali.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c5';
+do $$
+declare
+  w waitlist;
+begin
+  w := join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date + 30,
+    '00000000-0000-0000-0000-0000000000a1');
+  perform set_config('test.dawud', w.id::text, false);
+end $$;
+reset role;
+-- Ben asked first.
+update waitlist set created_at = now() - interval '3 hours' where id = current_setting('test.ben_any')::uuid;
+set role authenticated;
+
+-- The owner sees who is waiting that day, oldest first, with each one's name and number.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+  w waitlist;
+  names text[];
+begin
+  select array_agg(s.name || '|' || coalesce(s.phone, '-') || '|' || s.service_name || '|' || s.duration_min
+                   || '|' || coalesce(s.barber_name, 'any') order by ord)
+  into names
+  from shop_waitlist(d) with ordinality s(id, name, phone, service_id, service_name, duration_min,
+                                          barber_id, barber_name, created_at, offered_at, ord);
+  assert names = array['Ben|-|Haircut|30|any', 'Dawud|011-222 3333|Haircut|30|Ali'],
+    'Ben (still on it) then Dawud: ' || names::text;
+  assert (select count(*) from shop_waitlist(d + 1)) = 1, 'Ben with Ali on day 31';
+  assert (select count(*) from shop_waitlist((now() at time zone 'Asia/Kuala_Lumpur')::date - 1)) = 0,
+    'a day gone by is empty';
+  assert (select count(*) from shop_waitlist(d + 6)) = 0, 'Kemas Cuts'' list isn''t Ali''s';
+
+  -- WhatsApping someone marks them offered for every phone.
+  w := mark_waitlist_offered(current_setting('test.ben_any')::uuid);
+  assert w.offered_at = now(), 'offered now';
+  assert (select offered_at from shop_waitlist(d) s where s.id = w.id) = now(), 'the list shows it';
+
+  -- The owner takes Dawud off.
+  perform leave_waitlist(current_setting('test.dawud')::uuid);
+  assert (select count(*) from shop_waitlist(d)) = 1, 'Dawud is off the list';
+  begin
+    perform mark_waitlist_offered(current_setting('test.dawud')::uuid);
+    raise exception 'someone gone can''t be offered';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'They''re no longer on the waiting list.', sqlerrm;
+  end;
+end $$;
+
+-- Nobody else: Ben can't mark himself offered, and another shop's owner sees and touches nothing.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform mark_waitlist_offered(current_setting('test.ben_ali')::uuid);
+  raise exception 'customers can''t mark an offer';
+exception when sqlstate 'P0002' then null;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert not exists (select 1 from shop_waitlist((now() at time zone 'Asia/Kuala_Lumpur')::date + 30)),
+    'another shop''s owner sees nothing';
+  perform leave_waitlist(current_setting('test.ben_ali')::uuid);
+  begin
+    perform mark_waitlist_offered(current_setting('test.ben_ali')::uuid);
+    raise exception 'another shop''s owner can''t mark an offer';
+  exception when sqlstate 'P0002' then null;
+  end;
+end $$;
+reset role;
+do $$ begin
+  assert exists (select 1 from waitlist where id = current_setting('test.ben_ali')::uuid and offered_at is null),
+    'Ben''s day 31 is untouched';
+end $$;
+set role authenticated;
+
+-- A cancellation on a day people are waiting for tells the shop so. Dawud
+-- books day 30 at 10:00 and cancels it, and books day 32 (nobody waiting).
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c5';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+  b bookings;
+begin
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (d + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  b := set_booking_status(b.id, 'cancelled');
+  perform set_config('test.dawud_cancel', b.id::text, false);
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (d + 2 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  b := set_booking_status(b.id, 'cancelled');
+  perform set_config('test.dawud_cancel_2', b.id::text, false);
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  r jsonb := shop_changes(null, 20);
+begin
+  assert (select (e ->> 'waiting')::int from jsonb_array_elements(r -> 'changes') e
+          where e ->> 'booking_id' = current_setting('test.dawud_cancel')) = 1,
+    'Ben is waiting for day 30: ' || r::text;
+  assert (select (e ->> 'waiting')::int from jsonb_array_elements(r -> 'changes') e
+          where e ->> 'booking_id' = current_setting('test.dawud_cancel_2')) = 0,
+    'nobody is waiting for day 32: ' || r::text;
+  assert (select bool_and((e ->> 'waiting')::int = 0) from jsonb_array_elements(r -> 'changes') e
+          where e ->> 'change' <> 'cancelled'), 'only a cancellation says who is waiting';
+end $$;
+
+-- Booking that day ends the request, and so does moving a booking into it.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+  b bookings;
+begin
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (d + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  assert (select array_agg((e ->> 'day')::date order by e ->> 'day') from jsonb_array_elements(my_waitlist()) e)
+         = array[d + 1, d + 7], 'booked day 30, so no longer waiting for it: ' || my_waitlist()::text;
+  b := reschedule_booking(b.id, (d + 1 + time '11:00') at time zone 'Asia/Kuala_Lumpur');
+  assert (select array_agg((e ->> 'day')::date) from jsonb_array_elements(my_waitlist()) e) = array[d + 7],
+    'moved into day 31, so no longer waiting for it either: ' || my_waitlist()::text;
+end $$;
+-- The shop moving a customer's booking into a day they wait on ends it too.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 30;
+begin
+  perform reschedule_booking(
+    (select id from bookings where customer_id = '00000000-0000-0000-0000-0000000000c1' and status = 'confirmed'
+       and starts_at = (d + 1 + time '11:00') at time zone 'Asia/Kuala_Lumpur'),
+    (d + 7 + time '09:00') at time zone 'Asia/Kuala_Lumpur');
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert my_waitlist() = '[]', 'the shop moved him into day 37: ' || my_waitlist()::text;
+end $$;
+
+-- Deleting an account takes its requests with it.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c5';
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert not exists (select 1 from waitlist where customer_id = '00000000-0000-0000-0000-0000000000c5'),
+    'a deleted account waits for nothing';
+end $$;
+rollback;
+
 -- Deleting an account ------------------------------------------------------
 reset role;
 set role anon;

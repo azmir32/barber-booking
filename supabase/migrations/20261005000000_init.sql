@@ -325,6 +325,31 @@ create index reviews_barber_created_idx on public.reviews (barber_id, created_at
 -- So deleting an account finds its reviews without reading everyone's.
 create index reviews_customer_idx on public.reviews (customer_id);
 
+-- The waiting list: a customer who found a day full asks to hear if a time
+-- frees up, for one service with a chosen barber (or any). day is the
+-- shop's own date. The shop sees who asked and WhatsApps them a time;
+-- offered_at is when it last did, so every phone in the shop knows. A
+-- request ends when its customer books there that day, and past days are
+-- left out wherever requests are read, so nothing has to clear them on a
+-- timer. Read and written only through the functions below.
+create table public.waitlist (
+  id uuid primary key default gen_random_uuid(),
+  shop_id uuid not null references public.shops (id) on delete cascade,
+  customer_id uuid not null references public.profiles (id) on delete cascade,
+  day date not null,
+  service_id uuid not null references public.services (id) on delete cascade,
+  -- Null: any barber.
+  barber_id uuid references public.barbers (id) on delete cascade,
+  offered_at timestamptz,
+  created_at timestamptz not null default now(),
+  -- One request per customer per shop per day. Customer first, so it is
+  -- also how a customer's own requests are found.
+  constraint waitlist_one_a_day unique (customer_id, day, shop_id)
+);
+-- A shop's requests for one day, oldest first: the barber's day and the
+-- news card's count, one index lookup however long the shop's history.
+create index waitlist_shop_day_idx on public.waitlist (shop_id, day, created_at);
+
 -- Keeps shops.rating_count and rating_sum in step with the shop's reviews,
 -- and each barber's with the reviews of their cuts, also when a review
 -- moves to another barber. Runs as the tables' owner, since nobody else may
@@ -395,6 +420,7 @@ alter table public.bookings enable row level security;
 -- No policies: read and written only through the functions below.
 alter table public.shop_closures enable row level security;
 alter table public.reviews enable row level security;
+alter table public.waitlist enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -473,6 +499,9 @@ grant insert (id, shop_id, name, about, is_active, sort_order) on public.barbers
 grant update (name, about, is_active, sort_order) on public.barbers to authenticated;
 revoke insert, update, delete on public.bookings from anon, authenticated;
 revoke insert, update, delete on public.shop_closures from anon, authenticated;
+-- Who is waiting is between the customer and the shop: only the waiting
+-- list functions read or write it.
+revoke all on public.waitlist from anon, authenticated;
 -- Reviews are written through rate_booking and reply_to_review, and read
 -- without who wrote them: an account id would tie one person's reviews
 -- together across shops.
@@ -930,6 +959,9 @@ begin
     raise exception 'Sorry, that time was just taken. Please pick another.' using errcode = 'P0001';
   end;
 
+  -- They have their time that day, so they are no longer waiting for one.
+  delete from waitlist where customer_id = v_uid and shop_id = v_service.shop_id and day = v_day;
+
   return v_booking;
 end;
 $$;
@@ -1105,6 +1137,10 @@ begin
   exception when exclusion_violation then
     raise exception 'Sorry, that time was just taken. Please pick another.' using errcode = 'P0001';
   end;
+
+  -- Moved into a day they were waiting on: as good as booking it.
+  delete from waitlist
+  where customer_id = v_booking.customer_id and shop_id = v_booking.shop_id and day = v_day;
 
   return v_booking;
 end;
@@ -1890,9 +1926,10 @@ grant execute on function public.shop_cards(date, date) to authenticated;
 -- hours, and none goes back more than a week. A booking the shop has since
 -- cancelled, or taken back after the customer cancelled, is no news to the
 -- shop. chair_free says a cancelled time is still to come and nobody has
--- taken it since, so a walk-in can have it. Every barber's phone asks once a
--- minute, so it is one walk of bookings_shop_changes_idx over the shop's
--- last few days.
+-- taken it since, so a walk-in can have it, and waiting how many are on the
+-- waiting list for its day, who may want it. Every barber's phone asks once
+-- a minute, so it is one walk of bookings_shop_changes_idx over the shop's
+-- last few days, and a lookup of waitlist_shop_day_idx per cancellation.
 create function public.shop_changes(p_since timestamptz default null, p_limit int default 5)
 returns jsonb
 language plpgsql
@@ -1947,7 +1984,11 @@ begin
                    where x.barber_id = l.barber_id
                      and x.status <> 'cancelled'
                      and tstzrange(x.starts_at, x.ends_at) && tstzrange(l.starts_at, l.ends_at)
-                 )
+                 ),
+                 'waiting', case when l.customer_change = 'cancelled' and l.starts_at > now() then (
+                   select count(*) from waitlist w
+                   where w.shop_id = v_shop.id and w.day = (l.starts_at at time zone v_shop.time_zone)::date
+                 ) else 0 end
                ) order by l.customer_changed_at desc, l.id)
         from latest l
       ), '[]'::jsonb)
@@ -2020,6 +2061,191 @@ as $$
     order by b.starts_at desc, b.id
     limit least(greatest(coalesce(p_limit, 100), 1), 200)
   ) x;
+$$;
+
+-- Waiting list -----------------------------------------------------------------
+
+-- How many days one customer can wait on at a time, across every shop, so
+-- one account can't queue for every shop's busy Saturday.
+create function public.max_waiting_per_customer() returns int language sql immutable as $$ select 3 $$;
+
+-- A signed-in customer asks to hear if a time frees up on a day, for a
+-- service with a barber (null: any). The day must be one they could book:
+-- the shop live, the service and barber still offered, today up to the
+-- booking horizon by the shop's clock, the shop not closed, and someone
+-- working it. Whether the day is full is the app's to judge: a time may
+-- have freed up by now, and waiting then does no harm.
+create function public.join_waitlist(p_service_id uuid, p_day date, p_barber_id uuid default null)
+returns public.waitlist
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_service services;
+  v_shop shops;
+  v_today date;
+  v_row waitlist;
+begin
+  if v_uid is null then
+    raise exception 'Please sign in to join the waiting list.' using errcode = '28000';
+  end if;
+
+  select * into v_service from services where id = p_service_id and is_active;
+  select * into v_shop from shops where id = v_service.shop_id;
+  if v_shop.id is null or not public.shop_is_live(v_shop) then
+    raise exception 'This service is no longer available.' using errcode = 'P0002';
+  end if;
+
+  if p_barber_id is not null and not exists (
+    select 1 from barbers where id = p_barber_id and shop_id = v_shop.id and is_active
+  ) then
+    raise exception 'Barber not found.' using errcode = 'P0002';
+  end if;
+
+  v_today := (now() at time zone v_shop.time_zone)::date;
+  if p_day is null or p_day < v_today or p_day > v_today + public.booking_horizon_days() then
+    raise exception 'Pick a day from today up to 60 days ahead.' using errcode = '22023';
+  end if;
+
+  -- Closed, or nobody (or not the barber asked for) works it, or has it all
+  -- blocked off.
+  if exists (select 1 from shop_closures c where c.shop_id = v_shop.id and c.day = p_day)
+     or not exists (
+       select 1 from barbers b
+       join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from p_day)::int
+       where b.shop_id = v_shop.id and b.is_active
+         and (p_barber_id is null or b.id = p_barber_id)
+         and not exists (
+           select 1 from bookings bk
+           where bk.barber_id = b.id and bk.status = 'confirmed'
+             and tstzrange(bk.starts_at, bk.ends_at) @> tstzrange(
+                   p_day::timestamp at time zone v_shop.time_zone,
+                   (p_day + 1)::timestamp at time zone v_shop.time_zone)
+         )
+     ) then
+    raise exception 'The shop isn''t taking bookings that day.' using errcode = 'P0001';
+  end if;
+
+  -- One at a time per customer, so two at once can't both get under the
+  -- limit. Then the shop's diary, so a booking of theirs being saved for
+  -- that day is seen below rather than leaving them waiting after it.
+  perform pg_advisory_xact_lock(hashtextextended('waitlist:' || v_uid, 0));
+  perform public.lock_shop_diary(v_shop.id);
+
+  if exists (
+    select 1 from bookings
+    where customer_id = v_uid and shop_id = v_shop.id and status = 'confirmed'
+      and starts_at >= p_day::timestamp at time zone v_shop.time_zone
+      and starts_at < (p_day + 1)::timestamp at time zone v_shop.time_zone
+  ) then
+    raise exception 'You already have a booking here that day.' using errcode = 'P0001';
+  end if;
+
+  if exists (select 1 from waitlist where customer_id = v_uid and day = p_day and shop_id = v_shop.id) then
+    raise exception 'You''re already on the waiting list for that day.' using errcode = 'P0001';
+  end if;
+
+  -- Days gone by don't count, and nothing clears them on a timer.
+  delete from waitlist w using shops s
+  where w.customer_id = v_uid and s.id = w.shop_id and w.day < (now() at time zone s.time_zone)::date;
+
+  if (select count(*) from waitlist where customer_id = v_uid) >= public.max_waiting_per_customer() then
+    raise exception 'You can be on % waiting lists at a time. Leave one to join another.',
+      public.max_waiting_per_customer() using errcode = 'P0001';
+  end if;
+
+  insert into waitlist (shop_id, customer_id, day, service_id, barber_id)
+  values (v_shop.id, v_uid, p_day, v_service.id, p_barber_id)
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+-- The customer leaves a waiting list, or the shop takes them off its own.
+-- Already gone is fine: the other side may have just done it, or they
+-- booked.
+create function public.leave_waitlist(p_id uuid)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  delete from waitlist
+  where id = p_id
+    and (customer_id = (select auth.uid()) or shop_id = (select public.my_shop_id()));
+$$;
+
+-- The shop WhatsApped someone on its waiting list, so every phone in the
+-- shop sees it was done and when.
+create function public.mark_waitlist_offered(p_id uuid)
+returns public.waitlist
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row waitlist;
+begin
+  update waitlist set offered_at = now()
+  where id = p_id and shop_id = public.my_shop_id()
+  returning * into v_row;
+  if not found then
+    raise exception 'They''re no longer on the waiting list.' using errcode = 'P0002';
+  end if;
+  return v_row;
+end;
+$$;
+
+-- The owner's waiting list for one day, oldest request first, with each
+-- customer's name and number as the shop's customer list shows them, and
+-- what they asked for. Empty for a day gone by. The barber's day asks for
+-- it alongside its bookings, so it is one lookup of waitlist_shop_day_idx.
+create function public.shop_waitlist(p_day date)
+returns table (
+  id uuid, name text, phone text, service_id uuid, service_name text, duration_min int,
+  barber_id uuid, barber_name text, created_at timestamptz, offered_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select w.id, trim(p.full_name), p.phone, w.service_id, v.name, v.duration_min,
+         w.barber_id, b.name, w.created_at, w.offered_at
+  from shops sh
+  join waitlist w on w.shop_id = sh.id and w.day = p_day
+  join profiles p on p.id = w.customer_id
+  join services v on v.id = w.service_id
+  left join barbers b on b.id = w.barber_id
+  where sh.owner_id = (select auth.uid())
+    and p_day >= (now() at time zone sh.time_zone)::date
+  order by w.created_at, w.id;
+$$;
+
+-- A customer's own requests still to come, soonest day first, each with
+-- its shop (by id too, so the shop's page can tell without asking again),
+-- service and barber. Read through the customer's end of waitlist_one_a_day.
+create function public.my_waitlist()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', w.id, 'shop_id', w.shop_id, 'day', w.day,
+           'service_id', w.service_id, 'service_name', v.name,
+           'barber_id', w.barber_id, 'barber_name', b.name, 'created_at', w.created_at,
+           'shop', jsonb_build_object('name', s.name, 'slug', s.slug, 'time_zone', s.time_zone)
+         ) order by w.day, w.created_at, w.id), '[]'::jsonb)
+  from waitlist w
+  join shops s on s.id = w.shop_id
+  join services v on v.id = w.service_id
+  left join barbers b on b.id = w.barber_id
+  where w.customer_id = (select auth.uid())
+    and w.day >= (now() at time zone s.time_zone)::date;
 $$;
 
 -- Reviews ----------------------------------------------------------------------
@@ -2340,5 +2566,16 @@ revoke execute on function public.rate_booking(uuid, int, text, text) from publi
 grant execute on function public.rate_booking(uuid, int, text, text) to authenticated;
 revoke execute on function public.reply_to_review(uuid, text) from public, anon;
 grant execute on function public.reply_to_review(uuid, text) to authenticated;
+revoke execute on function public.max_waiting_per_customer() from public, anon, authenticated;
+revoke execute on function public.join_waitlist(uuid, date, uuid) from public, anon;
+grant execute on function public.join_waitlist(uuid, date, uuid) to authenticated;
+revoke execute on function public.leave_waitlist(uuid) from public, anon;
+grant execute on function public.leave_waitlist(uuid) to authenticated;
+revoke execute on function public.mark_waitlist_offered(uuid) from public, anon;
+grant execute on function public.mark_waitlist_offered(uuid) to authenticated;
+revoke execute on function public.shop_waitlist(date) from public, anon;
+grant execute on function public.shop_waitlist(date) to authenticated;
+revoke execute on function public.my_waitlist() from public, anon;
+grant execute on function public.my_waitlist() to authenticated;
 -- Booking links are opened by guests too.
 grant execute on function public.shop_public_status(text) to anon, authenticated;
