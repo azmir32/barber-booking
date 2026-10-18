@@ -126,21 +126,21 @@ GitHub Actions runs all of these on every push (`.github/workflows/ci.yml`) exce
 
 | Screen | Requests a second | Typical (p50) | Slow (p95) |
 | --- | --- | --- | --- |
-| Find a barber, signed in (open now, next free time, your next cut and your barbers) | 147 | 296 ms | 752 ms |
-| Barbers near me (the same list, nearest first) | 154 | 287 ms | 707 ms |
-| Search for a barber | 301 | 126 ms | 438 ms |
-| Shop page (with closed days, today's hours and the newest reviews) | 221 | 222 ms | 298 ms |
-| Free times for a day | 1,151 | 42 ms | 59 ms |
-| Book a cut (free times, then book) | 499 | 99 ms | 164 ms |
-| My bookings (with ratings) | 575 | 76 ms | 175 ms |
-| Barber's day (with what customers changed) | 247 | 199 ms | 264 ms |
-| My shop (takings, customers, reviews, closed days and the set-up steps) | 70 | 670 ms | 1,355 ms |
+| Find a barber, signed in (open now, next free time, your next cut and your barbers) | 143 | 303 ms | 764 ms |
+| Barbers near me (the same list, nearest first) | 145 | 297 ms | 810 ms |
+| Search for a barber | 294 | 128 ms | 451 ms |
+| Shop page (with closed days, today's hours, each barber's stars and the newest reviews) | 228 | 213 ms | 304 ms |
+| Free times for a day | 1,094 | 44 ms | 62 ms |
+| Book a cut (free times, then book) | 544 | 96 ms | 120 ms |
+| My bookings (with ratings) | 635 | 74 ms | 136 ms |
+| Barber's day (with what customers changed) | 263 | 188 ms | 250 ms |
+| My shop (takings, customers, reviews, closed days and the set-up steps) | 337 | 142 ms | 218 ms |
 
 In the rush, six customers got the last evening times and the other 294 were told the time was just taken, all within half a second and with no errors.
 
 Find a barber is the slowest customer screen because it works out each listed shop's next free time, and for a signed-in customer also their own barbers' (about 4 ms of database time on top of the list's 12 ms). Even so, one such machine serves it over half a million times an hour. Runs on the same machine vary by about 15%: these numbers are from one run, so compare screens with each other rather than with an earlier round's table.
 
-My shop is the heaviest screen per visit, as it adds up the week's takings and counts the shop's customers over two years, but it is only opened by owners. Its cards come in one request (`shop_cards`), which counts the customers and those due without making the customer list. On a throwaway Postgres with the load-test data, the cards take 4 ms of database time for a typical shop (2,820 bookings, median of 200 calls), where the four requests they replace took 23 ms, 20 of them making the whole list to read two numbers from it. For a shop with 33,000 bookings in the last two years, a fifth of them walk-ins, they take 78 ms instead of 105 (median of 50); the count reads those two years of bookings, so it grows with a shop's history up to two years and no further. Against PostgREST on the same data, 50 owners at a time for 10 seconds, the "My shop" scenario went from 73 visits a second (p50 680 ms) to 250 (p50 190 ms); one owner at a time, a visit waits 9 ms instead of 28, or 80 ms instead of 116 at the busy shop.
+My shop adds up the week's takings and counts the shop's customers over two years, and is only opened by owners. In the full load test it went from 70 visits a second (p50 670 ms) to 337 (p50 142 ms) in this round. Its cards come in one request (`shop_cards`), which counts the customers and those due without making the customer list. On a throwaway Postgres with the load-test data, the cards take 4 ms of database time for a typical shop (2,820 bookings, median of 200 calls), where the four requests they replace took 23 ms, 20 of them making the whole list to read two numbers from it. For a shop with 33,000 bookings in the last two years, a fifth of them walk-ins, they take 78 ms instead of 105 (median of 50); the count reads those two years of bookings, so it grows with a shop's history up to two years and no further. Against PostgREST on the same data, 50 owners at a time for 10 seconds, the "My shop" scenario went from 73 visits a second (p50 680 ms) to 250 (p50 190 ms); one owner at a time, a visit waits 9 ms instead of 28, or 80 ms instead of 116 at the busy shop.
 
 Near me measures the distance to every live shop with a location and keeps the nearest page, with no index. On the 1,000 load-test shops that adds about 1 ms of database time to the list (median of 50 calls from random points around Kajang: 14.9 ms nearest first against 14.0 ms by name; picking the nearest 21 alone takes about 1.3 ms). In `npm run test:load` the "Barbers near me" screen keeps up with Find a barber by name. That is fine for thousands of shops. Past tens of thousands, give the shops a spatial index and search by box or nearest-neighbour instead: Postgres's `earthdistance` extension (a GiST index on `ll_to_earth(latitude, longitude)` and `earth_box` around the customer), or PostGIS (a `geography` column with a GiST index and `ORDER BY location <-> point`). Either needs only `find_shops` changed, not the app.
 
