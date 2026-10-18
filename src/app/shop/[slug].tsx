@@ -13,6 +13,7 @@ import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
 import { addToCalendar } from '@/lib/add-to-calendar';
 import { useAuth } from '@/lib/auth';
+import { barberAverage, barberLabel } from '@/lib/barbers';
 import { bookingEvent } from '@/lib/calendar';
 import { kmBetween, shopPoint } from '@/lib/distance';
 import { t } from '@/lib/lang';
@@ -743,12 +744,35 @@ export default function ShopPage() {
               {barbers.length > 1 ? (
                 <View onLayout={(e) => onStepLayout('barber', e)}>
                   <Section title={moving ? t('1. Pick a barber') : t('2. Pick a barber')}>
-                    <Row role="radiogroup" accessibilityLabel={t('Barber')}>
-                      <Chip label={t('Any barber')} selected={barberId === null} onPress={() => pickBarber(null)} />
+                    {/* More than a name to go on: each barber's line, and their stars once they have a few. */}
+                    <View role="radiogroup" accessibilityLabel={t('Barber')} style={{ gap: Spacing.sm }}>
+                      <Card
+                        role="radio"
+                        selected={barberId === null}
+                        onPress={() => pickBarber(null)}
+                        accessibilityLabel={`${t('Any barber')}. ${t('Whoever is free at the time you pick')}`}
+                        style={{ paddingVertical: Spacing.md, gap: 2 }}>
+                        <T variant="label">{t('Any barber')}</T>
+                        <T variant="small">{t('Whoever is free at the time you pick')}</T>
+                      </Card>
                       {barbers.map((b) => (
-                        <Chip key={b.id} label={b.name} selected={barberId === b.id} onPress={() => pickBarber(b.id)} />
+                        <Card
+                          key={b.id}
+                          role="radio"
+                          selected={barberId === b.id}
+                          onPress={() => pickBarber(b.id)}
+                          accessibilityLabel={barberLabel(b)}
+                          style={{ paddingVertical: Spacing.md, gap: 2 }}>
+                          <Row style={{ justifyContent: 'space-between', flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+                            <T variant="label" style={{ flexShrink: 1 }}>
+                              {b.name}
+                            </T>
+                            <RatingSummary average={barberAverage(b)} count={b.rating_count} />
+                          </Row>
+                          {b.about ? <T variant="small">{b.about}</T> : null}
+                        </Card>
                       ))}
-                    </Row>
+                    </View>
                   </Section>
                 </View>
               ) : null}
@@ -863,7 +887,7 @@ export default function ShopPage() {
 
       {/* Below the steps, so choosing a time is as quick as ever; a booking being moved needs none of it. */}
       {moving ? null : (
-        <ShopReviews shop={shop} now={now} ref={reviewsRef} />
+        <ShopReviews shop={shop} barbers={barbers} now={now} ref={reviewsRef} />
       )}
 
       {week.some(Boolean) ? (

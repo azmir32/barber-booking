@@ -2217,6 +2217,195 @@ do $$ begin
 end $$;
 rollback;
 
+-- Each barber's line and stars --------------------------------------------------
+-- The owner writes a short line about each barber. Each barber's review count
+-- and total follow every review of their cuts, as the shop's do: when one is
+-- written, changed or removed, and when a cut changes barber before or after
+-- it is rated. Faiz and Zul are chairs added for this part.
+begin;
+reset role;
+update shops set is_published = true, trial_ends_at = now() + interval '30 days'
+where id = '00000000-0000-0000-0000-00000000005a';
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-00000000005a', 'Faiz'),
+  ('00000000-0000-0000-0000-0000000000a7', '00000000-0000-0000-0000-00000000005a', 'Zul');
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select b, d, '09:00', '12:00'
+from unnest(array['00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-0000000000a7']::uuid[]) b,
+     generate_series(0, 6) d;
+insert into bookings (id, shop_id, barber_id, service_id, customer_id, service_name, price, starts_at, ends_at, status)
+select x.id::uuid, '00000000-0000-0000-0000-00000000005a', x.barber::uuid, '00000000-0000-0000-0000-0000000000e1',
+       x.customer::uuid, 'Haircut', 25, x.at, x.at + interval '30 minutes', x.status::booking_status
+from (values
+  -- Ben's two cuts with Faiz and one with Zul, and Chong's with Faiz, all done.
+  ('00000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', now() - interval '2 hours', 'completed'),
+  ('00000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', now() - interval '3 days', 'completed'),
+  ('00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-0000000000a7',
+   '00000000-0000-0000-0000-0000000000c1', now() - interval '4 days', 'completed'),
+  ('00000000-0000-0000-0000-0000000000f4', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c2', now() - interval '5 days', 'completed'),
+  -- Chong's next cut, with Faiz tomorrow at 10:00.
+  ('00000000-0000-0000-0000-0000000000f5', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c2',
+   ((now() at time zone 'Asia/Kuala_Lumpur')::date + 1 + time '10:00') at time zone 'Asia/Kuala_Lumpur', 'confirmed')
+) x(id, barber, customer, at, status);
+
+-- One short line of plain text, written by the owner. The counts are the database's.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  faiz uuid := '00000000-0000-0000-0000-0000000000a6';
+  bad text;
+begin
+  assert (select about is null and rating_count = 0 and rating_sum = 0 from barbers where id = faiz),
+    'a new barber has no line and no reviews';
+  update barbers set about = repeat('x', 60) where id = faiz;
+  assert (select length(about) from barbers where id = faiz) = 60, '60 characters fit';
+  foreach bad in array array[repeat('x', 61), '', '   ', E'Fades\nand beards', E'Kids\tcuts'] loop
+    begin
+      update barbers set about = bad where id = faiz;
+      raise exception 'the line % should be refused', bad;
+    exception when check_violation then null;
+    end;
+  end loop;
+  update barbers set about = 'Fades and skin fades, 8 years' where id = faiz;
+  assert (select about from barbers where id = faiz) = 'Fades and skin fades, 8 years', 'the owner writes a line';
+  -- A barber can start with one, and lose it again.
+  insert into barbers (id, shop_id, name, about)
+  values ('00000000-0000-0000-0000-0000000000a8', shop, 'Amin', 'Kids'' cuts, patient with first-timers');
+  update barbers set about = null where id = '00000000-0000-0000-0000-0000000000a8';
+  assert (select about is null from barbers where id = '00000000-0000-0000-0000-0000000000a8'), 'none is fine';
+
+  begin
+    update barbers set rating_count = 100 where id = faiz;
+    raise exception 'owners should not change a barber''s review count';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update barbers set rating_sum = 500 where id = faiz;
+    raise exception 'owners should not change a barber''s review total';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into barbers (shop_id, name, rating_count, rating_sum) values (shop, 'Five Stars', 100, 500);
+    raise exception 'a barber should not start with reviews';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Ratings count for the barber who did the cut.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  faiz uuid := '00000000-0000-0000-0000-0000000000a6';
+  zul uuid := '00000000-0000-0000-0000-0000000000a7';
+begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f1', 5);
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 4, 'Neat');
+  perform rate_booking('00000000-0000-0000-0000-0000000000f3', 2);
+  assert (select (rating_count, rating_sum) = (2, 9) from barbers where id = faiz), 'Faiz has two';
+  assert (select (rating_count, rating_sum) = (1, 2) from barbers where id = zul), 'Zul has one';
+  assert (select (rating_count, rating_sum) = (0, 0) from barbers where id = '00000000-0000-0000-0000-0000000000a1'),
+    'and nobody else';
+  -- Changing a rating changes the total, not the count; a comment or name alone changes neither.
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 2);
+  assert (select (rating_count, rating_sum) = (2, 7) from barbers where id = faiz), 'the total follows the change';
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 2, 'A bit rushed', 'Ben L');
+  assert (select (rating_count, rating_sum) = (2, 7) from barbers where id = faiz), 'a comment changes no count';
+end $$;
+
+-- The owner's reply changes no count.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  perform reply_to_review('00000000-0000-0000-0000-0000000000f3', 'Sorry, Ben. Come back and Zul will put it right.');
+  assert (select (rating_count, rating_sum) = (1, 2) from barbers where id = '00000000-0000-0000-0000-0000000000a7'),
+    'a reply changes no count';
+end $$;
+
+-- Chong moves his next cut from Faiz to Zul, has it, and rates it: it counts for Zul.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$
+declare b bookings;
+begin
+  b := reschedule_booking('00000000-0000-0000-0000-0000000000f5',
+    ((now() at time zone 'Asia/Kuala_Lumpur')::date + 1 + time '10:30') at time zone 'Asia/Kuala_Lumpur',
+    '00000000-0000-0000-0000-0000000000a7');
+  assert b.barber_id = '00000000-0000-0000-0000-0000000000a7', 'moved to Zul';
+end $$;
+reset role;
+update bookings set starts_at = now() - interval '1 day', ends_at = now() - interval '1 day' + interval '30 minutes',
+                    status = 'completed'
+where id = '00000000-0000-0000-0000-0000000000f5';
+set role authenticated;
+do $$
+declare r reviews;
+begin
+  r := rate_booking('00000000-0000-0000-0000-0000000000f5', 5);
+  assert r.barber_id = '00000000-0000-0000-0000-0000000000a7', 'the review is of the cut with Zul';
+  perform rate_booking('00000000-0000-0000-0000-0000000000f4', 3);
+  assert (select (rating_count, rating_sum) = (2, 7) from barbers where id = '00000000-0000-0000-0000-0000000000a7'),
+    'Zul counts the cut he did';
+  assert (select (rating_count, rating_sum) = (3, 10) from barbers where id = '00000000-0000-0000-0000-0000000000a6'),
+    'and Faiz only his own';
+end $$;
+
+-- Anyone reads each barber's line and stars, and one barber's reviews, but
+-- still not who wrote them.
+set request.jwt.claim.sub = '';
+set role anon;
+do $$ begin
+  assert (select about = 'Fades and skin fades, 8 years' and rating_count = 3 and rating_sum = 10
+          from barbers where id = '00000000-0000-0000-0000-0000000000a6'), 'guests see Faiz''s line and stars';
+  assert (select array_agg(booking_id order by created_at desc, booking_id) from reviews
+          where shop_id = '00000000-0000-0000-0000-00000000005a' and barber_id = '00000000-0000-0000-0000-0000000000a7')
+         = array['00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-0000000000f5']::uuid[],
+    'Zul''s reviews alone';
+  begin
+    perform customer_id from reviews where barber_id = '00000000-0000-0000-0000-0000000000a7';
+    raise exception 'guests should not see who wrote a barber''s review';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- A rated cut put right to the other barber takes its review along.
+reset role;
+update bookings set barber_id = '00000000-0000-0000-0000-0000000000a7' where id = '00000000-0000-0000-0000-0000000000f1';
+do $$ begin
+  assert (select barber_id from reviews where booking_id = '00000000-0000-0000-0000-0000000000f1')
+         = '00000000-0000-0000-0000-0000000000a7', 'the review follows its cut';
+  assert (select (rating_count, rating_sum) = (2, 5) from barbers where id = '00000000-0000-0000-0000-0000000000a6')
+     and (select (rating_count, rating_sum) = (3, 12) from barbers where id = '00000000-0000-0000-0000-0000000000a7'),
+    'from Faiz''s stars to Zul''s';
+end $$;
+
+-- Ben deletes his account: his reviews no longer count for anyone.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert (select (rating_count, rating_sum) = (1, 3) from barbers where id = '00000000-0000-0000-0000-0000000000a6')
+     and (select (rating_count, rating_sum) = (1, 5) from barbers where id = '00000000-0000-0000-0000-0000000000a7'),
+    'only Chong''s reviews are left';
+  -- However they got there, every barber's figures add up to their reviews.
+  assert not exists (
+    select 1 from barbers b
+    where (b.rating_count, b.rating_sum)
+          <> (select count(*)::int, coalesce(sum(r.rating), 0)::int from reviews r where r.barber_id = b.id)
+  ), 'each barber''s count and total match their reviews';
+  -- A barber with reviews stays, like one with bookings.
+  begin
+    delete from barbers where id = '00000000-0000-0000-0000-0000000000a7';
+    raise exception 'a barber with reviews should not be deleted';
+  exception when foreign_key_violation then null;
+  end;
+end $$;
+rollback;
+
 -- Near me ------------------------------------------------------------------------
 -- Owners set where their shop is. Given the customer's position, the shop
 -- list goes nearest first with each shop's distance, shops without a

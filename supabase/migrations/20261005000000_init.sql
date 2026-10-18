@@ -148,8 +148,19 @@ create table public.barbers (
   id uuid primary key default gen_random_uuid(),
   shop_id uuid not null references public.shops (id) on delete cascade,
   name text not null check (length(trim(name)) between 1 and 40),
+  -- One short line the owner writes, shown under the name when customers
+  -- pick a barber: "Fades and skin fades, 8 years". Plain text on one line.
+  about text constraint barbers_about_check
+    check (length(about) <= 60 and btrim(about) <> '' and about !~ '[[:cntrl:]]'),
   is_active boolean not null default true,
   sort_order int not null default 0,
+  -- How many reviews of cuts with this barber and their stars added up,
+  -- kept by the reviews_count trigger like the shop's, so the shop's page
+  -- has each barber's stars with the barbers it already loads. Only counts
+  -- and totals: nothing here says who wrote what. Owners can't write them
+  -- (see the grants below).
+  rating_count int not null default 0,
+  rating_sum int not null default 0,
   created_at timestamptz not null default now()
 );
 create index barbers_shop_id_idx on public.barbers (shop_id);
@@ -307,11 +318,17 @@ create table public.reviews (
 -- (My shop's card), each one index lookup however many it has.
 create index reviews_shop_created_idx on public.reviews (shop_id, created_at desc, booking_id);
 create index reviews_shop_commented_idx on public.reviews (shop_id, created_at desc) where comment is not null;
+-- One barber's reviews, newest first, when a shop's reviews are narrowed to
+-- them: one index lookup however many the shop has. Also what deleting a
+-- barber checks for reviews of their cuts.
+create index reviews_barber_created_idx on public.reviews (barber_id, created_at desc, booking_id);
 -- So deleting an account finds its reviews without reading everyone's.
 create index reviews_customer_idx on public.reviews (customer_id);
 
--- Keeps shops.rating_count and rating_sum in step with the shop's reviews.
--- Runs as the table's owner, since nobody else may write those columns.
+-- Keeps shops.rating_count and rating_sum in step with the shop's reviews,
+-- and each barber's with the reviews of their cuts, also when a review
+-- moves to another barber. Runs as the tables' owner, since nobody else may
+-- write those columns.
 create function public.reviews_count()
 returns trigger
 language plpgsql
@@ -321,10 +338,20 @@ as $$
 begin
   if tg_op = 'INSERT' then
     update shops set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.shop_id;
+    update barbers set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.barber_id;
   elsif tg_op = 'DELETE' then
     update shops set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.shop_id;
-  elsif new.rating <> old.rating then
-    update shops set rating_sum = rating_sum - old.rating + new.rating where id = new.shop_id;
+    update barbers set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.barber_id;
+  else
+    if new.rating <> old.rating then
+      update shops set rating_sum = rating_sum - old.rating + new.rating where id = new.shop_id;
+    end if;
+    if new.barber_id <> old.barber_id then
+      update barbers set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.barber_id;
+      update barbers set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.barber_id;
+    elsif new.rating <> old.rating then
+      update barbers set rating_sum = rating_sum - old.rating + new.rating where id = new.barber_id;
+    end if;
   end if;
   return null;
 end;
@@ -332,8 +359,30 @@ $$;
 revoke execute on function public.reviews_count() from public, anon, authenticated;
 
 create trigger reviews_count
-  after insert or delete or update of rating on public.reviews
+  after insert or delete or update of rating, barber_id on public.reviews
   for each row execute function public.reviews_count();
+
+-- A review is of the cut with the barber who did it. The booking functions
+-- never move a cut once it is done, but should a rated booking's barber be
+-- put right (say, by hand in the table editor), its review goes with it, and
+-- reviews_count moves it from one barber's stars to the other's.
+create function public.bookings_review_barber()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update reviews set barber_id = new.barber_id where booking_id = new.id;
+  return null;
+end;
+$$;
+revoke execute on function public.bookings_review_barber() from public, anon, authenticated;
+
+create trigger bookings_review_barber
+  after update of barber_id on public.bookings
+  for each row when (new.barber_id <> old.barber_id)
+  execute function public.bookings_review_barber();
 
 -- Row level security --------------------------------------------------------
 
@@ -418,6 +467,10 @@ grant insert (owner_id, name, slug, about, address, area, latitude, longitude, p
   on public.shops to authenticated;
 grant update (name, slug, about, address, area, latitude, longitude, phone, instagram, is_published)
   on public.shops to authenticated;
+-- The review counts on barbers are the database's too.
+revoke insert, update on public.barbers from anon, authenticated;
+grant insert (id, shop_id, name, about, is_active, sort_order) on public.barbers to authenticated;
+grant update (name, about, is_active, sort_order) on public.barbers to authenticated;
 revoke insert, update, delete on public.bookings from anon, authenticated;
 revoke insert, update, delete on public.shop_closures from anon, authenticated;
 -- Reviews are written through rate_booking and reply_to_review, and read

@@ -39,8 +39,13 @@ export type Barber = {
   id: string;
   shop_id: string;
   name: string;
+  /** One short line the owner wrote, shown under the name when customers pick a barber. */
+  about: string | null;
   is_active: boolean;
   sort_order: number;
+  /** How many reviews of this barber's cuts and their stars added up; kept by the database. */
+  rating_count: number;
+  rating_sum: number;
 };
 
 export type Service = {

@@ -3,12 +3,13 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { ReviewItem } from '@/components/reviews';
-import { REVIEW_COLUMNS } from '@/components/shop-reviews';
+import { BarberFilter, ReviewItem } from '@/components/reviews';
+import { REVIEW_COLUMNS, reviewsOf } from '@/components/shop-reviews';
 import { Button, Card, Empty, ErrorText, Field, Row, Screen, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
+import { reviewFilters, type BarberStars } from '@/lib/barbers';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { averageText, ratingAverage, ratingLabel, REVIEW_MAX_LENGTH, reviewCount, type ShopReview } from '@/lib/reviews';
@@ -19,13 +20,23 @@ const PAGE = 20;
 /** The owner also sees which cut each review is about. */
 const OWNER_COLUMNS = `${REVIEW_COLUMNS}, bookings(service_name, starts_at)`;
 
-/** Every review of the shop, newest first, each with a reply the owner can write or change. */
+/** A barber with reviews, with their own figures: counts and totals, never who rated them. */
+type ReviewedBarber = BarberStars & { id: string; name: string };
+
+/**
+ * Every review of the shop, newest first, each with a reply the owner can
+ * write or change; or one barber's, with each barber's average on the chips.
+ */
 export default function Reviews() {
   const { shop } = useMyShop();
   const theme = useTheme();
   const now = useNow();
   const [rows, setRows] = useState<ShopReview[]>([]);
+  // Whose reviews `rows` are: '' for everyone, else a barber's id; null before the first answer.
+  const [rowsFor, setRowsFor] = useState<string | null>(null);
   const [totals, setTotals] = useState<{ count: number; sum: number } | null>(null);
+  const [team, setTeam] = useState<ReviewedBarber[]>([]);
+  const [barberId, setBarberId] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -33,17 +44,19 @@ export default function Reviews() {
   // Only the newest load fills the list; a slower answer to an older one is dropped.
   const latest = useRef(0);
   const shopId = shop?.id;
+  const filters = reviewFilters(team);
+  const pickedId = filters.some((b) => b.id === barberId) ? barberId : null;
 
   const fetchPage = useCallback(
     (offset: number) =>
       supabase
         .from('reviews')
         .select(OWNER_COLUMNS)
-        .eq('shop_id', shopId ?? '')
+        .match(reviewsOf(shopId ?? '', pickedId))
         .order('created_at', { ascending: false })
         .order('booking_id')
         .range(offset, offset + PAGE),
-    [shopId],
+    [shopId, pickedId],
   );
 
   const load = useCallback(async () => {
@@ -52,7 +65,15 @@ export default function Reviews() {
     setLoading(true);
     const [page, counts] = await Promise.all([
       fetchPage(0),
-      supabase.from('shops').select('rating_count, rating_sum').eq('id', shopId).single(),
+      // The shop's figures, and each barber's who has reviews, in the team's order.
+      supabase
+        .from('shops')
+        .select('rating_count, rating_sum, barbers(id, name, rating_count, rating_sum)')
+        .eq('id', shopId)
+        .gt('barbers.rating_count', 0)
+        .order('sort_order', { referencedTable: 'barbers' })
+        .order('created_at', { referencedTable: 'barbers' })
+        .single(),
     ]);
     if (request !== latest.current) return;
     setLoading(false);
@@ -61,9 +82,11 @@ export default function Reviews() {
     setError(null);
     const list = (page.data ?? []) as unknown as ShopReview[];
     setRows(list.slice(0, PAGE));
+    setRowsFor(pickedId ?? '');
     setHasMore(list.length > PAGE);
     setTotals({ count: counts.data.rating_count, sum: counts.data.rating_sum });
-  }, [fetchPage, shopId]);
+    setTeam(counts.data.barbers as ReviewedBarber[]);
+  }, [fetchPage, shopId, pickedId]);
 
   async function loadMore() {
     const request = latest.current;
@@ -77,7 +100,7 @@ export default function Reviews() {
     setHasMore(list.length > PAGE);
   }
 
-  // On focus, so reviews left meanwhile show when coming back.
+  // On focus, so reviews left meanwhile show when coming back; and for another barber's.
   useFocusEffect(
     useCallback(() => {
       load();
@@ -86,6 +109,10 @@ export default function Reviews() {
 
   if (!shop) return null;
   const average = totals ? ratingAverage(totals.sum, totals.count) : null;
+  // Another barber's are on the way: the last ones stay, faded, until they come.
+  const stale = rowsFor !== (pickedId ?? '');
+  // If they couldn't come, the last ones would be the wrong barber's.
+  const listed = stale && !loading ? [] : rows;
   const replied = (review: ShopReview) =>
     setRows((prev) => prev.map((r) => (r.booking_id === review.booking_id ? review : r)));
 
@@ -100,19 +127,27 @@ export default function Reviews() {
           <T variant="muted">{reviewCount(totals.count)}</T>
         </View>
       ) : null}
-      {rows.length > 0 ? (
+      {totals ? (
+        <BarberFilter
+          barbers={filters}
+          selected={pickedId}
+          onSelect={setBarberId}
+          shopStars={{ rating_count: totals.count, rating_sum: totals.sum }}
+        />
+      ) : null}
+      {listed.length > 0 ? (
         <T variant="small">{t('Reply to say thanks, or to put right what went wrong. Replies show on your shop’s page.')}</T>
       ) : null}
 
-      {error && rows.length === 0 ? (
+      {error && listed.length === 0 ? (
         <Empty title={t('Couldn’t load your reviews')} body={t('Check your connection and try again.')}>
           <Button title={t('Try again')} variant="secondary" onPress={load} />
         </Empty>
       ) : error ? (
         <ErrorText message={error} />
       ) : null}
-      {loading && rows.length === 0 && !error ? <T variant="muted">{t('Loading reviews…')}</T> : null}
-      {!loading && !error && rows.length === 0 ? (
+      {loading && listed.length === 0 && !error ? <T variant="muted">{t('Loading reviews…')}</T> : null}
+      {!loading && !error && !stale && listed.length === 0 ? (
         <Empty
           title={t('No reviews yet')}
           body={t(
@@ -121,12 +156,12 @@ export default function Reviews() {
         />
       ) : null}
 
-      <View style={styles.list}>
-        {rows.map((r) => (
+      <View style={[styles.list, stale && loading && { opacity: 0.5 }]} aria-busy={loading}>
+        {listed.map((r) => (
           <OwnerReview key={r.booking_id} review={r} now={now} timeZone={shop.time_zone} onSaved={replied} />
         ))}
       </View>
-      {hasMore && !error ? (
+      {hasMore && !error && !stale ? (
         <Button title={t('Show more')} variant="secondary" loading={loadingMore} onPress={loadMore} />
       ) : null}
     </Screen>

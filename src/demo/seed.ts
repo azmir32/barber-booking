@@ -48,14 +48,15 @@ function user(email: string, role: 'customer' | 'barber', fullName: string, phon
 type ShopPlan = {
   owner: Row;
   shop: Row;
-  barbers: [string, Hours][];
+  /** Each barber's name, hours and the line about them, if the owner wrote one. */
+  barbers: [string, Hours, string?][];
   services: [string, number, number][];
 };
 
 function shop({ owner, shop: fields, barbers, services }: ShopPlan) {
   const s = insertRow('shops', { id: sid(), owner_id: owner.id, is_published: true, ...fields });
-  const barberRows = barbers.map(([name, hours], i) => {
-    const b = insertRow('barbers', { id: sid(), shop_id: s.id, name, sort_order: i });
+  const barberRows = barbers.map(([name, hours, about], i) => {
+    const b = insertRow('barbers', { id: sid(), shop_id: s.id, name, about: about ?? null, sort_order: i });
     for (const [weekday, ranges] of Object.entries(hours)) {
       for (const [opens_at, closes_at] of ranges ?? []) {
         insertRow('working_hours', { id: sid(), barber_id: b.id, weekday: Number(weekday), opens_at, closes_at });
@@ -175,8 +176,8 @@ function seed() {
       trial_ends_at: new Date(now() + 23 * DAY).toISOString(),
     },
     barbers: [
-      ['Ali', week([1, 2, 3, 4, 5, 6], '10:00', '20:00')],
-      ['Danial', week([0, 2, 3, 4, 5, 6], '11:00', '21:00')],
+      ['Ali', week([1, 2, 3, 4, 5, 6], '10:00', '20:00'), 'Skin fades and beard trims, cutting since 2015'],
+      ['Danial', week([0, 2, 3, 4, 5, 6], '11:00', '21:00'), 'Kids’ cuts, patient with first-timers'],
     ],
     services: [
       ['Haircut', 30, 20],
@@ -200,8 +201,9 @@ function seed() {
       subscription_status: 'active',
     },
     barbers: [
-      ['Rahman', week(SAT_TO_THU, '09:30', '21:00')],
-      ['Hafiz', week(SAT_TO_THU, '09:30', '21:00')],
+      ['Rahman', week(SAT_TO_THU, '09:30', '21:00'), 'Classic cuts and hot towel shaves, 20 years'],
+      ['Hafiz', week(SAT_TO_THU, '09:30', '21:00'), 'Fades and tapers, quick and neat'],
+      // New this year, and hasn't written anything yet.
       ['Wei Ming', week([1, 2, 3, 4, 5, 6], '11:00', '21:00')],
     ],
     services: [
@@ -225,7 +227,7 @@ function seed() {
       instagram: '@thefaderoom.kj',
       subscription_status: 'active',
     },
-    barbers: [['Irfan', week([1, 2, 3, 4, 5, 6], '12:00', '22:00', false)]],
+    barbers: [['Irfan', week([1, 2, 3, 4, 5, 6], '12:00', '22:00', false), 'Skin fades, tapers and hair designs']],
     services: [
       ['Skin fade', 45, 30],
       ['Taper + design', 60, 38],
@@ -246,8 +248,8 @@ function seed() {
       subscription_status: 'active',
     },
     barbers: [
-      ['Pak Mat', week([0, 1, 2, 3, 4, 5, 6], '08:00', '18:00')],
-      ['Faizal', week([0, 1, 2, 3, 4, 6], '08:00', '18:00')],
+      ['Pak Mat', week([0, 1, 2, 3, 4, 5, 6], '08:00', '18:00'), 'Simple neat cuts, 30 years in Kajang'],
+      ['Faizal', week([0, 1, 2, 3, 4, 6], '08:00', '18:00'), 'Gentle with kids and first haircuts'],
     ],
     services: [
       ['Potong biasa', 20, 12],
@@ -560,6 +562,47 @@ function seed() {
   );
   review(ratedCut(m, 0, -24, '11:30', 0, syafiq), 4, 4, 'Simple cut, fair price. Exactly what it says.');
   review(ratedCut(m, 1, -40, '16:00', 2, ravi), 3, 2, 'OK for the price, but the shave could be closer.');
+
+  // Danial's own customers, so both of Ali's barbers show their stars:
+  // parents and young men he cut in the last few weeks. New faces with one
+  // cut each, so nobody's history above changes, and none is due for a cut
+  // yet. Each cut takes the first time on its days that Danial works and
+  // nobody else has, and keeps its id whichever that is. A demo saved before
+  // they came gets them too (CAME_IN in db.ts).
+  const danialCut = (customer: Row, days: number[], service: Row) => {
+    const id = `${HISTORY_ID}${String(900_000 + ++nextRated).padStart(12, '0')}`;
+    for (const day of days) {
+      for (const at of ['11:30', '14:30', '16:30', '12:30', '18:30', '20:30']) {
+        const start = startOf(day, at);
+        const end = start + (service.duration_min as number) * 60_000;
+        const taken = tables().bookings.some(
+          (x) => x.barber_id === danial.row.id && Date.parse(String(x.starts_at)) < end && start < Date.parse(String(x.ends_at)),
+        );
+        const cut = taken ? null : book(sa, { barber: danial, day, at, service, customer, status: 'completed' }, id);
+        if (cut) return cut;
+      }
+    }
+    return null;
+  };
+  const siti = user('siti@demo.potongku.my', 'customer', 'Siti Aminah binti Yusof', '012-554 7810');
+  const izzat = user('izzat@demo.potongku.my', 'customer', 'Izzat Hakimi', '011-2876 5521');
+  const kevin = user('kevin@demo.potongku.my', 'customer', 'Kevin Lim', '016-447 0932');
+  const nurul = user('nurul@demo.potongku.my', 'customer', 'Nurul Huda', '019-663 2087');
+  review(
+    danialCut(siti, [-4, -5, -6, -3], kids),
+    5,
+    3,
+    'Danial was so patient with my son. His first haircut without tears!',
+    'Thank you, Siti! See you both next month.',
+  );
+  review(danialCut(izzat, [-9, -10, -11, -8], fade), 5, 20, 'Clean skin fade, and he really listens.');
+  review(danialCut(kevin, [-15, -16, -17, -14], haircut), 4, 5, 'Good cut and a friendly chat. Started a few minutes late.');
+  review(
+    danialCut(nurul, [-20, -21, -22, -19], kids),
+    5,
+    8,
+    'Sabar sangat dengan anak saya yang takut gunting. Terima kasih!',
+  );
 }
 
 setSeed(seed);
