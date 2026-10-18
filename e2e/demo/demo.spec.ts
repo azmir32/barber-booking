@@ -879,7 +879,8 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
   await page.frameLocator('#app').getByRole('tab', { name: /Account/ }).click();
   await button(app, 'See the barber side').click();
   await app.getByRole('tab', { name: /My shop/ }).click();
-  const card = app.getByRole('link', { name: /^Reviews: Rated \d\.\d out of 5 from \d+ reviews\. \S+: “.+”$/ });
+  // The newest comment may be from Wei Jie, as on a Monday Ali had no cut yesterday.
+  const card = app.getByRole('link', { name: /^Reviews: Rated \d\.\d out of 5 from \d+ reviews\. [^:]+: “.+”$/ });
   await expect(card).toBeVisible();
   await card.click();
   const reply = button(app, /^Reply to /).first();
@@ -1224,14 +1225,24 @@ test('My shop asks for all its cards at once, and opens with last time’s, clos
   await expect(stale).toBeVisible();
   await snap(page, 'demo-41-my-shop-offline');
 
-  // Back online, reopening takes it off.
+  // Back online, reopening takes it off. When the days can't be asked for
+  // again straight after, the card says why beside the day still listed.
   await network(page, null);
   await stale.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(stale).toHaveCount(0);
+  await network(page, { delayMs: 3000, log: true });
   await button(app, /^Reopen /).click();
   await app.getByRole('alertdialog').getByRole('button', { name: 'Reopen', exact: true }).click();
+  await expect.poll(() => asked(page, '/rest/v1/rpc/reopen_shop_days')).toBe(1);
+  await network(page, { offline: true });
+  const noConnection = app.getByRole('alert').filter({ hasText: /^No internet connection/ });
+  await expect(noConnection).toBeVisible({ timeout: 10_000 });
+  await expect(kenduri).toBeVisible();
+  await network(page, null);
+  await stale.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(kenduri).toHaveCount(0);
   await expect(noHolidays).toBeVisible();
+  await expect(noConnection).toHaveCount(0);
 });
 
 test('the barber sees the day as chairs side by side, opens a booking from there and adds one in a free gap', async ({

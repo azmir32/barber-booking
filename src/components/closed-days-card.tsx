@@ -17,18 +17,23 @@ import { errorMessage, supabase } from '@/lib/supabase';
 export function ClosedDaysCard({
   days,
   loadError,
+  savedAt,
   reload,
 }: {
   /** The days closed from today to 60 days ahead; undefined while not known. */
   days?: ClosedDay[];
   /** Why they couldn't be had, when asking failed. */
   loadError: string | null;
-  /** Asks for them again. */
-  reload: () => Promise<void>;
+  /** When the server last answered for them. */
+  savedAt: number;
+  /** Asks for them again; resolves to why that failed, or null. */
+  reload: () => Promise<string | null>;
 }) {
   // Only days the shop was closed: barbers' own days off are changed on the Bookings tab.
   const closures = groupClosures(days ?? []);
-  const [error, setError] = useState<string | null>(null);
+  // What went wrong reopening, until the server next answers with the days as they are.
+  const [failed, setFailed] = useState<{ message: string; savedAt: number } | null>(null);
+  const error = failed?.savedAt === savedAt ? failed.message : null;
   const [busy, setBusy] = useState<string | null>(null);
 
   async function reopen(c: Closure) {
@@ -43,11 +48,13 @@ export function ClosedDaysCard({
     const { error } = await supabase.rpc('reopen_shop_days', { p_from: c.from, p_days: c.days });
     if (error) {
       setBusy(null);
-      return setError(errorMessage(error));
+      return setFailed({ message: errorMessage(error), savedAt });
     }
-    setError(null);
+    setFailed(null);
     // Busy until the days are asked for again, so the reopened ones go as the spinner stops.
-    await reload();
+    // If that fails they are still listed, so say why here and not only at the top of My shop.
+    const refresh = await reload();
+    if (refresh) setFailed({ message: refresh, savedAt });
     setBusy(null);
   }
 

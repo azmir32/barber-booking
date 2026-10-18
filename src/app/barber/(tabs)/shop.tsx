@@ -293,7 +293,7 @@ export default function MyShop() {
 
       <ReviewsCard reviews={cards.reviews} />
 
-      <ClosedDaysCard days={cards.closures} loadError={cards.error} reload={cards.reload} />
+      <ClosedDaysCard days={cards.closures} loadError={cards.error} savedAt={cards.savedAt} reload={cards.reload} />
 
       <View ref={linkRef}>
         <Card>

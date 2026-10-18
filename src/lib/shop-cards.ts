@@ -42,20 +42,26 @@ export function useShopCards(shop: Shop | null) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!shopId || !timeZone) return;
+  /** Asks the server again; resolves to why that failed, or null. */
+  const load = useCallback(async (): Promise<string | null> => {
+    if (!shopId || !timeZone) return null;
     setLoading(true);
     const week = periodDays('week', Date.now(), timeZone);
     const { data, error } = await supabase.rpc('shop_cards', { p_from: week.from, p_to: week.to });
     setLoading(false);
     // What was there stays; each card still opens its own screen, which says what went wrong.
-    if (error || !data) return setError(errorMessage(error));
+    if (error || !data) {
+      const message = errorMessage(error);
+      setError(message);
+      return message;
+    }
     const fresh: ShopCardNumbers = { ...(data as Omit<ShopCardNumbers, 'week'>), week: week.from };
     setNumbers(fresh);
     setError(null);
     setSavedAt(Date.now());
     setFromCache(false);
     if (uid) appCache.write(cacheKey(uid, 'shop-cards', shopId), fresh);
+    return null;
   }, [uid, shopId, timeZone]);
 
   // On focus, so cuts marked done, customers invited, replies sent and days closed show when coming back.
@@ -77,6 +83,8 @@ export function useShopCards(shop: Shop | null) {
     refreshing: fromCache && loading,
     /** When the numbers on screen are from, when asking again failed; null otherwise. */
     staleSince: error != null && savedAt ? savedAt : null,
+    /** When the server last answered (0 if never); a new answer has the days as they are now. */
+    savedAt,
     /** Why asking failed, when it did. */
     error,
     loading,
