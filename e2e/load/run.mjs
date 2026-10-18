@@ -166,29 +166,18 @@ const SCENARIOS = {
       must(c.rpc('shop_changes', { p_since: null, p_limit: 5 })),
     ]);
   },
-  // The owner opening the app on My shop: their shop, then its cards. Every
-  // seeded shop is live, so the "Get your shop ready" card's shop_setup, which
-  // the app sends only while a shop is getting ready, is sent each time here
-  // to measure it at its most.
+  // The owner opening the app on My shop: their shop, then every card's
+  // numbers in one call (the week's takings, customers, reviews and closed
+  // days). Every seeded shop is live, so the "Get your shop ready" card's
+  // shop_setup, which the app sends only while a shop is getting ready, is
+  // sent each time here to measure it at its most.
   'My shop': async () => {
     const i = pick(SHOPS);
     const c = owner(i);
-    const shop = await must(c.from('shops').select('*').eq('owner_id', idOf(`owner${i}`)).maybeSingle());
+    await must(c.from('shops').select('*').eq('owner_id', idOf(`owner${i}`)).maybeSingle());
     const week = thisWeek();
     return Promise.all([
-      must(c.rpc('shop_summary', { p_from: week.from, p_to: week.to })),
-      must(c.rpc('shop_customers', { p_search: null, p_limit: 1, p_offset: 0 })),
-      must(
-        c
-          .from('shops')
-          .select('rating_count, rating_sum, reviews(rating, comment, first_name)')
-          .eq('id', shop.data.id)
-          .not('reviews.comment', 'is', null)
-          .order('created_at', { referencedTable: 'reviews', ascending: false })
-          .limit(1, { referencedTable: 'reviews' })
-          .maybeSingle(),
-      ),
-      must(c.rpc('shop_closed_days', { p_shop_id: shop.data.id, p_from: localDate(0), p_to: localDate(60) })),
+      must(c.rpc('shop_cards', { p_from: week.from, p_to: week.to })),
       must(c.rpc('shop_setup')),
     ]);
   },

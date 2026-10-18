@@ -1259,6 +1259,29 @@ begin
   assert (select count(*) from shop_customers(null, 2, 18)) = 0, 'past the end';
   assert (select count(*) from shop_customers(null, 0, 0)) = 1 and (select count(*) from shop_customers(null, null, -5)) = 18,
     'odd page sizes are made sensible';
+
+  -- My shop's card gets the same two numbers without the list.
+  assert shop_cards(today, today) -> 'customers' = '{"total": 18, "due": 4}',
+    'the card counts everyone, and who is due: ' || (shop_cards(today, today) -> 'customers')::text;
+end $$;
+
+-- Moved bookings: Chong's next cut three days later, which leaves him booked,
+-- and Zaki's cut put down 20 days later than it was, so he isn't due yet.
+reset role;
+update bookings set starts_at = starts_at + interval '3 days', ends_at = ends_at + interval '3 days',
+                    customer_change = 'moved', customer_changed_at = now()
+where customer_id = '00000000-0000-0000-0000-0000000000c2' and status = 'confirmed';
+update bookings set starts_at = starts_at + interval '20 days', ends_at = ends_at + interval '20 days'
+where guest_name = 'Zaki';
+set role authenticated;
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  cards jsonb := shop_cards(today, today) -> 'customers';
+begin
+  assert cards = '{"total": 18, "due": 3}', 'moves count where they are now: ' || cards::text;
+  assert cards = (select jsonb_build_object('total', total_count, 'due', due_count) from shop_customers(null, 1, 0)),
+    'as the list says';
 end $$;
 
 -- A page is at most 50.
@@ -1272,6 +1295,9 @@ set role authenticated;
 do $$ begin
   assert (select count(*) from shop_customers(null, 1000, 0)) = 50, 'a page is capped at 50';
   assert (select total_count from shop_customers(null, 1, 0)) = 78, 'the count still has everyone';
+  assert shop_cards(current_date, current_date) -> 'customers'
+         = (select jsonb_build_object('total', total_count, 'due', due_count) from shop_customers(null, 1, 0)),
+    'and so does the card';
 end $$;
 
 -- Nobody else sees them: not a customer, another shop's owner, or a guest.
@@ -2465,6 +2491,240 @@ set role anon;
 do $$ begin
   perform shop_setup();
   raise exception 'guests must not call shop_setup';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
+
+-- My shop's cards ----------------------------------------------------------------
+-- shop_cards answers in one go what My shop asked five requests for. Checked
+-- against those on diaries drawn at random: online customers, walk-ins with
+-- numbers typed every way (an online customer's, one two accounts share, one
+-- on the profile of someone who only cancelled here), walk-ins with only a
+-- name or nothing, deleted accounts, blocked time, cancellations, no-shows,
+-- cuts never marked done, bookings to come, cuts moved, over two years of
+-- history, and reviews.
+begin;
+reset role;
+delete from bookings;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000d1', 'd1@test', '{"full_name":"Hakim","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000000d2', 'd2@test', '{"full_name":"Farid","phone":"012-778 9012"}'),
+  ('00000000-0000-0000-0000-0000000000d3', 'd3@test', '{"full_name":"Ah Seng","phone":"019-888 7777"}'),
+  ('00000000-0000-0000-0000-0000000000d4', 'd4@test', '{"full_name":"Mei Ling","phone":"019-888 7777"}'),
+  -- Hakim's number too, but he only goes to the other shop.
+  ('00000000-0000-0000-0000-0000000000d5', 'd5@test', '{"full_name":"Hakim Senior","phone":"+60 11-2233 4455"}'),
+  -- Only ever cancelled here, or came more than two years ago.
+  ('00000000-0000-0000-0000-0000000000d6', 'd6@test', '{"full_name":"Zaki","phone":"017-000 1111"}'),
+  ('00000000-0000-0000-0000-0000000000d7', 'd7@test', '{"full_name":"Old Timer","phone":"016-000 2222"}'),
+  ('00000000-0000-0000-0000-0000000000b3', 'owner3@test', '{"role":"barber","full_name":"Rahman"}');
+update profiles set phone = '013-222 3333' where id = '00000000-0000-0000-0000-0000000000c2';
+insert into shops (id, owner_id, name, slug) values
+  ('00000000-0000-0000-0000-00000000005c', '00000000-0000-0000-0000-0000000000b3', 'Kemas Cuts', 'cards-kemas-cuts');
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a8', '00000000-0000-0000-0000-00000000005c', 'Rahman');
+
+-- First, someone on each side of every line between due and not, each a
+-- walk-in with their own number, at their own time of day.
+insert into bookings (shop_id, barber_id, guest_name, guest_phone, service_name, price, starts_at, ends_at, status)
+select '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', p.name,
+       '012-000 ' || lpad(p.k::text, 4, '0'), 'Haircut', 25, x.at, x.at + interval '30 minutes', v.status::booking_status
+from (values
+  -- One visit: due from four weeks until 90 days.
+  (1, 'One27', array[-27], 'completed'), (2, 'One28', array[-28], 'completed'),
+  (3, 'One89', array[-89], 'completed'), (4, 'One90', array[-90], 'completed'),
+  -- Due once the usual gap has passed, to the day.
+  (5, 'Gap7', array[-20, -13], 'completed'), (6, 'Gap10', array[-30, -20, -10], 'completed'),
+  (7, 'Gap10 early', array[-29, -19, -9], 'completed'),
+  -- Gaps of 100 days: due until three gaps have gone by.
+  (8, 'Big', array[-400, -300, -200], 'completed'), (9, 'Big too long', array[-500, -400, -300], 'completed'),
+  (10, 'Big just', array[-499, -399, -299], 'completed'),
+  -- Gaps of 10 and 21: the median 15.5 rounds up to 16, so 15 days is early.
+  (11, 'Half', array[-46, -36, -15], 'completed'),
+  -- At least a week, however close the visits.
+  (12, 'Close', array[-10, -9], 'completed'), (13, 'Close early', array[-8, -6], 'completed'),
+  -- Booked again, a cut never marked done, only a no-show, and two cuts in one day.
+  (14, 'Unmarked', array[-30], 'confirmed'), (15, 'No-show', array[-30], 'no_show'),
+  (16, 'Same day', array[-35, -35], 'completed')
+) p(k, name, days, status)
+cross join lateral unnest(p.days) with ordinality d(day, i)
+cross join lateral (select p.status) v
+cross join lateral (
+  select ((now() at time zone 'Asia/Kuala_Lumpur')::date + d.day + time '06:00' + p.k * interval '30 minutes'
+          + (d.i - 1) * interval '6 hours') at time zone 'Asia/Kuala_Lumpur' as at
+) x;
+insert into bookings (shop_id, barber_id, guest_name, guest_phone, service_name, price, starts_at, ends_at, status)
+select '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2', 'Booked', '012-000 0017',
+       'Haircut', 25, at, at + interval '30 minutes', status::booking_status
+from (values ((now() at time zone 'Asia/Kuala_Lumpur')::date - 40, 'completed'),
+             ((now() at time zone 'Asia/Kuala_Lumpur')::date + 2, 'confirmed')) v(day, status),
+     lateral (select (day + time '12:00') at time zone 'Asia/Kuala_Lumpur' as at) x;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+begin
+  assert (select array_agg(name order by name) from shop_customers(null, 50, 0) where is_due)
+         = array['Big', 'Big just', 'Close', 'Gap10', 'Gap7', 'One28', 'One89', 'Same day', 'Unmarked'],
+    'unexpected due: ' || (select array_agg(name order by name) from shop_customers(null, 50, 0) where is_due)::text;
+  assert shop_cards(today, today) -> 'customers' = '{"total": 17, "due": 9}',
+    'the card agrees on every line: ' || (shop_cards(today, today) -> 'customers')::text;
+end $$;
+
+do $$
+declare
+  tz text := 'Asia/Kuala_Lumpur';
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  monday date := (now() at time zone 'Asia/Kuala_Lumpur')::date
+                 - (extract(isodow from (now() at time zone 'Asia/Kuala_Lumpur')::date)::int - 1);
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  kemas uuid := '00000000-0000-0000-0000-00000000005c';
+  accounts uuid[] := array['00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000c2',
+                           '00000000-0000-0000-0000-0000000000d1', '00000000-0000-0000-0000-0000000000d2',
+                           '00000000-0000-0000-0000-0000000000d3', '00000000-0000-0000-0000-0000000000d4',
+                           '00000000-0000-0000-0000-0000000000d6', '00000000-0000-0000-0000-0000000000d7'];
+  phones text[] := array['019-111 2222', '+60 19-111 2222', '0191112222', '013-222 3333', '+6013 222 3333',
+                         '011-2233 4455', '0112233 4455', '012-778 9012', '019-888 7777', '017-000 1111',
+                         '016 000 2222', '012 555 0000', '', null];
+  names text[] := array['Abu', 'Pak Abu', 'Kamal', 'Uncle Lim', 'uncle  LIM', 'Walk-in', ' walk-in', 'Deleted account'];
+  statuses text[] := array['completed', 'completed', 'completed', 'completed', 'confirmed', 'cancelled', 'no_show'];
+  periods date[] := array[monday, monday + 6, monday - 7, monday - 1, date_trunc('month', today)::date,
+                          (date_trunc('month', today) + interval '1 month - 1 day')::date, today - 92, today,
+                          today + 1, today + 7, today - 730, today - 724];
+  cards jsonb;
+  list jsonb;
+  seen_due int := 0;
+  seen_matched int := 0;
+begin
+  for seed in 1 .. 8 loop
+    perform setseed(seed / 10.0);
+    delete from bookings where shop_id in (shop, kemas);
+    -- One booking a week per chair, at a random day and time in it, from
+    -- 800 days ago to 40 days ahead, so none overlap.
+    insert into bookings (shop_id, barber_id, customer_id, guest_name, guest_phone, is_block, service_name, price,
+                          starts_at, ends_at, status)
+    select shop, case when r.n % 2 = 0 then '00000000-0000-0000-0000-0000000000a1'::uuid
+                      else '00000000-0000-0000-0000-0000000000a2'::uuid end,
+           case when r.kind < 0.5 then accounts[1 + floor(r.who * array_length(accounts, 1))::int] end,
+           case when r.kind >= 0.5 and r.kind < 0.93 then names[1 + floor(r.who * array_length(names, 1))::int] end,
+           case when r.kind >= 0.5 and r.kind < 0.93 then phones[1 + floor(r.phone * array_length(phones, 1))::int] end,
+           r.kind >= 0.93, 'Haircut', 10 + floor(r.price * 30), x.at, x.at + interval '30 minutes',
+           statuses[1 + floor(r.status * array_length(statuses, 1))::int]::booking_status
+    from (select n, random() as kind, random() as who, random() as phone, random() as price, random() as status,
+                 random() as day, random() as slot
+          from generate_series(0, 239) n) r
+    cross join lateral (
+      select ((today - 800 + (r.n / 2) * 7 + floor(r.day * 7)::int) + time '08:00'
+              + floor(r.slot * 24)::int * interval '30 minutes') at time zone tz as at
+    ) x;
+    -- Some moved within their week, by the customer or the shop.
+    update bookings b set starts_at = b.starts_at + d.shift, ends_at = b.ends_at + d.shift,
+                          customer_change = case when b.customer_id is not null then 'moved' end,
+                          customer_changed_at = case when b.customer_id is not null then now() end
+    from (select id, (1 + floor(random() * 3))::int * interval '1 hour' as shift
+          from bookings where shop_id = shop and random() < 0.2) d
+    where b.id = d.id;
+    -- The other shop has Hakim Senior and Ben.
+    insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at, status)
+    select kemas, '00000000-0000-0000-0000-0000000000a8', c, 'Haircut', 20, at, at + interval '30 minutes', 'completed'
+    from (values ('00000000-0000-0000-0000-0000000000d5'::uuid, now() - interval '30 days'),
+                 ('00000000-0000-0000-0000-0000000000c1'::uuid, now() - interval '31 days')) v(c, at);
+    -- About one in five finished cuts by an online customer is rated, half with a comment.
+    insert into reviews (booking_id, shop_id, barber_id, customer_id, rating, comment, first_name, created_at)
+    select id, shop_id, barber_id, customer_id, 1 + floor(random() * 5),
+           case when random() < 0.5 then 'Kemas ' || n end, 'Ben', ends_at + random() * interval '3 days'
+    from (select b.*, row_number() over () as n from bookings b
+          where b.shop_id = shop and b.status = 'completed' and b.customer_id is not null) b
+    where random() < 0.2;
+
+    perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', true);
+    cards := shop_cards(monday, monday + 6);
+    select jsonb_build_object('total', coalesce(max(total_count), 0), 'due', coalesce(max(due_count), 0))
+    into list from shop_customers(null, 1, 0);
+    assert cards -> 'customers' = list, format('seed %s: the card says %s, the list %s', seed, cards -> 'customers', list);
+    seen_due := seen_due + (list ->> 'due')::int;
+    -- Walk-ins under Hakim's number while he is a customer here: counted as him.
+    seen_matched := seen_matched + (
+      select count(*) from bookings g
+      where g.shop_id = shop and g.customer_id is null and not g.is_block and g.status <> 'cancelled'
+        and g.guest_phone in ('011-2233 4455', '0112233 4455') and g.starts_at >= now() - interval '2 years'
+        and exists (select 1 from bookings a
+                    where a.shop_id = shop and a.customer_id = '00000000-0000-0000-0000-0000000000d1'
+                      and not a.is_block and a.status <> 'cancelled' and a.starts_at >= now() - interval '2 years'));
+    for i in 1 .. array_length(periods, 1) / 2 loop
+      assert shop_cards(periods[2 * i - 1], periods[2 * i]) -> 'takings'
+             = shop_summary(periods[2 * i - 1], periods[2 * i]) -> 'totals',
+        format('seed %s: takings %s to %s', seed, periods[2 * i - 1], periods[2 * i]);
+    end loop;
+    assert cards -> 'reviews' = jsonb_build_object(
+        'count', (select count(*) from reviews where shop_id = shop),
+        'sum', (select coalesce(sum(rating), 0) from reviews where shop_id = shop),
+        'newest', (select jsonb_build_object('rating', rating, 'comment', comment, 'first_name', first_name)
+                   from reviews where shop_id = shop and comment is not null order by created_at desc limit 1)),
+      format('seed %s: reviews %s', seed, cards -> 'reviews');
+
+    perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b3', true);
+    assert shop_cards(monday, monday + 6) -> 'customers' = '{"total": 2, "due": 2}',
+      'the other shop counts its own two: ' || (shop_cards(monday, monday + 6) -> 'customers')::text;
+  end loop;
+  assert seen_due > 0 and seen_matched > 0, 'the diaries had people due, and walk-ins matched to an account';
+
+  -- Days the shop is closed, from today to 60 days ahead, as Holidays lists them.
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', true);
+  assert shop_cards(monday, monday + 6) -> 'closures' = '[]', 'none yet';
+  insert into shop_closures (shop_id, day, reason) values
+    (shop, today - 1, 'Yesterday'), (shop, today, null), (shop, today + 30, 'Hari Raya'), (shop, today + 31, 'Hari Raya'),
+    (shop, today + 60, 'Last'), (shop, today + 61, 'Too far'), (kemas, today + 2, 'Another shop');
+  cards := shop_cards(monday, monday + 6);
+  assert cards -> 'closures' = jsonb_build_array(
+      jsonb_build_object('day', today, 'reason', null), jsonb_build_object('day', today + 30, 'reason', 'Hari Raya'),
+      jsonb_build_object('day', today + 31, 'reason', 'Hari Raya'), jsonb_build_object('day', today + 60, 'reason', 'Last')),
+    'closed days ahead with the reason: ' || (cards -> 'closures')::text;
+  assert cards -> 'closures' = (select jsonb_agg(jsonb_build_object('day', day, 'reason', reason) order by day)
+                                from shop_closed_days(shop, today, today + 60) where is_closure),
+    'as shop_closed_days gives them';
+  -- With no comments, there is no newest.
+  update reviews set comment = null where shop_id = shop;
+  assert shop_cards(monday, monday + 6) #> '{reviews,newest}' = 'null', 'no comment to show';
+end $$;
+
+-- Only the owner, for their own shop, and the counts only through shop_cards.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  begin
+    perform shop_cards(current_date - 93, current_date);
+    raise exception '94 days should be refused';
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'Pick a period of up to 93 days.', 'unexpected message: ' || sqlerrm;
+  end;
+  begin
+    perform shop_cards(null, current_date);
+    raise exception 'a period without a start should be refused';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform shop_customer_counts('00000000-0000-0000-0000-00000000005a');
+    raise exception 'owners must not call shop_customer_counts';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform shop_cards(current_date, current_date + 6);
+  raise exception 'customers have no shop cards';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'Set up your shop first.', 'unexpected message: ' || sqlerrm;
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform shop_cards(current_date, current_date + 6);
+  raise exception 'guests must not call shop_cards';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform shop_customer_counts('00000000-0000-0000-0000-00000000005a');
+  raise exception 'guests must not call shop_customer_counts';
 exception when insufficient_privilege then null;
 end $$;
 rollback;
