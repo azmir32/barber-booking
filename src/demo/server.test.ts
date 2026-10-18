@@ -2038,7 +2038,9 @@ test('My shop’s cards come in one answer, the same numbers as the screens behi
   ];
   for (const [from, to] of periods) assert.deepEqual(await cards(from, to), await before(from, to));
   const first = await cards(week.from, week.to);
-  assert.ok(first.takings.done > 0 && first.reviews.newest != null);
+  // Last week, as on a Monday this week has no cuts done yet.
+  assert.ok((await cards(addDays(week.from, -7), addDays(week.from, -1))).takings.done > 0);
+  assert.ok(first.reviews.newest != null);
   assert.deepEqual(first.customers.due, 4);
   assert.deepEqual(first.closures, []);
 
