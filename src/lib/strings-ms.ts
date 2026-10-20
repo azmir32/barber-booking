@@ -1063,4 +1063,60 @@ export const ms: Record<string, string> = {
   'Remove intro': 'Buang pengenalan',
   'Intro saved.': 'Pengenalan disimpan.',
   'Intro removed.': 'Pengenalan dibuang.',
+
+  // Round 12, the waiting list: a customer on a full day asks to hear if a
+  // time frees up, and the shop WhatsApps them one (shop/[slug].tsx,
+  // customer/bookings.tsx, barber/(tabs)/index.tsx, sign-up.tsx, sign-in.tsx,
+  // lib/waitlist.ts, lib/news.ts)
+  '{service}, any barber': '{service}, mana-mana barber',
+  'Hi {who}, a {time} {service} with {barber} just opened on {day} at {shop}. Want it? Reply here or book at {link}':
+    'Hai {who}, slot {service} bersama {barber} jam {time} pada {day} baru kosong di {shop}. Nak ambil? Balas di sini atau tempah di {link}',
+  'Hi {who}, this is {shop} about the {service} you asked for on {day}. Reply here and we’ll sort out a time.':
+    'Hai {who}, ini {shop} berkenaan {service} yang anda minta pada {day}. Balas di sini dan kami akan aturkan masanya.',
+  'Offered {time}': 'Ditawarkan {time}',
+  'Offered {when}': 'Ditawarkan {when}',
+  'Asked just now': 'Diminta baru tadi',
+  'Asked {ago}': 'Diminta {ago}',
+  '1 person is waiting for a time that day': '1 orang sedang menunggu slot pada hari itu',
+  '{count} people are waiting for a time that day': '{count} orang sedang menunggu slot pada hari itu',
+  // The shop page, on a day with nothing free.
+  'If someone cancels, the shop can WhatsApp you. They decide who gets the time.':
+    'Jika ada yang batal, kedai boleh WhatsApp anda. Kedai yang menentukan siapa dapat slot itu.',
+  'Tell the shop I’d take a cancellation': 'Beritahu kedai saya mahu slot yang dibatalkan',
+  'You’re on the waiting list for {day}': 'Anda dalam senarai menunggu untuk {day}',
+  '{service}. If a time frees up, the shop may WhatsApp you.':
+    '{service}. Jika ada slot kosong, kedai mungkin WhatsApp anda.',
+  Leave: 'Keluar',
+  'Leave the waiting list for {day}': 'Keluar daripada senarai menunggu untuk {day}',
+  'Leave the waiting list?': 'Keluar daripada senarai menunggu?',
+  'If you join again, you go to the end of it.': 'Jika anda sertai semula, anda akan berada di hujung senarai.',
+  // Signing up or in to join it.
+  'Waiting list': 'Senarai menunggu',
+  'Create an account to join the waiting list.': 'Daftar akaun untuk menyertai senarai menunggu.',
+  'Sign in to join the waiting list.': 'Log masuk untuk menyertai senarai menunggu.',
+  'Not on the waiting list yet. Once your email is confirmed, sign in to join it.':
+    'Belum dalam senarai menunggu. Selepas e-mel anda disahkan, log masuk untuk menyertainya.',
+  // My bookings.
+  'Waiting for a time on {day}': 'Menunggu slot pada {day}',
+  'If a time frees up, the shop may WhatsApp you. They decide who gets it.':
+    'Jika ada slot kosong, kedai mungkin WhatsApp anda. Kedai yang menentukan siapa dapat slot itu.',
+  'See free times': 'Lihat masa kosong',
+  'See free times on {day} at {shop}': 'Lihat masa kosong pada {day} di {shop}',
+  // The barber's day.
+  'Waiting for a time ({count})': 'Menunggu slot ({count})',
+  '{time} with {barber} is free': '{barber} kosong jam {time}',
+  'Offer {name} {time} on WhatsApp': 'Tawarkan {name} jam {time} di WhatsApp',
+  'Remove {name} from the waiting list': 'Buang {name} daripada senarai menunggu',
+  'Remove {name} from the waiting list?': 'Buang {name} daripada senarai menunggu?',
+  'They aren’t told. WhatsApp them first if you want to.':
+    'Mereka tidak dimaklumkan. WhatsApp mereka dahulu jika mahu.',
+  // The database's own words.
+  'Please sign in to join the waiting list.': 'Sila log masuk untuk menyertai senarai menunggu.',
+  'Pick a day from today up to 60 days ahead.': 'Pilih hari dari hari ini hingga 60 hari ke depan.',
+  "The shop isn't taking bookings that day.": 'Kedai tidak menerima tempahan pada hari itu.',
+  'You already have a booking here that day.': 'Anda sudah ada tempahan di sini pada hari itu.',
+  "You're already on the waiting list for that day.": 'Anda sudah berada dalam senarai menunggu untuk hari itu.',
+  'You can be on 3 waiting lists at a time. Leave one to join another.':
+    'Anda boleh berada dalam 3 senarai menunggu pada satu masa. Keluar daripada satu untuk menyertai yang lain.',
+  "They're no longer on the waiting list.": 'Mereka sudah tiada dalam senarai menunggu.',
 };

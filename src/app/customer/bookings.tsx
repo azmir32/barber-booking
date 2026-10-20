@@ -22,6 +22,7 @@ import { canRate, rateUntil, starsLabel, type MyReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay, formatPrice, formatTime, noBreak } from '@/lib/time';
 import type { Booking } from '@/lib/types';
+import { openRequests, requestService, type MyWaiting } from '@/lib/waitlist';
 
 /** One of the customer's bookings, from my_bookings(): its shop and barber come even when the shop is paused. */
 type MyBooking = Booking & {
@@ -62,6 +63,10 @@ function MyBookings() {
   // Last visit's list shows at once, while the server is asked again.
   const [kept] = useState(() => (session ? appCache.peek<MyBooking[]>(cacheKey(session.user.id, 'my-bookings')) : null));
   const [bookings, setBookings] = useState<MyBooking[]>(kept?.data ?? []);
+  // The days they asked a shop to tell them if a time frees up, kept and asked for alongside.
+  const [waits, setWaits] = useState<MyWaiting[]>(
+    () => (session ? appCache.peek<MyWaiting[]>(cacheKey(session.user.id, 'my-waitlist'))?.data : null) ?? [],
+  );
   // Set once there is a list, so a load that failed never reads as "No bookings yet".
   const [loaded, setLoaded] = useState(Boolean(kept));
   // When the server gave the list on screen, and whether that was before this visit.
@@ -84,14 +89,16 @@ function MyBookings() {
   const load = useCallback(async () => {
     if (!session) return setLoading(false);
     setLoading(true);
-    const { data, error } = await supabase.rpc('my_bookings');
+    const [{ data, error }, waitlist] = await Promise.all([supabase.rpc('my_bookings'), supabase.rpc('my_waitlist')]);
     setLoading(false);
     // A refresh that fails keeps the bookings already on screen.
-    if (error) return setRefreshError(errorMessage(error));
+    if (error || waitlist.error) return setRefreshError(errorMessage(error ?? waitlist.error));
     const list = (data ?? []) as MyBooking[];
+    const waiting = (waitlist.data ?? []) as MyWaiting[];
     setRefreshError(null);
     setError(null);
     setBookings(list);
+    setWaits(waiting);
     setJustRated(new Set());
     setSavedId(null);
     setEditingId(null);
@@ -99,6 +106,7 @@ function MyBookings() {
     setSavedAt(Date.now());
     setFromCache(false);
     appCache.write(cacheKey(session.user.id, 'my-bookings'), list);
+    appCache.write(cacheKey(session.user.id, 'my-waitlist'), waiting);
   }, [session]);
 
   useFocusEffect(
@@ -135,6 +143,8 @@ function MyBookings() {
     .filter((b) => b.status === 'cancelled' && new Date(b.starts_at).getTime() > now)
     .reverse();
   const past = bookings.filter((b) => !upcoming.includes(b) && !cancelledAhead.includes(b));
+  // Gone once the day has passed or they have booked that day at that shop, even on last visit's list.
+  const waiting = openRequests(waits, bookings, now);
   // Done in the last 14 days and not rated yet: asked about on their own, above the rest.
   const toRate = past.filter((b) => canRate(b, now) && (!b.review || justRated.has(b.id)));
   const earlier = past.filter((b) => !toRate.includes(b));
@@ -170,6 +180,35 @@ function MyBookings() {
       pathname: '/shop/[slug]',
       params: { slug: b.shops!.slug, name: b.shops!.name, move: b.id, service: b.service_id!, barber: b.barber_id },
     });
+  }
+
+  // The shop page on that day, with what they asked for, to see whether a time has freed up.
+  function seeTimes(w: MyWaiting) {
+    router.push({
+      pathname: '/shop/[slug]',
+      params: {
+        slug: w.shop.slug,
+        name: w.shop.name,
+        service: w.service_id,
+        day: w.day,
+        ...(w.barber_id ? { barber: w.barber_id } : {}),
+      },
+    });
+  }
+
+  async function leave(w: MyWaiting) {
+    const ok = await confirmAction(
+      t('Leave the waiting list?'),
+      t('If you join again, you go to the end of it.'),
+      t('Leave'),
+    );
+    if (!ok) return;
+    const { error } = await supabase.rpc('leave_waitlist', { p_id: w.id });
+    if (error) return setError(errorMessage(error));
+    setError(null);
+    const list = waits.filter((x) => x.id !== w.id);
+    setWaits(list);
+    appCache.write(cacheKey(session!.user.id, 'my-waitlist'), list);
   }
 
   function rated(b: MyBooking, review: MyReview) {
@@ -275,10 +314,43 @@ function MyBookings() {
         ) : (
           <BookingsSkeleton />
         )
-      ) : bookings.length === 0 ? (
+      ) : bookings.length === 0 && waiting.length === 0 ? (
         <Empty title={t('No bookings yet')} body={t('Find a barber and grab a slot.')}>
           <Button title={t('Find a barber')} onPress={() => router.push('/customer')} />
         </Empty>
+      ) : null}
+
+      {waiting.length ? (
+        <Section title={t('Waiting list')}>
+          {waiting.map((w) => {
+            const day = formatDay(`${w.day}T00:00:00Z`, 'UTC');
+            return (
+              <Card key={w.id}>
+                <T variant="heading">{t('Waiting for a time on {day}', { day: noBreak(day) })}</T>
+                <T>{requestService(w)}</T>
+                <T variant="muted">{w.shop.name}</T>
+                <T variant="small">{t('If a time frees up, the shop may WhatsApp you. They decide who gets it.')}</T>
+                <View style={styles.actions}>
+                  <Button
+                    title={t('See free times')}
+                    variant="secondary"
+                    style={styles.action}
+                    accessibilityLabel={t('See free times on {day} at {shop}', { day, shop: w.shop.name })}
+                    onPress={() => seeTimes(w)}
+                  />
+                  <Button
+                    title={t('Leave')}
+                    variant="secondary"
+                    tone="danger"
+                    style={styles.action}
+                    accessibilityLabel={t('Leave the waiting list for {day}', { day })}
+                    onPress={() => leave(w)}
+                  />
+                </View>
+              </Card>
+            );
+          })}
+        </Section>
       ) : null}
 
       {upcoming.length ? (

@@ -25,6 +25,7 @@ import {
   StaleNote,
   T,
 } from '@/components/ui';
+import { bookingLink } from '@/constants/brand';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
@@ -55,6 +56,7 @@ import {
   upcomingDays,
 } from '@/lib/time';
 import type { Barber, Booking, BookingStatus, WorkingHours } from '@/lib/types';
+import { freeTimeFor, offerMessage, requestService, requestStatus, type ShopWaiting } from '@/lib/waitlist';
 
 type ShopBooking = Booking & {
   barbers: { name: string } | null;
@@ -83,7 +85,12 @@ type DayAnswer = {
   barbers: BarberWithHours[] | null;
   closed: ClosedDay[] | null;
   tomorrow: ToRemind[] | null;
+  /** Who asked to hear if a time frees up, oldest first; missing from a day kept by an older version. */
+  waiting?: ShopWaiting[] | null;
 };
+
+/** A request on the day's waiting list, with the earliest free time that fits it, if any. */
+type WaitingRow = { request: ShopWaiting; free: { barber: BarberWithHours; startsAt: string } | null };
 
 /**
  * Buttons that change a customer's booking, while the day on screen is last
@@ -169,6 +176,8 @@ export default function BarberBookings() {
   // and days every barber has off.
   const [closures, setClosures] = useState<Record<string, string | null>>({});
   const [allOff, setAllOff] = useState<Set<string>>(() => new Set());
+  // The day's waiting list, for the day it belongs to.
+  const [waiting, setWaiting] = useState<{ day: string; list: ShopWaiting[] } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const latest = useRef(0);
   const shopId = shop?.id;
@@ -225,6 +234,9 @@ export default function BarberBookings() {
       setAllOff(new Set(a.closed.filter((d) => !d.is_closure).map((d) => d.day)));
     }
     if (a.tomorrow) setTomorrow(a.tomorrow);
+    // A request that failed keeps the list already shown for this day, never another day's.
+    if (a.waiting) setWaiting({ day: forDay, list: a.waiting });
+    else setWaiting((w) => (w?.day === forDay ? w : null));
   }, []);
 
   // A day kept from before (last visit, or earlier on this one) shows at once while it is asked for again.
@@ -250,7 +262,7 @@ export default function BarberBookings() {
     const next = day === today ? dayBounds(addDays(today, 1), tz) : null;
     const first = days[0].date;
     const last = days[days.length - 1].date;
-    const [list, active, team, closed, unreminded] = await Promise.all([
+    const [list, active, team, closed, unreminded, waitlist] = await Promise.all([
       supabase
         .from('bookings')
         .select('*, barbers(name), customer:profiles!bookings_customer_id_fkey(full_name, phone)')
@@ -279,6 +291,8 @@ export default function BarberBookings() {
             .gte('starts_at', next.start.toISOString())
             .lt('starts_at', next.end.toISOString())
         : null,
+      // Who is waiting for a time this day; nobody is, for a day gone by.
+      day >= today ? supabase.rpc('shop_waitlist', { p_day: day }) : null,
     ]);
     if (request !== latest.current) return;
     setAsking(false);
@@ -293,6 +307,7 @@ export default function BarberBookings() {
       closed: closed.error ? null : ((closed.data ?? []) as ClosedDay[]),
       // The client can't tell that the customer is one profile rather than a list.
       tomorrow: !unreminded ? [] : unreminded.error ? null : ((unreminded.data ?? []) as unknown as ToRemind[]),
+      waiting: !waitlist ? [] : waitlist.error ? null : ((waitlist.data ?? []) as ShopWaiting[]),
     };
     setRefreshError(null);
     setError(null);
@@ -493,6 +508,45 @@ export default function BarberBookings() {
     }
   };
 
+  /**
+   * WhatsApps someone waiting: the earliest free time that fits, or, with none (or while the day on
+   * screen is last visit's), a message to find one together. Then every phone in the shop sees it was offered.
+   */
+  const offer = async ({ request: w, free }: WaitingRow) => {
+    if (!w.phone) return;
+    openWhatsApp(
+      w.phone,
+      offerMessage({
+        request: w,
+        shop: shop.name,
+        day,
+        link: bookingLink(shop.slug),
+        free: free && { barberName: free.barber.name, startsAt: free.startsAt },
+        timeZone: tz,
+      }),
+    );
+    const { data, error: failed } = await supabase.rpc('mark_waitlist_offered', { p_id: w.id });
+    if (failed) {
+      loadRef.current().then(() => setError(errorMessage(failed)));
+      return;
+    }
+    const at = (data as ShopWaiting).offered_at;
+    setWaiting((cur) => cur && { ...cur, list: cur.list.map((x) => (x.id === w.id ? { ...x, offered_at: at } : x)) });
+  };
+
+  const removeWaiting = async (w: ShopWaiting) => {
+    const name = w.name || t('Customer');
+    const ok = await confirmAction(
+      t('Remove {name} from the waiting list?', { name }),
+      t('They aren’t told. WhatsApp them first if you want to.'),
+      t('Remove'),
+    );
+    if (!ok) return;
+    const { error: failed } = await supabase.rpc('leave_waitlist', { p_id: w.id });
+    if (failed) return setError(errorMessage(failed));
+    setWaiting((cur) => cur && { ...cur, list: cur.list.filter((x) => x.id !== w.id) });
+  };
+
   /** Shop closed this day by mistake, or plans changed: open it again for bookings. */
   const reopen = async () => {
     const range = dateRange(day, day);
@@ -591,6 +645,16 @@ export default function BarberBookings() {
     t('{money} expected', { money: total(counted) }),
     ...(completed.length ? [t('{money} done', { money: total(completed) })] : []),
   ].join(' · ');
+
+  // Who is waiting for a time, for the barber shown (or anyone), oldest first. The free time that fits
+  // each is only worked out from the server's own answer for the day, on a day the shop is open.
+  const freshDay = freshFor === day && loaded && !closure;
+  const waitingRows: WaitingRow[] =
+    loaded && waiting?.day === day
+      ? waiting.list
+          .filter((w) => !filterId || w.barber_id == null || w.barber_id === filterId)
+          .map((w) => ({ request: w, free: freshDay ? freeTimeFor(w, day, barbers, bookings, now, tz) : null }))
+      : [];
 
   // Nothing can be added to a day the shop is closed; reopening it comes first.
   const canAdd = !closure;
@@ -869,6 +933,11 @@ export default function BarberBookings() {
         <View onLayout={(e) => setAddButtonBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}>
           <Button title={t('+ Add booking or block time')} variant="secondary" onPress={addBooking} />
         </View>
+      ) : null}
+
+      {/* Above the list or the chairs, so a time that frees up can go to someone waiting. */}
+      {waitingRows.length ? (
+        <WaitingCard rows={waitingRows} tz={tz} now={now} onOffer={offer} onRemove={removeWaiting} />
       ) : null}
 
       {!loaded ? (
@@ -1279,6 +1348,85 @@ function NewsCard({
         ) : null}
         <Button title={t('Got it')} variant="secondary" onPress={onDone} />
       </View>
+    </Card>
+  );
+}
+
+/**
+ * Customers who asked to hear if a time frees up this day, oldest first: what
+ * they want, whether someone in the shop has offered them a time, and a time
+ * that fits now, if one has freed up. WhatsApp offers it; the shop decides who
+ * gets it.
+ */
+function WaitingCard({
+  rows,
+  tz,
+  now,
+  onOffer,
+  onRemove,
+}: {
+  rows: WaitingRow[];
+  tz: string;
+  now: number;
+  onOffer: (row: WaitingRow) => void;
+  onRemove: (w: ShopWaiting) => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Card style={styles.compactCard}>
+      <T variant="heading" style={styles.newsHeading}>
+        {t('Waiting for a time ({count})', { count: rows.length })}
+      </T>
+      {rows.map((row) => {
+        const { request: w, free } = row;
+        const name = w.name || t('Customer');
+        const status = requestStatus(w, now, tz);
+        return (
+          <View key={w.id} style={styles.compactRow}>
+            <Ionicons name="hourglass-outline" size={22} color={theme.textSecondary} />
+            <View style={styles.info}>
+              <T variant="label" numberOfLines={1}>
+                {name}
+              </T>
+              <T variant="small">{requestService(w)}</T>
+              {w.offered_at ? (
+                <T variant="small" style={{ color: theme.success }}>
+                  {`✓ ${status}`}
+                </T>
+              ) : (
+                <T variant="small">{status}</T>
+              )}
+              {free ? (
+                <T variant="small" style={{ color: theme.success }}>
+                  {t('{time} with {barber} is free', {
+                    time: noBreak(formatTime(free.startsAt, tz)),
+                    barber: free.barber.name,
+                  })}
+                </T>
+              ) : null}
+            </View>
+            {w.phone ? (
+              <IconButton
+                icon="logo-whatsapp"
+                label={
+                  free
+                    ? t('Offer {name} {time} on WhatsApp', { name, time: formatTime(free.startsAt, tz) })
+                    : t('WhatsApp {name}', { name })
+                }
+                variant="ghost"
+                color={theme.success}
+                onPress={() => onOffer(row)}
+              />
+            ) : null}
+            <IconButton
+              icon="trash-outline"
+              label={t('Remove {name} from the waiting list', { name })}
+              variant="ghost"
+              onPress={() => onRemove(w)}
+            />
+          </View>
+        );
+      })}
     </Card>
   );
 }

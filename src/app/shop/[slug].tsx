@@ -12,9 +12,12 @@ import { Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
 import { addToCalendar } from '@/lib/add-to-calendar';
+import { appCache } from '@/lib/app-cache';
 import { useAuth } from '@/lib/auth';
 import { barberAverage, barberLabel } from '@/lib/barbers';
+import { cacheKey } from '@/lib/cache';
 import { bookingEvent } from '@/lib/calendar';
+import { confirmAction } from '@/lib/confirm';
 import { kmBetween, shopPoint } from '@/lib/distance';
 import { t } from '@/lib/lang';
 import { directionsUrl } from '@/lib/maps';
@@ -24,6 +27,7 @@ import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
 import { ratingAverage } from '@/lib/reviews';
 import { shopPreview } from '@/lib/shop-preview';
+import { couldFreeUp, requestService, type MyWaiting } from '@/lib/waitlist';
 import {
   formatClockOnly,
   formatDay,
@@ -58,8 +62,15 @@ const orList = (names: string[]) =>
 
 export default function ShopPage() {
   // `name` titles the header while the shop loads; "Book again" passes `service` and `barber`,
-  // and "Change time" adds `move`, the booking to move.
-  const params = useLocalSearchParams<{ slug: string; name?: string; service?: string; barber?: string; move?: string }>();
+  // "Change time" adds `move`, the booking to move, and a day waited for on My bookings its `day`.
+  const params = useLocalSearchParams<{
+    slug: string;
+    name?: string;
+    service?: string;
+    barber?: string;
+    move?: string;
+    day?: string;
+  }>();
   const { slug } = params;
   const { session, profile, loading: authLoading } = useAuth();
   // Signed out, a move link is just the booking page. The user only counts with a move
@@ -147,6 +158,20 @@ export default function ShopPage() {
   const [moved, setMoved] = useState<Booking | null>(null);
   // Set while a guest signs up to book; once they are back and signed in, the booking goes through.
   const pendingBook = useRef(false);
+  // The same for joining the waiting list.
+  const pendingJoin = useRef(false);
+  // The customer's own waiting list, as My bookings last had it, then asked for once a day here
+  // shows nothing free: never on an ordinary visit. Requests joined here stay when that answer comes.
+  const uid = session?.user.id;
+  const [waits, setWaits] = useState<{ uid: string; list: MyWaiting[] } | null>(() => {
+    const kept = uid ? appCache.peek<MyWaiting[]>(cacheKey(uid, 'my-waitlist')) : null;
+    return uid && kept ? { uid, list: kept.data } : null;
+  });
+  const myWaits = waits && waits.uid === uid ? waits.list : null;
+  const askedWaits = useRef<string | null>(null);
+  const joinedHere = useRef(new Set<string>());
+  const [waitBusy, setWaitBusy] = useState(false);
+  const [waitError, setWaitError] = useState<string | null>(null);
 
   const scrollRef = useRef<ScrollView>(null);
   const noteRef = useRef<TextInput>(null);
@@ -207,6 +232,10 @@ export default function ShopPage() {
         setServiceId(params.service!);
         scrollAfterLayout.current = 'time';
       }
+      // A day waited for, to see whether a time has freed up.
+      if (params.day && upcomingDays(DAYS_AHEAD, shopRow.time_zone).some((d) => d.date === params.day)) {
+        setPickedDay(params.day);
+      }
       // Change time: only the customer's own upcoming booking here, for a service the shop still offers.
       const move = (mv?.data ?? null) as Booking | null;
       const canMove = Boolean(
@@ -230,7 +259,7 @@ export default function ShopPage() {
       }
       setLoading(false);
     })();
-  }, [slug, reload, params.service, params.barber, params.move, moveUser, waitForAuth]);
+  }, [slug, reload, params.service, params.barber, params.move, params.day, moveUser, waitForAuth]);
 
   const movingId = moving?.id ?? null;
   const slotsKey = serviceId && day ? `${serviceId}|${day}|${barberId ?? 'any'}|${movingId}|${slotsVersion}` : null;
@@ -285,7 +314,9 @@ export default function ShopPage() {
   const pickTime = (time: string | null) => {
     setStartsAt(time);
     setBookError(null);
+    setWaitError(null);
     pendingBook.current = false;
+    pendingJoin.current = false;
     scrollAfterLayout.current = null;
   };
   const pickService = (id: string) => {
@@ -314,6 +345,29 @@ export default function ShopPage() {
       : null;
   const isCurrent = (time: string) => Date.parse(time) === currentAt;
   const freeCount = times.filter((time) => !isCurrent(time)).length;
+
+  /** The customer's waiting list, kept for My bookings too. */
+  const loadWaits = useCallback(async (user: string) => {
+    askedWaits.current = user;
+    const { data, error } = await supabase.rpc('my_waitlist');
+    if (error) {
+      askedWaits.current = null;
+      return;
+    }
+    const list = (data ?? []) as MyWaiting[];
+    setWaits((cur) => ({
+      uid: user,
+      list: [
+        ...list,
+        ...(cur?.uid === user ? cur.list.filter((w) => joinedHere.current.has(w.id) && !list.some((x) => x.id === w.id)) : []),
+      ],
+    }));
+    appCache.write(cacheKey(user, 'my-waitlist'), list);
+  }, []);
+  const dayFull = Boolean(serviceId && day && !movingId && slotsKey === slotsFor && !slotsError && freeCount === 0);
+  useEffect(() => {
+    if (dayFull && uid && askedWaits.current !== uid) loadWaits(uid);
+  }, [dayFull, uid, loadWaits]);
   const timeGroups = useMemo(() => groupByPartOfDay(times, shop?.time_zone), [times, shop?.time_zone]);
   // One part of the day at a time keeps the grid short. The customer's choice
   // sticks across days while that part still has free times.
@@ -380,6 +434,74 @@ export default function ShopPage() {
     setMoved(data as Booking);
   }
 
+  /** On a full day: ask the shop to say if a time frees up. A guest signs up first, keeping the picks. */
+  async function joinWaitlist() {
+    if (!service || !day || !shop) return;
+    if (!session) {
+      pendingJoin.current = true;
+      const barberName = barbers.find((b) => b.id === barberId)?.name;
+      const what = barberName
+        ? t('{service} with {barber} at {shop}', { service: service.name, barber: barberName, shop: shop.name })
+        : t('{service} at {shop}', { service: service.name, shop: shop.name });
+      router.push({
+        pathname: '/sign-up',
+        params: { next: `/shop/${slug}`, role: 'customer', wait: '1', summary: `${what} · ${noBreak(dayText(day))}` },
+      });
+      return;
+    }
+    const user = session.user.id;
+    setWaitBusy(true);
+    setWaitError(null);
+    const { data, error } = await supabase.rpc('join_waitlist', {
+      p_service_id: service.id,
+      p_day: day,
+      p_barber_id: barberId,
+    });
+    setWaitBusy(false);
+    if (error) {
+      setWaitError(errorMessage(error));
+      // Already on it from another phone, say: the list then shows it.
+      loadWaits(user);
+      return;
+    }
+    const row = data as { id: string; created_at: string };
+    const mine: MyWaiting = {
+      id: row.id,
+      shop_id: shop.id,
+      day,
+      service_id: service.id,
+      service_name: service.name,
+      barber_id: barberId,
+      barber_name: barbers.find((b) => b.id === barberId)?.name ?? null,
+      created_at: row.created_at,
+      shop: { name: shop.name, slug: shop.slug, time_zone: shop.time_zone },
+    };
+    joinedHere.current.add(mine.id);
+    const list = [...(myWaits ?? []).filter((w) => w.id !== mine.id), mine];
+    setWaits({ uid: user, list });
+    appCache.write(cacheKey(user, 'my-waitlist'), list);
+  }
+
+  async function leaveWaitlist(w: MyWaiting) {
+    if (!session) return;
+    const ok = await confirmAction(
+      t('Leave the waiting list?'),
+      t('If you join again, you go to the end of it.'),
+      t('Leave'),
+    );
+    if (!ok) return;
+    const user = session.user.id;
+    setWaitBusy(true);
+    setWaitError(null);
+    const { error } = await supabase.rpc('leave_waitlist', { p_id: w.id });
+    setWaitBusy(false);
+    if (error) return setWaitError(errorMessage(error));
+    joinedHere.current.delete(w.id);
+    const list = (myWaits ?? []).filter((x) => x.id !== w.id);
+    setWaits({ uid: user, list });
+    appCache.write(cacheKey(user, 'my-waitlist'), list);
+  }
+
   // The time was most likely just taken, so drop it and fetch the free times again.
   function failed(error: unknown) {
     setBookError(errorMessage(error));
@@ -388,6 +510,11 @@ export default function ShopPage() {
   }
 
   const bookAfterSignUp = useEffectEvent(() => {
+    if (pendingJoin.current) {
+      pendingJoin.current = false;
+      joinWaitlist();
+      return;
+    }
     if (!pendingBook.current || !startsAt) return;
     pendingBook.current = false;
     book();
@@ -395,10 +522,13 @@ export default function ShopPage() {
   useEffect(() => {
     if (session) bookAfterSignUp();
   }, [session]);
-  // Back here still signed out means they left sign-up, so a later sign-in must not book on its own.
+  // Back here still signed out means they left sign-up, so a later sign-in must not book (or join) on its own.
   useFocusEffect(
     useCallback(() => {
-      if (!session) pendingBook.current = false;
+      if (!session) {
+        pendingBook.current = false;
+        pendingJoin.current = false;
+      }
     }, [session]),
   );
 
@@ -692,6 +822,12 @@ export default function ShopPage() {
     ) : bookError ? (
       <ErrorText message={bookError} />
     ) : null;
+  // On a full day, under "No free times": the customer can ask to hear if a time frees up, while one
+  // still could. The request is per day at the shop, so the one there shows whatever its service.
+  const canWait =
+    Boolean(service && day && !moving && !closedDays.has(day!)) &&
+    couldFreeUp(day!, barbers, barberId, service!.duration_min, now, tz);
+  const waitingHere = day ? myWaits?.find((w) => w.shop_id === shop.id && w.day === day) : undefined;
   // A move skips the service step, so the steps after it come up one.
   const timeTitle = moving
     ? barbers.length > 1 ? t('2. Pick a new time') : t('1. Pick a new time')
@@ -814,6 +950,43 @@ export default function ShopPage() {
                           ? t('No free times this day. Try another day or any barber.')
                           : t('No free times this day. Try another day.')}
                       </T>
+                      {canWait ? (
+                        <Card>
+                          {waitingHere ? (
+                            <>
+                              <T variant="label">
+                                {t('You’re on the waiting list for {day}', { day: noBreak(dayText(waitingHere.day)) })}
+                              </T>
+                              <T variant="small">
+                                {t('{service}. If a time frees up, the shop may WhatsApp you.', {
+                                  service: requestService(waitingHere),
+                                })}
+                              </T>
+                              <Button
+                                title={t('Leave')}
+                                accessibilityLabel={t('Leave the waiting list for {day}', { day: dayText(waitingHere.day) })}
+                                variant="secondary"
+                                tone="danger"
+                                loading={waitBusy}
+                                onPress={() => leaveWaitlist(waitingHere)}
+                              />
+                            </>
+                          ) : (
+                            <>
+                              <T variant="small">
+                                {t('If someone cancels, the shop can WhatsApp you. They decide who gets the time.')}
+                              </T>
+                              <Button
+                                title={t('Tell the shop I’d take a cancellation')}
+                                variant="secondary"
+                                loading={waitBusy}
+                                onPress={joinWaitlist}
+                              />
+                            </>
+                          )}
+                          <ErrorText message={waitError} />
+                        </Card>
+                      ) : null}
                       {nextOpen ? (
                         <Button
                           title={t('See {day}', { day: dayText(nextOpen.date) })}

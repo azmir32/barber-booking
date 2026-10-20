@@ -92,6 +92,15 @@ test('each change reads as one sentence: who, what, when and whose chair', () =>
   assert.equal(line({ customer_name: null }, false), 'Customer booked Fade for tomorrow at 4:30 pm');
   // The day and the time each stay on one line.
   assert.match(changeLine(change({ change: 'moved', starts_at: kajang('2026-10-13T11:00:00') }), now, TZ, false), /Tue, 13 Oct at 11:00 am$/);
+  // A cancelled time still to come on a day people are waiting for says so; one gone by, or not cancelled, doesn't.
+  const cancelled = { change: 'cancelled' as const, starts_at: kajang('2026-10-10T17:30:00'), chair_free: true };
+  assert.equal(
+    line({ ...cancelled, waiting: 2 }),
+    'Hakim cancelled today at 5:30 pm with Danial, so that chair is free. 2 people are waiting for a time that day',
+  );
+  assert.equal(line({ ...cancelled, chair_free: false, waiting: 1 }, false), 'Hakim cancelled today at 5:30 pm. 1 person is waiting for a time that day');
+  assert.equal(line({ ...cancelled, starts_at: kajang('2026-10-10T13:30:00'), waiting: 2 }, false), 'Hakim cancelled today at 1:30 pm');
+  assert.equal(line({ waiting: 2 }, false), 'Hakim booked Fade for tomorrow at 4:30 pm');
 
   inMalay(() => {
     assert.equal(line({}), 'Hakim menempah Fade untuk esok jam 4.30 petang dengan Danial');
@@ -101,6 +110,10 @@ test('each change reads as one sentence: who, what, when and whose chair', () =>
     );
     assert.equal(line({ change: 'moved', starts_at: kajang('2026-10-14T11:30:00') }, false), 'Hakim menukar masa ke Rab, 14 Okt jam 11.30 pagi');
     assert.equal(line({ customer_name: 'Deleted account', change: 'cancelled' }, false), 'Akaun dipadam membatalkan tempahan esok jam 4.30 petang');
+    assert.equal(
+      line({ change: 'cancelled', waiting: 3 }, false),
+      'Hakim membatalkan tempahan esok jam 4.30 petang. 3 orang sedang menunggu slot pada hari itu',
+    );
   });
 });
 

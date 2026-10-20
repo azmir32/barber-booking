@@ -10,9 +10,11 @@ import { errorMessage, supabase } from '@/lib/supabase';
 import type { Role } from '@/lib/types';
 
 export default function SignUp() {
-  const params = useLocalSearchParams<{ role?: string; next?: string; summary?: string }>();
-  // Sent here from a shop page with a time picked, so this is a customer finishing a booking.
+  const params = useLocalSearchParams<{ role?: string; next?: string; summary?: string; wait?: string }>();
+  // Sent here from a shop page with a time picked, so this is a customer finishing a booking,
+  // or with `wait`, joining a full day's waiting list.
   const booking = params.summary;
+  const waiting = Boolean(booking && params.wait);
   const [role, setRole] = useState<Role>(params.role === 'barber' && !booking ? 'barber' : 'customer');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -28,7 +30,11 @@ export default function SignUp() {
   const goToSignIn = () =>
     router.replace({
       pathname: '/sign-in',
-      params: { ...(params.next ? { next: params.next } : {}), ...(booking ? { summary: booking } : {}) },
+      params: {
+        ...(params.next ? { next: params.next } : {}),
+        ...(booking ? { summary: booking } : {}),
+        ...(waiting ? { wait: '1' } : {}),
+      },
     });
 
   async function submit() {
@@ -56,7 +62,12 @@ export default function SignUp() {
         {booking ? (
           <BookingSummary
             summary={booking}
-            note={t('Not booked yet. Once your email is confirmed, sign in to finish booking.')}
+            waiting={waiting}
+            note={
+              waiting
+                ? t('Not on the waiting list yet. Once your email is confirmed, sign in to join it.')
+                : t('Not booked yet. Once your email is confirmed, sign in to finish booking.')
+            }
           />
         ) : null}
         <Button title={t('Go to sign in')} onPress={goToSignIn} />
@@ -67,7 +78,11 @@ export default function SignUp() {
   return (
     <Screen edges={[]}>
       {booking ? (
-        <BookingSummary summary={booking} note={t('Create an account to finish booking.')}>
+        <BookingSummary
+          summary={booking}
+          waiting={waiting}
+          note={waiting ? t('Create an account to join the waiting list.') : t('Create an account to finish booking.')}
+        >
           <Button title={t('Already have an account? Sign in')} variant="secondary" onPress={goToSignIn} />
         </BookingSummary>
       ) : (
@@ -121,10 +136,20 @@ export default function SignUp() {
 }
 
 /** The service and time picked on the shop page, so a new customer can see it is not lost. */
-function BookingSummary({ summary, note, children }: { summary: string; note: string; children?: ReactNode }) {
+function BookingSummary({
+  summary,
+  waiting,
+  note,
+  children,
+}: {
+  summary: string;
+  waiting: boolean;
+  note: string;
+  children?: ReactNode;
+}) {
   return (
     <Card>
-      <T variant="label">{t('Your booking')}</T>
+      <T variant="label">{waiting ? t('Waiting list') : t('Your booking')}</T>
       <T variant="heading">{summary}</T>
       <T variant="muted">{note}</T>
       {children}

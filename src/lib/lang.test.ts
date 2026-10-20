@@ -79,6 +79,13 @@ const DYNAMIC_KEYS = [
   'Review not found.',
   'Add a service before you go live, so customers have something to book.',
   'Add a barber with working hours before you go live, so customers can pick a time.',
+  'Please sign in to join the waiting list.',
+  'Pick a day from today up to 60 days ahead.',
+  "The shop isn't taking bookings that day.",
+  'You already have a booking here that day.',
+  "You're already on the waiting list for that day.",
+  'You can be on 3 waiting lists at a time. Leave one to join another.',
+  "They're no longer on the waiting list.",
 ];
 
 test('every piece of UI text has a Malay translation', () => {

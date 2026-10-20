@@ -20,6 +20,8 @@ export type ShopChange = {
   changed_at: string;
   /** A cancelled time still to come that nobody has taken since. */
   chair_free: boolean;
+  /** For a cancelled time still to come, how many are on the waiting list for its day. */
+  waiting?: number;
 };
 
 export type ShopChanges = {
@@ -125,9 +127,19 @@ export function whenText(at: string, now: number, timeZone: string): string {
  * One change as a sentence: "Hakim booked Fade for tomorrow at 4:30 pm with
  * Danial", "Wei Jie cancelled today at 5:30 pm with Ali, so that chair is
  * free" or "Aiman moved to Sun, 13 Oct at 11:00 am". The barber is named
- * when the shop has more than one.
+ * when the shop has more than one. A cancellation still to come on a day
+ * people are waiting for says so: "2 people are waiting for a time that day".
  */
 export function changeLine(c: ShopChange, now: number, timeZone: string, showBarber: boolean): string {
+  const line = changeSentence(c, now, timeZone, showBarber);
+  const waiting = c.change === 'cancelled' && Date.parse(c.starts_at) > now ? (c.waiting ?? 0) : 0;
+  if (waiting === 0) return line;
+  return `${line}. ${
+    waiting === 1 ? t('1 person is waiting for a time that day') : t('{count} people are waiting for a time that day', { count: waiting })
+  }`;
+}
+
+function changeSentence(c: ShopChange, now: number, timeZone: string, showBarber: boolean): string {
   const vars = {
     name: c.customer_name === DELETED_ACCOUNT ? t('Deleted account') : c.customer_name || t('Customer'),
     service: c.service_name,

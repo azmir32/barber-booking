@@ -7,8 +7,10 @@ import { returnAfterAuth } from '@/lib/navigation';
 import { demo, errorMessage, supabase } from '@/lib/supabase';
 
 export default function SignIn() {
-  // summary: the booking a customer picked on a shop page before being asked to sign in.
-  const { next, summary } = useLocalSearchParams<{ next?: string; summary?: string }>();
+  // summary: the booking a customer picked on a shop page before being asked to sign in;
+  // with `wait`, the full day whose waiting list they are joining.
+  const { next, summary, wait } = useLocalSearchParams<{ next?: string; summary?: string; wait?: string }>();
+  const waiting = Boolean(summary && wait);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -27,9 +29,9 @@ export default function SignIn() {
     <Screen edges={[]}>
       {summary ? (
         <Card>
-          <T variant="label">{t('Your booking')}</T>
+          <T variant="label">{waiting ? t('Waiting list') : t('Your booking')}</T>
           <T variant="heading">{summary}</T>
-          <T variant="muted">{t('Sign in to finish booking.')}</T>
+          <T variant="muted">{waiting ? t('Sign in to join the waiting list.') : t('Sign in to finish booking.')}</T>
         </Card>
       ) : null}
       <Field
@@ -79,7 +81,11 @@ export default function SignIn() {
         onPress={() =>
           router.replace({
             pathname: '/sign-up',
-            params: { ...(next ? { next } : {}), ...(summary ? { summary, role: 'customer' } : {}) },
+            params: {
+              ...(next ? { next } : {}),
+              ...(summary ? { summary, role: 'customer' } : {}),
+              ...(waiting ? { wait: '1' } : {}),
+            },
           })
         }
       />
