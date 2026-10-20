@@ -9,7 +9,7 @@ import { AuthProvider } from '@/lib/auth';
 import { LanguageProvider } from '@/lib/i18n';
 import { t } from '@/lib/lang';
 import { isSupabaseConfigured } from '@/lib/supabase';
-import { TextSizeProvider } from '@/lib/text-size-provider';
+import { TextSizeProvider, useHeaderTitleStyle } from '@/lib/text-size-provider';
 
 export default function RootLayout() {
   const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
@@ -33,12 +33,7 @@ export default function RootLayout() {
         <TextSizeProvider>
           <LanguageProvider>
             <AuthProvider>
-              <Stack screenOptions={{ headerShown: false, headerBackTitle: t('Back') }}>
-                <Stack.Screen name="shop/[slug]" options={{ headerShown: true, title: '' }} />
-                <Stack.Screen name="sign-in" options={{ headerShown: true, title: t('Sign in') }} />
-                <Stack.Screen name="sign-up" options={{ headerShown: true, title: t('Create account') }} />
-                <Stack.Screen name="forgot-password" options={{ headerShown: true, title: t('Reset password') }} />
-              </Stack>
+              <AppStack />
               <ConfirmHost />
             </AuthProvider>
           </LanguageProvider>
@@ -55,5 +50,17 @@ export default function RootLayout() {
         </Screen>
       )}
     </ThemeProvider>
+  );
+}
+
+function AppStack() {
+  const headerTitleStyle = useHeaderTitleStyle();
+  return (
+    <Stack screenOptions={{ headerShown: false, headerBackTitle: t('Back'), headerTitleStyle }}>
+      <Stack.Screen name="shop/[slug]" options={{ headerShown: true, title: '' }} />
+      <Stack.Screen name="sign-in" options={{ headerShown: true, title: t('Sign in') }} />
+      <Stack.Screen name="sign-up" options={{ headerShown: true, title: t('Create account') }} />
+      <Stack.Screen name="forgot-password" options={{ headerShown: true, title: t('Reset password') }} />
+    </Stack>
   );
 }

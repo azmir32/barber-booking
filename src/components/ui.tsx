@@ -29,7 +29,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { staleLine } from '@/lib/cache';
 import { t } from '@/lib/lang';
 import { fitText, scaleText } from '@/lib/text-size';
-import { useTextScale } from '@/lib/text-size-provider';
+import { useTextFit, useTextScale } from '@/lib/text-size-provider';
 
 export function Screen({
   children,
@@ -550,6 +550,15 @@ export function ScreenTitle({ title, refreshing }: { title: string; refreshing?:
 }
 
 /**
+ * True once text is a fifth bigger than Normal or more, the app's choice and
+ * the phone's together: the point where things that sit side by side, like a
+ * start time and what was booked, read better one under the other.
+ */
+export function useBigText(): boolean {
+  return useTextFit().total >= 1.2;
+}
+
+/**
  * When asking the server again failed: what is on screen stays, with one
  * line saying when it is from, and Try again.
  */
@@ -568,13 +577,15 @@ export function StaleNote({
   const theme = useTheme();
   // "Yesterday" once midnight passes with the line still up.
   const now = useNow();
+  // With big text, Try again goes on a line of its own rather than squeezing the line into a sliver.
+  const grow = Math.max(1, useTextFit().total);
   return (
     <View
       role="status"
       accessibilityLiveRegion="polite"
       style={[styles.staleNote, { backgroundColor: theme.card, borderColor: theme.border }]}>
       <Ionicons name="cloud-offline-outline" size={20} color={theme.warning} />
-      <T variant="small" style={styles.staleText}>
+      <T variant="small" style={[styles.staleText, { flexBasis: 140 * grow }, grow > 1 && styles.staleTextWrapping]}>
         {staleLine(savedAt, now, timeZone)}
       </T>
       <Button title={t('Try again')} variant="ghost" loading={retrying} onPress={onRetry} style={styles.staleButton} />
@@ -642,6 +653,8 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
     alignItems: 'center',
     justifyContent: 'center',
+    // No wider than what holds it: in a row that wraps, a long label at large text wraps inside the button instead of running off the screen.
+    maxWidth: '100%',
   },
   buttonInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
   // Centred, so a label that wraps in a narrow button still sits in the middle.
@@ -722,6 +735,7 @@ const styles = StyleSheet.create({
   titleSpinner: { width: 24, height: 24, marginLeft: 'auto', alignItems: 'center', justifyContent: 'center' },
   staleNote: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: Spacing.sm,
     borderWidth: 1,
@@ -729,7 +743,9 @@ const styles = StyleSheet.create({
     paddingLeft: Spacing.md,
     paddingVertical: Spacing.xs,
   },
-  staleText: { flex: 1, paddingVertical: Spacing.xs },
-  staleButton: { paddingHorizontal: Spacing.md },
+  staleText: { flexGrow: 1, flexShrink: 1, paddingVertical: Spacing.xs },
+  // Off the edge, which it can reach once Try again is on the next line.
+  staleTextWrapping: { paddingRight: Spacing.md },
+  staleButton: { paddingHorizontal: Spacing.md, marginLeft: 'auto' },
   empty: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xxl },
 });

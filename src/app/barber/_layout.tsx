@@ -11,6 +11,7 @@ import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { MyShopProvider, useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { useHeaderTitleStyle } from '@/lib/text-size-provider';
 
 export default function BarberLayout() {
   const { session, profile, loading } = useAuth();
@@ -27,6 +28,7 @@ export default function BarberLayout() {
 
 function BarberStack() {
   const { shop, loading, reload } = useMyShop();
+  const headerTitleStyle = useHeaderTitleStyle();
   // Set once the form below makes the shop: the barber lands on My shop, where its steps to the first booking are.
   const created = useRef(false);
   useEffect(() => {
@@ -53,7 +55,7 @@ function BarberStack() {
   }
 
   return (
-    <Stack screenOptions={{ headerBackTitle: t('Back') }}>
+    <Stack screenOptions={{ headerBackTitle: t('Back'), headerTitleStyle }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="hours/[id]" options={{ title: t('Working hours') }} />
       <Stack.Screen name="new-booking" options={{ title: t('Add to the day') }} />

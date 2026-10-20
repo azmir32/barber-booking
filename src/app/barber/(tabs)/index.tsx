@@ -24,6 +24,7 @@ import {
   Skeleton,
   StaleNote,
   T,
+  useBigText,
 } from '@/components/ui';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
@@ -1013,11 +1014,13 @@ const call = (phone: string) => Linking.openURL(`tel:${phone.replace(/[^\d+]/g, 
  */
 function StartTime({ at, tz, variant }: { at: string; tz: string; variant: 'heading' | 'label' }) {
   const { clock, period } = formatTimeParts(at, tz);
-  const short = period.length <= 2;
+  // With big text the time has a line of its own (timeAbove), with room for the period beside the clock.
+  const big = useBigText();
+  const short = big || period.length <= 2;
   return (
     <T variant={variant} style={variant === 'heading' ? styles.time : undefined}>
       {short ? `${clock} ${period}` : clock}
-      {short ? null : <Text style={styles.period}>{`\n${period}`}</Text>}
+      {short ? null : <T style={styles.period}>{`\n${period}`}</T>}
     </T>
   );
 }
@@ -1065,6 +1068,7 @@ function LiveCard({
   tag: ReturnType<typeof changeTag>;
 }) {
   const theme = useTheme();
+  const big = useBigText();
   const [more, setMore] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [reminding, setReminding] = useState(false);
@@ -1094,7 +1098,7 @@ function LiveCard({
   return (
     <Card>
       <View style={styles.cardRow}>
-        <View style={styles.timeCol}>
+        <View style={[styles.timeCol, big && styles.timeAbove]}>
           <StartTime at={b.starts_at} tz={tz} variant="heading" />
           <T variant="small">{formatDuration(minutesOf(b))}</T>
         </View>
@@ -1285,9 +1289,10 @@ function NewsCard({
 
 /** Time the barber blocked off, on one short line. */
 function BlockRow({ booking: b, tz, onRemove }: { booking: ShopBooking; tz: string; onRemove?: () => void }) {
+  const big = useBigText();
   return (
     <View style={styles.compactRow}>
-      <View style={styles.timeCol}>
+      <View style={[styles.timeCol, big && styles.timeAbove]}>
         {isWholeDay(b) ? <T variant="label">{t('Whole day')}</T> : <StartTime at={b.starts_at} tz={tz} variant="label" />}
         {isWholeDay(b) ? null : <T variant="small">{formatDuration(minutesOf(b))}</T>}
       </View>
@@ -1321,6 +1326,7 @@ function FinishedRow({
   onWhatsApp: () => void;
 }) {
   const theme = useTheme();
+  const big = useBigText();
   const [more, setMore] = useState(false);
   const who = whoFor(b);
   const phone = phoneOf(b);
@@ -1328,7 +1334,7 @@ function FinishedRow({
   return (
     <View style={styles.list}>
       <View style={styles.compactRow}>
-        <View style={styles.timeCol}>
+        <View style={[styles.timeCol, big && styles.timeAbove]}>
           <StartTime at={b.starts_at} tz={tz} variant="label" />
         </View>
         <View style={styles.info}>
@@ -1404,8 +1410,17 @@ const styles = StyleSheet.create({
   dayName: { flexGrow: 1, flexShrink: 1 },
   noWrap: { flexWrap: 'nowrap' },
   badges: { gap: Spacing.xs },
-  cardRow: { flexDirection: 'row', gap: Spacing.sm },
-  compactRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48 },
+  // Wrapping, so with big text the time can have a line of its own above the details.
+  cardRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
+  // Lines that wrap pack to the top unless told otherwise; centred, a short row sits in the middle of its 48 as before.
+  compactRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    alignContent: 'center',
+    gap: Spacing.sm,
+    minHeight: 48,
+  },
   compactCard: { paddingVertical: Spacing.sm },
   newsHeading: { paddingTop: Spacing.xs },
   newsLine: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minHeight: 48 },
@@ -1413,6 +1428,8 @@ const styles = StyleSheet.create({
   newsFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: Spacing.sm },
   // Fixed, so the start times line up down the day.
   timeCol: { width: 92 },
+  // With big text (useBigText) the time and length go on a line of their own, leaving the details the card's whole width.
+  timeAbove: { width: '100%' },
   time: { fontSize: 16, lineHeight: 22 },
   // A Malay period under the clock: smaller, so "tengah hari" fits the column on one line.
   period: { fontSize: 13, lineHeight: 18, fontWeight: '600' },

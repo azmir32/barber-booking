@@ -6,6 +6,7 @@ import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { badgeText, changesLabel } from '@/lib/news';
 import { ShopNewsProvider, useShopNews } from '@/lib/shop-news';
+import { useTabBarText } from '@/lib/text-size-provider';
 
 export default function BarberTabs() {
   const { shop } = useMyShop();
@@ -18,6 +19,7 @@ export default function BarberTabs() {
 
 function TabBar() {
   const theme = useTheme();
+  const { tabBarLabelStyle, barHeight } = useTabBarText();
   const { news } = useShopNews();
   const count = news?.count ?? 0;
   return (
@@ -26,7 +28,8 @@ function TabBar() {
         headerShown: false,
         tabBarActiveTintColor: theme.tint,
         tabBarInactiveTintColor: theme.textSecondary,
-        tabBarStyle: { backgroundColor: theme.card, borderTopColor: theme.border },
+        tabBarStyle: { backgroundColor: theme.card, borderTopColor: theme.border, ...barHeight },
+        tabBarLabelStyle,
       }}>
       <Tabs.Screen
         name="index"

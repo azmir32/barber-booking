@@ -1,7 +1,7 @@
 import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
 import { useEffect, useRef, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { TimeField } from '@/components/time-field';
 import { Button, Chip, ErrorText, Field, Loading, Row, Screen, T } from '@/components/ui';
@@ -10,6 +10,7 @@ import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { defaultHours, useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { useTextFit } from '@/lib/text-size-provider';
 import { dayPlanFrom, rangesFromPlan, WEEK_ORDER, type DayPlan } from '@/lib/hours';
 import { WEEKDAYS, type Barber, type WorkingHours } from '@/lib/types';
 
@@ -39,6 +40,8 @@ export default function Hours() {
   const [error, setError] = useState<string | null>(null);
   // What is wrong with each day, by weekday, shown under that day's times.
   const [dayErrors, setDayErrors] = useState<Record<number, string>>({});
+  // From and To side by side, or one over the other once the text is too big for both times to show whole.
+  const half = { flexGrow: 1, flexBasis: 120 * Math.max(1, useTextFit().total) };
   const scroll = useRef<ScrollView>(null);
   const dayY = useRef<Record<number, number>>({});
   // Set once saved, so going back doesn't ask about changes that are already kept.
@@ -213,8 +216,8 @@ export default function Hours() {
               </Row>
             </Row>
             {d.open ? (
-              <Row style={{ flexWrap: 'nowrap' }}>
-                <View style={{ flex: 1 }}>
+              <Row style={styles.pair}>
+                <View style={half}>
                   <TimeField
                     label={t('From')}
                     title={`${dayName} · ${t('From')}`}
@@ -223,7 +226,7 @@ export default function Hours() {
                     onChange={(v) => update(weekday, { opens: v })}
                   />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={half}>
                   <TimeField
                     label={t('To')}
                     title={`${dayName} · ${t('To')}`}
@@ -235,8 +238,8 @@ export default function Hours() {
               </Row>
             ) : null}
             {d.open && d.hasBreak ? (
-              <Row style={{ flexWrap: 'nowrap' }}>
-                <View style={{ flex: 1 }}>
+              <Row style={styles.pair}>
+                <View style={half}>
                   <TimeField
                     label={t('Break from')}
                     title={`${dayName} · ${t('Break from')}`}
@@ -246,7 +249,7 @@ export default function Hours() {
                     {...withinDay}
                   />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={half}>
                   <TimeField
                     label={t('Break to')}
                     title={`${dayName} · ${t('Break to')}`}
@@ -275,3 +278,8 @@ export default function Hours() {
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  // Lined up by their labels, as a time that wraps makes its field taller than its neighbour.
+  pair: { alignItems: 'flex-start' },
+});

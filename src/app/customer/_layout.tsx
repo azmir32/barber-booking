@@ -3,16 +3,19 @@ import { Tabs } from 'expo-router/js-tabs';
 
 import { useTheme } from '@/hooks/use-theme';
 import { t } from '@/lib/lang';
+import { useTabBarText } from '@/lib/text-size-provider';
 
 export default function CustomerTabs() {
   const theme = useTheme();
+  const { tabBarLabelStyle, barHeight } = useTabBarText();
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.tint,
         tabBarInactiveTintColor: theme.textSecondary,
-        tabBarStyle: { backgroundColor: theme.card, borderTopColor: theme.border },
+        tabBarStyle: { backgroundColor: theme.card, borderTopColor: theme.border, ...barHeight },
+        tabBarLabelStyle,
       }}>
       <Tabs.Screen
         name="index"
