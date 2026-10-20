@@ -364,10 +364,6 @@ export default function ShopPage() {
     }));
     appCache.write(cacheKey(user, 'my-waitlist'), list);
   }, []);
-  const dayFull = Boolean(serviceId && day && !movingId && slotsKey === slotsFor && !slotsError && freeCount === 0);
-  useEffect(() => {
-    if (dayFull && uid && askedWaits.current !== uid) loadWaits(uid);
-  }, [dayFull, uid, loadWaits]);
   const timeGroups = useMemo(() => groupByPartOfDay(times, shop?.time_zone), [times, shop?.time_zone]);
   // One part of the day at a time keeps the grid short. The customer's choice
   // sticks across days while that part still has free times.
@@ -376,6 +372,24 @@ export default function ShopPage() {
   const week = useMemo(() => shopWeek(barbers.flatMap((b) => b.working_hours ?? [])), [barbers]);
   const todayWeekday = new Date(`${todayDate}T00:00:00Z`).getUTCDay();
   const service = services.find((s) => s.id === serviceId);
+  // A day the customer picked with nothing free that could still free up: under "No free times" they
+  // can ask to hear if it does. Only then is their waiting list asked for, never on an ordinary visit
+  // (nor for a Today the page is about to skip).
+  const canWait = Boolean(
+    service &&
+      shop &&
+      day &&
+      !movingId &&
+      !checkToday &&
+      slotsKey === slotsFor &&
+      !slotsError &&
+      freeCount === 0 &&
+      !closedDays.has(day) &&
+      couldFreeUp(day, barbers, barberId, service.duration_min, now, shop.time_zone),
+  );
+  useEffect(() => {
+    if (canWait && uid && askedWaits.current !== uid) loadWaits(uid);
+  }, [canWait, uid, loadWaits]);
   // Who can take the picked time. With "any barber" the booking goes to one of them, so say so up front.
   const freeNames = barbers
     .filter((b) => slots.some((s) => s.barber_id === b.id && s.starts_at === startsAt))
@@ -822,11 +836,7 @@ export default function ShopPage() {
     ) : bookError ? (
       <ErrorText message={bookError} />
     ) : null;
-  // On a full day, under "No free times": the customer can ask to hear if a time frees up, while one
-  // still could. The request is per day at the shop, so the one there shows whatever its service.
-  const canWait =
-    Boolean(service && day && !moving && !closedDays.has(day!)) &&
-    couldFreeUp(day!, barbers, barberId, service!.duration_min, now, tz);
+  // The request is per day at the shop, so the one there shows whatever its service.
   const waitingHere = day ? myWaits?.find((w) => w.shop_id === shop.id && w.day === day) : undefined;
   // A move skips the service step, so the steps after it come up one.
   const timeTitle = moving
