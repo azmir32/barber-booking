@@ -1383,7 +1383,6 @@ function WaitingCard({
         const status = requestStatus(w, now, tz);
         return (
           <View key={w.id} style={styles.compactRow}>
-            <Ionicons name="hourglass-outline" size={22} color={theme.textSecondary} />
             <View style={styles.info}>
               <T variant="label" numberOfLines={1}>
                 {name}

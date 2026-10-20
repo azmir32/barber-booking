@@ -1088,9 +1088,9 @@ export const ms: Record<string, string> = {
   'You’re on the waiting list for {day}': 'Anda dalam senarai menunggu untuk {day}',
   '{service}. If a time frees up, the shop may WhatsApp you.':
     '{service}. Jika ada slot kosong, kedai mungkin WhatsApp anda.',
-  Leave: 'Keluar',
-  'Leave the waiting list for {day}': 'Keluar daripada senarai menunggu untuk {day}',
-  'Leave the waiting list?': 'Keluar daripada senarai menunggu?',
+  Leave: 'Tarik diri',
+  'Leave the waiting list for {day}': 'Tarik diri daripada senarai menunggu untuk {day}',
+  'Leave the waiting list?': 'Tarik diri daripada senarai menunggu?',
   'If you join again, you go to the end of it.': 'Jika anda sertai semula, anda akan berada di hujung senarai.',
   // Signing up or in to join it.
   'Waiting list': 'Senarai menunggu',
@@ -1119,6 +1119,6 @@ export const ms: Record<string, string> = {
   'You already have a booking here that day.': 'Anda sudah ada tempahan di sini pada hari itu.',
   "You're already on the waiting list for that day.": 'Anda sudah berada dalam senarai menunggu untuk hari itu.',
   'You can be on 3 waiting lists at a time. Leave one to join another.':
-    'Anda boleh berada dalam 3 senarai menunggu pada satu masa. Keluar daripada satu untuk menyertai yang lain.',
+    'Anda boleh berada dalam 3 senarai menunggu pada satu masa. Tarik diri daripada satu untuk menyertai yang lain.',
   "They're no longer on the waiting list.": 'Mereka sudah tiada dalam senarai menunggu.',
 };
