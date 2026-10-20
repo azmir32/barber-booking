@@ -2212,7 +2212,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select w.id, trim(p.full_name), p.phone, w.service_id, v.name, v.duration_min,
+  select w.id, nullif(trim(p.full_name), ''), p.phone, w.service_id, v.name, v.duration_min,
          w.barber_id, b.name, w.created_at, w.offered_at
   from shops sh
   join waitlist w on w.shop_id = sh.id and w.day = p_day

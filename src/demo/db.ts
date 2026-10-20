@@ -15,7 +15,8 @@ export type TableName =
   | 'working_hours'
   | 'bookings'
   | 'shop_closures'
-  | 'reviews';
+  | 'reviews'
+  | 'waitlist';
 export type Tables = Record<TableName, Row[]>;
 type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'float' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = {
@@ -181,6 +182,17 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     created_at: createdAt,
     updated_at: req('timestamptz', nowIso),
   },
+  waitlist: {
+    id,
+    shop_id: req('uuid'),
+    customer_id: req('uuid'),
+    day: req('date'),
+    service_id: req('uuid'),
+    // Null: any barber.
+    barber_id: opt('uuid'),
+    offered_at: opt('timestamptz'),
+    created_at: createdAt,
+  },
 };
 
 /** Tables keyed by something other than id. */
@@ -259,12 +271,13 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
   ],
 };
 
-const UNIQUE: Partial<Record<TableName, [string, string][]>> = {
+const UNIQUE: Partial<Record<TableName, [string, string | string[]][]>> = {
   users: [['users_email_key', 'email']],
   shops: [
     ['shops_owner_id_key', 'owner_id'],
     ['shops_slug_key', 'slug'],
   ],
+  waitlist: [['waitlist_one_a_day', ['customer_id', 'day', 'shop_id']]],
 };
 
 const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number) => aStart < bEnd && bStart < aEnd;
@@ -347,6 +360,22 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     references: 'profiles',
     onDelete: 'cascade',
   },
+  { name: 'waitlist_shop_id_fkey', table: 'waitlist', column: 'shop_id', references: 'shops', onDelete: 'cascade' },
+  {
+    name: 'waitlist_customer_id_fkey',
+    table: 'waitlist',
+    column: 'customer_id',
+    references: 'profiles',
+    onDelete: 'cascade',
+  },
+  {
+    name: 'waitlist_service_id_fkey',
+    table: 'waitlist',
+    column: 'service_id',
+    references: 'services',
+    onDelete: 'cascade',
+  },
+  { name: 'waitlist_barber_id_fkey', table: 'waitlist', column: 'barber_id', references: 'barbers', onDelete: 'cascade' },
 ];
 
 // Values ---------------------------------------------------------------------
@@ -698,7 +727,11 @@ function checkRow(table: TableName, row: Row) {
     throw new PgError('23505', `duplicate key value violates unique constraint "${table}_pkey"`, 409);
   }
   for (const [name, column] of UNIQUE[table] ?? []) {
-    if (row[column] != null && all[table].some((other) => other.id !== row.id && other[column] === row[column])) {
+    const key = typeof column === 'string' ? [column] : column;
+    if (
+      key.every((k) => row[k] != null) &&
+      all[table].some((other) => other.id !== row.id && key.every((k) => other[k] === row[k]))
+    ) {
       throw new PgError('23505', `duplicate key value violates unique constraint "${name}"`, 409);
     }
   }

@@ -603,6 +603,68 @@ function seed() {
     8,
     'Sabar sangat dengan anak saya yang takut gunting. Terima kasih!',
   );
+
+  // A Saturday a week or two out with both chairs booked end to end, and
+  // two customers asking to hear if a time frees up: Farid for a haircut
+  // with anyone, Aiman for a skin fade with Danial. Far enough off that
+  // nothing above is on it, at any hour and whichever day Danial has off.
+  // Added last, so every id above stays as it was.
+  const saturday = Array.from({ length: 7 }, (_, i) => i + 7).find(
+    (day) => new Date(`${addDays(today, day)}T00:00:00Z`).getUTCDay() === 6,
+  )!;
+  /** An online customer, a guest's name, or a guest's name and number. */
+  type Who = Row | string | [string, string];
+  const rosliAndSon: Who = ['Encik Rosli', '019-765 4321'];
+  const leeAndSon: Who = ['Mr Lee', '016-221 7408'];
+  const fullDay: [typeof aliChair, string, Row, Who, string?][] = [
+    [aliChair, '10:00', fade, weiJie],
+    [aliChair, '10:45', haircutBeard, ['Pak Abu', '013-456 7788']],
+    [aliChair, '11:30', haircut, 'Mr Tan'],
+    [aliChair, '12:00', kids, rosliAndSon, 'For my son, he is 9'],
+    [aliChair, '12:30', haircut, rosliAndSon],
+    [aliChair, '13:45', haircut, 'Faiz'],
+    [aliChair, '14:15', fade, izzat],
+    [aliChair, '15:00', haircut, 'Uncle Lim'],
+    [aliChair, '15:30', haircutBeard, ['Kumar', '016-210 3398']],
+    [aliChair, '16:15', haircut, ['Vinod', '012-889 3301']],
+    [aliChair, '16:45', fade, 'Haziq'],
+    [aliChair, '17:30', haircut, jason],
+    [aliChair, '18:00', fade, syafiq],
+    [aliChair, '18:45', haircutBeard, ['Shahrul', '017-554 2190'], 'Wedding tomorrow, beard neat please'],
+    [aliChair, '19:30', haircut, 'Encik Zul'],
+    [danial, '11:00', kids, siti, 'For my son'],
+    [danial, '11:30', kids, nurul, 'Same as last time'],
+    [danial, '12:00', fade, kevin],
+    [danial, '12:45', haircut, 'Adik Irfan'],
+    [danial, '13:15', haircutBeard, 'Pak Din'],
+    [danial, '16:00', fade, 'Iskandar'],
+    [danial, '16:45', haircut, 'Amir'],
+    [danial, '17:15', haircutBeard, 'Arif'],
+    [danial, '18:00', fade, 'Luqman'],
+    [danial, '18:45', haircut, leeAndSon],
+    [danial, '19:15', kids, leeAndSon, 'For my boy'],
+    [danial, '19:45', fade, 'Zikri'],
+    [danial, '20:30', haircut, 'Harith'],
+  ];
+  for (const [barber, at, service, who, note] of fullDay) {
+    const person =
+      typeof who === 'string' ? { guest: [who] as [string] } : Array.isArray(who) ? { guest: who } : { customer: who };
+    book(sa, { barber, day: saturday, at, service, note, ...person });
+  }
+  book(sa, { barber: aliChair, day: saturday, at: '13:00', block: ['Lunch', 45] });
+  book(sa, { barber: danial, day: saturday, at: '14:00', block: ['Cousin’s wedding', 120] });
+  const waiting = (customer: Row, service: Row, barber: Row | null, hoursAgo: number) =>
+    insertRow('waitlist', {
+      id: sid(),
+      shop_id: sa.id,
+      customer_id: customer.id,
+      day: addDays(today, saturday),
+      service_id: service.id,
+      barber_id: barber?.id ?? null,
+      created_at: new Date(now() - hoursAgo * HOUR).toISOString(),
+    });
+  waiting(farid, haircut, null, 26);
+  waiting(aiman, fade, danial.row, 5);
 }
 
 setSeed(seed);

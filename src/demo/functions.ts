@@ -314,7 +314,7 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
     .sort((a, b) => busy(a.barber_id) - busy(b.barber_id) || (a.barber_id < b.barber_id ? -1 : 1));
   if (free.length === 0) throw new PgError('P0001', TAKEN, 400);
 
-  return guarded(
+  const booking = guarded(
     () =>
       insertRow('bookings', {
         shop_id: service.shop_id,
@@ -331,6 +331,9 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
       }),
     TAKEN,
   );
+  // They have their time that day, so they are no longer waiting for one.
+  stopWaiting(c.uid, service.shop_id, day);
+  return booking;
 }
 
 export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unknown, barberId: unknown = null) {
@@ -364,7 +367,7 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
     );
   if (free.length === 0) throw new PgError('P0001', TAKEN, 400);
 
-  return guarded(
+  const moved = guarded(
     () =>
       updateRows('bookings', [booking], {
         barber_id: free[0].barber_id,
@@ -376,6 +379,9 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
       })[0],
     TAKEN,
   );
+  // Moved into a day they were waiting on: as good as booking it.
+  stopWaiting(booking.customer_id, booking.shop_id, day);
+  return moved;
 }
 
 export function markBookingReminded(c: Caller, bookingId: unknown, startsAt: unknown, reminded: unknown = true) {
@@ -1101,8 +1107,189 @@ export function shopChanges(c: Caller, sinceArg: unknown = null, limitArg: unkno
         b.customer_change === 'cancelled' &&
         ms(b.starts_at) > now() &&
         !tables().bookings.some((x) => clash(x, b.barber_id, ms(b.starts_at), ms(b.ends_at))),
+      waiting:
+        b.customer_change === 'cancelled' && ms(b.starts_at) > now()
+          ? tables().waitlist.filter(
+              (w) => w.shop_id === shop.id && w.day === localDateString(new Date(ms(b.starts_at)), tz),
+            ).length
+          : 0,
     })),
   };
+}
+
+// Waiting list ------------------------------------------------------------------
+
+/** How many days one customer can wait on at a time, across every shop. */
+const MAX_WAITING_PER_CUSTOMER = 3;
+
+/** A customer with a time at the shop that day is no longer waiting for one. */
+function stopWaiting(customerId: unknown, shopId: unknown, day: string) {
+  if (customerId == null) return;
+  deleteRows(
+    'waitlist',
+    tables().waitlist.filter((w) => w.customer_id === customerId && w.shop_id === shopId && w.day === day),
+  );
+}
+
+/**
+ * join_waitlist: a signed-in customer asks to hear if a time frees up on a
+ * day they could book, for a service with a barber (null: any). Once a day
+ * per shop, and on at most three days at a time; days gone by don't count.
+ */
+export function joinWaitlist(c: Caller, serviceId: unknown, dayArg: unknown, barberId: unknown = null) {
+  if (c.uid == null) throw new PgError('28000', 'Please sign in to join the waiting list.', 403);
+  const service = findById('services', serviceId);
+  const shop = service?.is_active ? findById('shops', service.shop_id) : undefined;
+  if (!service || !shop || !shopIsLive(shop)) throw new PgError('P0002', 'This service is no longer available.', 500);
+  if (
+    barberId != null &&
+    !tables().barbers.some((b) => b.id === barberId && b.shop_id === shop.id && b.is_active)
+  ) {
+    throw new PgError('P0002', 'Barber not found.', 500);
+  }
+  const tz = String(shop.time_zone);
+  const today = localDateString(new Date(now()), tz);
+  const day = dayArg == null ? null : parseDate(dayArg);
+  if (day == null || day < today || day > addDays(today, BOOKING_HORIZON_DAYS)) {
+    throw new PgError('22023', 'Pick a day from today up to 60 days ahead.', 400);
+  }
+
+  // Closed, or nobody (or not the barber asked for) works it, or has it all blocked off.
+  const { start, end } = dayBounds(day, tz);
+  const weekday = weekdayOf(day);
+  const working = tables().barbers.some(
+    (b) =>
+      b.shop_id === shop.id &&
+      b.is_active &&
+      (barberId == null || b.id === barberId) &&
+      tables().working_hours.some((wh) => wh.barber_id === b.id && wh.weekday === weekday) &&
+      !tables().bookings.some(
+        (bk) =>
+          bk.barber_id === b.id &&
+          bk.status === 'confirmed' &&
+          ms(bk.starts_at) <= start.getTime() &&
+          ms(bk.ends_at) >= end.getTime(),
+      ),
+  );
+  if (tables().shop_closures.some((cl) => cl.shop_id === shop.id && cl.day === day) || !working) {
+    throw new PgError('P0001', 'The shop isn\'t taking bookings that day.', 400);
+  }
+
+  if (
+    tables().bookings.some(
+      (b) =>
+        b.customer_id === c.uid &&
+        b.shop_id === shop.id &&
+        b.status === 'confirmed' &&
+        ms(b.starts_at) >= start.getTime() &&
+        ms(b.starts_at) < end.getTime(),
+    )
+  ) {
+    throw new PgError('P0001', 'You already have a booking here that day.', 400);
+  }
+  if (tables().waitlist.some((w) => w.customer_id === c.uid && w.day === day && w.shop_id === shop.id)) {
+    throw new PgError('P0001', 'You\'re already on the waiting list for that day.', 400);
+  }
+
+  // Days gone by don't count, and nothing clears them on a timer.
+  deleteRows(
+    'waitlist',
+    tables().waitlist.filter((w) => {
+      const theirs = findById('shops', w.shop_id);
+      return w.customer_id === c.uid && theirs != null && String(w.day) < localDateString(new Date(now()), String(theirs.time_zone));
+    }),
+  );
+  if (tables().waitlist.filter((w) => w.customer_id === c.uid).length >= MAX_WAITING_PER_CUSTOMER) {
+    throw new PgError(
+      'P0001',
+      `You can be on ${MAX_WAITING_PER_CUSTOMER} waiting lists at a time. Leave one to join another.`,
+      400,
+    );
+  }
+  return insertRow('waitlist', {
+    shop_id: shop.id,
+    customer_id: c.uid,
+    day,
+    service_id: service.id,
+    barber_id: barberId,
+  });
+}
+
+/** The customer leaves a waiting list, or the shop takes them off its own. Already gone is fine. */
+export function leaveWaitlist(c: Caller, id: unknown) {
+  const key = toColumnValue('waitlist', 'id', id);
+  deleteRows(
+    'waitlist',
+    tables().waitlist.filter((w) => w.id === key && c.uid != null && (w.customer_id === c.uid || ownsShop(w.shop_id, c.uid))),
+  );
+}
+
+/** The shop WhatsApped someone on its waiting list, so every phone in the shop sees it was done and when. */
+export function markWaitlistOffered(c: Caller, id: unknown) {
+  const key = toColumnValue('waitlist', 'id', id);
+  const row = tables().waitlist.find((w) => w.id === key && ownsShop(w.shop_id, c.uid));
+  if (!row) throw new PgError('P0002', 'They\'re no longer on the waiting list.', 500);
+  return updateRows('waitlist', [row], { offered_at: new Date(now()).toISOString() })[0];
+}
+
+const byCreated = (a: Row, b: Row) => ms(a.created_at) - ms(b.created_at) || (String(a.id) < String(b.id) ? -1 : 1);
+
+/**
+ * shop_waitlist: the owner's waiting list for one day, oldest request first,
+ * with each customer's name and number as the customer list shows them.
+ * Empty for a day gone by.
+ */
+export function shopWaitlist(c: Caller, dayArg: unknown) {
+  const shop = c.uid == null ? undefined : tables().shops.find((s) => s.owner_id === c.uid);
+  if (!shop || dayArg == null) return [];
+  const day = parseDate(dayArg);
+  if (day < localDateString(new Date(now()), String(shop.time_zone))) return [];
+  return tables()
+    .waitlist.filter((w) => w.shop_id === shop.id && w.day === day)
+    .sort(byCreated)
+    .flatMap((w) => {
+      const profile = findById('profiles', w.customer_id);
+      const service = findById('services', w.service_id);
+      if (!profile || !service) return [];
+      return [
+        {
+          id: w.id,
+          name: trimmed(profile.full_name),
+          phone: profile.phone ?? null,
+          service_id: service.id,
+          service_name: service.name,
+          duration_min: service.duration_min,
+          barber_id: w.barber_id ?? null,
+          barber_name: w.barber_id == null ? null : (findById('barbers', w.barber_id)?.name ?? null),
+          created_at: w.created_at,
+          offered_at: w.offered_at ?? null,
+        },
+      ];
+    });
+}
+
+/** my_waitlist: the caller's own requests still to come, soonest day first, each with its shop, service and barber. */
+export function myWaitlist(c: Caller) {
+  return tables()
+    .waitlist.filter((w) => c.uid != null && w.customer_id === c.uid)
+    .flatMap((w) => {
+      const shop = findById('shops', w.shop_id);
+      const service = findById('services', w.service_id);
+      if (!shop || !service || String(w.day) < localDateString(new Date(now()), String(shop.time_zone))) return [];
+      return [{ w, shop, service }];
+    })
+    .sort((a, b) => String(a.w.day).localeCompare(String(b.w.day)) || byCreated(a.w, b.w))
+    .map(({ w, shop, service }) => ({
+      id: w.id,
+      shop_id: w.shop_id,
+      day: w.day,
+      service_id: w.service_id,
+      service_name: service.name,
+      barber_id: w.barber_id ?? null,
+      barber_name: w.barber_id == null ? null : (findById('barbers', w.barber_id)?.name ?? null),
+      created_at: w.created_at,
+      shop: { name: shop.name, slug: shop.slug, time_zone: shop.time_zone },
+    }));
 }
 
 // Reviews -------------------------------------------------------------------
@@ -1248,6 +1435,11 @@ const SIGNED_IN_ONLY = new Set([
   'rate_booking',
   'reply_to_review',
   'my_shops',
+  'join_waitlist',
+  'leave_waitlist',
+  'mark_waitlist_offered',
+  'shop_waitlist',
+  'my_waitlist',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -1313,6 +1505,17 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: replyToReview(c, args.p_booking_id, args.p_reply) };
     case 'my_shops':
       return { status: 200, body: myShops(c) };
+    case 'join_waitlist':
+      return { status: 200, body: joinWaitlist(c, args.p_service_id, args.p_day, args.p_barber_id ?? null) };
+    case 'leave_waitlist':
+      leaveWaitlist(c, args.p_id);
+      return { status: 204 };
+    case 'mark_waitlist_offered':
+      return { status: 200, body: markWaitlistOffered(c, args.p_id) };
+    case 'shop_waitlist':
+      return { status: 200, body: shopWaitlist(c, args.p_day) };
+    case 'my_waitlist':
+      return { status: 200, body: myWaitlist(c) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };

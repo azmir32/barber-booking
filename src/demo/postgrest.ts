@@ -79,6 +79,8 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
   reviews: {
     select: (r, c) => shopVisible(r.shop_id, c.uid) || (c.uid != null && r.customer_id === c.uid),
   },
+  // No policies, and no grants either: only the waiting list functions read and write it.
+  waitlist: { select: () => false },
 };
 
 /** Column grants: who may write which columns (everything else is open). */
@@ -97,6 +99,7 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
   bookings: { insert: [], update: [], delete: [] },
   shop_closures: { insert: [], update: [], delete: [] },
   reviews: { insert: [], update: [], delete: [] },
+  waitlist: { insert: [], update: [], delete: [] },
 };
 
 /**
@@ -105,6 +108,7 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
  */
 const READABLE: Partial<Record<TableName, string[]>> = {
   reviews: Object.keys(COLUMNS.reviews).filter((c) => c !== 'customer_id'),
+  waitlist: [],
 };
 
 /** Postgres refuses a query that names a column the caller may not read, select * included. */
@@ -342,6 +346,8 @@ function prefers(headers: Headers, what: string) {
 
 /** The rows a request's top-level filters pick out, as the caller sees them. */
 function pick(table: TableName, q: Query, use?: (r: Row, c: Caller) => boolean): Row[] {
+  // A table nobody may read is refused before any row is looked at, as Postgres does.
+  if (READABLE[table]?.length === 0) checkReadable(table, null, q.caller);
   const top = q.filters.filter((f) => f.path === '');
   for (const f of top) checkReadable(table, f.column, q.caller);
   return tables()[table].filter(

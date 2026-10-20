@@ -858,6 +858,8 @@ test('the shop hears what customers booked, moved or cancelled since it last loo
       change: 'moved',
       changed_at: moved.customer_changed_at,
       chair_free: false,
+      // Only a cancellation says how many are waiting for its day.
+      waiting: 0,
     });
     assert.equal(news.latest, cancelled.customer_changed_at);
     // Once the shop puts a walk-in in Ravi's cancelled time, that chair is no longer free.
@@ -2974,5 +2976,274 @@ test('the demo can be slowed down or cut off, the way a phone with a weak signal
   } finally {
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
     reloadTables();
+  }
+});
+
+// Waiting list ---------------------------------------------------------------
+
+test('customers wait for a time on a day they could book, and only the shop sees who is waiting', async () => {
+  // As in supabase/tests/booking_test.sql: Ali works 8 am to 10 pm every day
+  // and Danial not at all, on days a month out, clear of the sample bookings.
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const jason = await signedIn('jason@demo.potongku.my');
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  const guest = client();
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const kemas = await shopBySlug(ali, 'kemas-barber-kajang');
+  const { data: services } = await ali.from('services').select('*').eq('shop_id', shop.id).order('sort_order');
+  const haircut = services![0];
+  const { data: kemasServices } = await ali.from('services').select('*').eq('shop_id', kemas.id).order('sort_order');
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const [aliChair, danial] = barbers!;
+  const { data: kemasBarbers } = await ali.from('barbers').select('*').eq('shop_id', kemas.id);
+  const everyDay = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, opens_at: '08:00', closes_at: '22:00' }));
+  assert.equal((await ali.rpc('set_barber_hours', { p_barber_id: aliChair.id, p_hours: everyDay })).error, null);
+  assert.equal((await ali.rpc('set_barber_hours', { p_barber_id: danial.id, p_hours: [] })).error, null);
+  const day = (n: number) => addDays(today(), 30 + n);
+  const userId = (email: string) => tables().users.find((u) => u.email === email)!.id as string;
+  const join = (c: ReturnType<typeof client>, serviceId: string, d: string, barberId: string | null = null) =>
+    c.rpc('join_waitlist', { p_service_id: serviceId, p_day: d, p_barber_id: barberId });
+  const mine = async (c: ReturnType<typeof client>) => {
+    const { data, error } = await c.rpc('my_waitlist');
+    assert.equal(error, null);
+    return data as Row[];
+  };
+  const waiting = async (c: ReturnType<typeof client>, d: string) => {
+    const { data, error } = await c.rpc('shop_waitlist', { p_day: d });
+    assert.equal(error, null);
+    return data as Row[];
+  };
+
+  // Guests can't ask, and nobody reads or writes the table itself.
+  for (const [name, args] of [
+    ['join_waitlist', { p_service_id: haircut.id, p_day: day(0) }],
+    ['my_waitlist', {}],
+    ['shop_waitlist', { p_day: day(0) }],
+    ['leave_waitlist', { p_id: haircut.id }],
+    ['mark_waitlist_offered', { p_id: haircut.id }],
+  ] as const) {
+    assert.equal((await guest.rpc(name, args)).error?.code, '42501', name);
+  }
+  for (const c of [guest, hakim, ali]) {
+    assert.equal((await c.from('waitlist').select('*')).error?.code, '42501');
+    assert.equal((await c.from('waitlist').select('id')).error?.code, '42501');
+  }
+  const written = await hakim
+    .from('waitlist')
+    .insert({ shop_id: shop.id, customer_id: userId(DEMO_CUSTOMER_EMAIL), day: day(0), service_id: haircut.id });
+  assert.equal(written.error?.code, '42501');
+
+  // Hakim joins day 30 with any barber and day 31 with Ali.
+  const anyBarber = await join(hakim, haircut.id, day(0));
+  assert.equal(anyBarber.error, null);
+  assert.deepEqual(
+    [anyBarber.data.customer_id, anyBarber.data.shop_id, anyBarber.data.day, anyBarber.data.barber_id, anyBarber.data.offered_at],
+    [userId(DEMO_CUSTOMER_EMAIL), shop.id, day(0), null, null],
+  );
+  const withAli = (await join(hakim, haircut.id, day(1), aliChair.id)).data as Row;
+  assert.equal(withAli.barber_id, aliChair.id);
+
+  const refused = async (c: ReturnType<typeof client>, serviceId: string, d: string, barberId: string | null, message: string) => {
+    const { data, error } = await join(c, serviceId, d, barberId);
+    assert.equal(data, null);
+    assert.equal(error?.message, message);
+    return error!.code;
+  };
+  // Once a day per shop, whatever the service or barber.
+  const twice = await refused(hakim, services![1].id, day(0), aliChair.id, 'You\'re already on the waiting list for that day.');
+  assert.equal(twice, 'P0001');
+  // Only a day they could book.
+  const range = 'Pick a day from today up to 60 days ahead.';
+  assert.equal(await refused(hakim, haircut.id, addDays(today(), -1), null, range), '22023');
+  assert.equal(await refused(hakim, haircut.id, addDays(today(), 61), null, range), '22023');
+  await ali.from('services').update({ is_active: false }).eq('id', services![4].id);
+  assert.equal(await refused(hakim, services![4].id, day(2), null, 'This service is no longer available.'), 'P0002');
+  assert.equal(await refused(hakim, aliChair.id, day(2), null, 'This service is no longer available.'), 'P0002');
+  assert.equal(await refused(hakim, haircut.id, day(2), kemasBarbers![0].id, 'Barber not found.'), 'P0002');
+  // Danial has no hours, so his days are never full: there is nothing to wait for.
+  const notTaking = 'The shop isn\'t taking bookings that day.';
+  assert.equal(await refused(hakim, haircut.id, day(2), danial.id, notTaking), 'P0001');
+  assert.equal((await mine(hakim)).length, 2, 'nothing refused was kept');
+
+  // Closed days and a whole day off; half a day off still leaves the evening.
+  assert.equal((await ali.rpc('close_shop_days', { p_from: day(3), p_days: 1, p_reason: 'Kenduri' })).error, null);
+  const block = (d: string, time: string, minutes: number) =>
+    ali.rpc('add_shop_booking', { p_barber_id: aliChair.id, p_day: d, p_time: time, p_duration_min: minutes, p_is_block: true });
+  assert.equal((await block(day(4), '00:00', 1440)).error, null);
+  assert.equal((await block(day(5), '08:00', 360)).error, null);
+  await refused(jason, haircut.id, day(3), null, notTaking);
+  await refused(jason, haircut.id, day(4), null, notTaking);
+  assert.equal((await join(jason, haircut.id, day(5), aliChair.id)).error, null);
+  // A paused shop takes nobody.
+  await rahman.from('shops').update({ is_published: false }).eq('id', kemas.id);
+  await refused(jason, kemasServices![0].id, day(0), null, 'This service is no longer available.');
+  await rahman.from('shops').update({ is_published: true }).eq('id', kemas.id);
+
+  // Hakim's cut tomorrow: no waiting for a day he has a time.
+  await refused(hakim, haircut.id, addDays(today(), 1), null, 'You already have a booking here that day.');
+
+  // Three days at a time across every shop; a day gone by doesn't count and goes.
+  const gone = () => ({ shop_id: shop.id, day: addDays(today(), -1), service_id: haircut.id, created_at: kajang(-3, '09:00') });
+  insertRow('waitlist', { ...gone(), customer_id: userId(DEMO_CUSTOMER_EMAIL) });
+  // Kemas is closed on Fridays.
+  const kemasDay = new Date(`${day(6)}T00:00:00Z`).getUTCDay() === 5 ? day(7) : day(6);
+  const atKemas = (await join(hakim, kemasServices![1].id, kemasDay)).data as Row;
+  assert.ok(atKemas);
+  await refused(hakim, haircut.id, day(8), null, 'You can be on 3 waiting lists at a time. Leave one to join another.');
+  assert.equal(tables().waitlist.filter((w) => w.customer_id === userId(DEMO_CUSTOMER_EMAIL)).length, 3);
+  insertRow('waitlist', { ...gone(), customer_id: userId(DEMO_CUSTOMER_EMAIL) });
+  insertRow('waitlist', { ...gone(), customer_id: userId('jason@demo.potongku.my') });
+
+  // His own, soonest first, with each shop, service and barber; never a day gone by.
+  const own = await mine(hakim);
+  assert.deepEqual(
+    own.map((w) => [w.day, w.service_name, w.barber_name, (w.shop as Row).name]),
+    [
+      [day(0), 'Haircut', null, 'Ali Barber Sungai Chua'],
+      [day(1), 'Haircut', 'Ali', 'Ali Barber Sungai Chua'],
+      [kemasDay, kemasServices![1].name, null, 'Kemas Barber Kajang'],
+    ],
+  );
+  assert.deepEqual(own[0], {
+    id: anyBarber.data.id,
+    shop_id: shop.id,
+    day: day(0),
+    service_id: haircut.id,
+    service_name: 'Haircut',
+    barber_id: null,
+    barber_name: null,
+    created_at: anyBarber.data.created_at,
+    shop: { name: 'Ali Barber Sungai Chua', slug: 'ali-barber', time_zone: TZ },
+  });
+
+  // Leaving: his own, twice over is fine, and it makes room for another. Jason can't take Hakim off.
+  assert.equal((await hakim.rpc('leave_waitlist', { p_id: atKemas.id })).error, null);
+  assert.equal((await hakim.rpc('leave_waitlist', { p_id: atKemas.id })).error, null);
+  assert.equal((await mine(hakim)).length, 2);
+  assert.equal((await join(hakim, haircut.id, day(7))).error, null);
+  assert.deepEqual((await mine(jason)).map((w) => w.day), [day(5)]);
+  await jason.rpc('leave_waitlist', { p_id: anyBarber.data.id });
+  assert.equal((await mine(hakim)).length, 3);
+  assert.deepEqual(await waiting(jason, day(0)), [], 'customers see no shop’s list');
+
+  // Jason joins day 30 after Hakim, with Ali. Hakim asked first.
+  const jasonsTurn = (await join(jason, haircut.id, day(0), aliChair.id)).data as Row;
+  updateRows('waitlist', [tables().waitlist.find((w) => w.id === anyBarber.data.id)!], {
+    created_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+  });
+
+  // The owner sees who is waiting that day, oldest first, with each one's name and number.
+  const list = await waiting(ali, day(0));
+  assert.deepEqual(
+    list.map((w) => [w.name, w.phone, w.service_name, w.duration_min, w.barber_name, w.offered_at]),
+    [
+      ['Hakim', '011-2233 4455', 'Haircut', 30, null, null],
+      ['Jason', '012-901 3344', 'Haircut', 30, 'Ali', null],
+    ],
+  );
+  assert.deepEqual(Object.keys(list[0]).sort(), [
+    'barber_id',
+    'barber_name',
+    'created_at',
+    'duration_min',
+    'id',
+    'name',
+    'offered_at',
+    'phone',
+    'service_id',
+    'service_name',
+  ]);
+  assert.equal((await waiting(ali, day(1))).length, 1);
+  assert.deepEqual(await waiting(ali, addDays(today(), -1)), [], 'a day gone by is empty');
+  assert.deepEqual(await waiting(ali, kemasDay), [], 'Kemas’s list isn’t Ali’s');
+
+  // WhatsApping someone marks them offered for every phone; the owner takes Jason off.
+  const offered = await ali.rpc('mark_waitlist_offered', { p_id: anyBarber.data.id });
+  assert.equal(offered.error, null);
+  assert.ok(Math.abs(Date.parse(offered.data.offered_at) - Date.now()) < 5000);
+  assert.equal((await waiting(ali, day(0)))[0].offered_at, offered.data.offered_at);
+  assert.equal((await ali.rpc('leave_waitlist', { p_id: jasonsTurn.id })).error, null);
+  assert.deepEqual((await waiting(ali, day(0))).map((w) => w.name), ['Hakim']);
+  const goneNow = await ali.rpc('mark_waitlist_offered', { p_id: jasonsTurn.id });
+  assert.deepEqual([goneNow.error?.code, goneNow.error?.message], ['P0002', 'They\'re no longer on the waiting list.']);
+
+  // Nobody else: Hakim can't mark himself offered, and another shop's owner sees and touches nothing.
+  assert.equal((await hakim.rpc('mark_waitlist_offered', { p_id: withAli.id })).error?.code, 'P0002');
+  assert.deepEqual(await waiting(rahman, day(0)), []);
+  await rahman.rpc('leave_waitlist', { p_id: withAli.id });
+  assert.equal((await rahman.rpc('mark_waitlist_offered', { p_id: withAli.id })).error?.code, 'P0002');
+  assert.equal(tables().waitlist.find((w) => w.id === withAli.id)?.offered_at, null);
+
+  // A cancellation on a day someone is waiting for tells the shop so.
+  const bookAndCancel = async (d: number) => {
+    const { data, error } = await jason.rpc('book_appointment', { p_service_id: haircut.id, p_starts_at: kajang(30 + d, '10:00') });
+    assert.equal(error, null);
+    await jason.rpc('set_booking_status', { p_booking_id: data.id, p_status: 'cancelled' });
+    return data.id as string;
+  };
+  const onDay30 = await bookAndCancel(0);
+  const onDay32 = await bookAndCancel(2);
+  const news = (await ali.rpc('shop_changes', { p_since: null, p_limit: 20 })).data as ShopChanges;
+  const waitingFor = (id: string) => news.changes.find((c) => c.booking_id === id)?.waiting;
+  assert.deepEqual([waitingFor(onDay30), waitingFor(onDay32)], [1, 0]);
+  assert.ok(news.changes.filter((c) => c.change !== 'cancelled').every((c) => c.waiting === 0));
+
+  // Booking that day ends the request, and so does moving a booking into it, by the customer or the shop.
+  const booked = await hakim.rpc('book_appointment', { p_service_id: haircut.id, p_starts_at: kajang(30, '11:00') });
+  assert.equal(booked.error, null);
+  assert.deepEqual((await mine(hakim)).map((w) => w.day), [day(1), day(7)]);
+  await hakim.rpc('reschedule_booking', { p_booking_id: booked.data.id, p_starts_at: kajang(31, '11:00') });
+  assert.deepEqual((await mine(hakim)).map((w) => w.day), [day(7)]);
+  assert.equal(
+    (await ali.rpc('reschedule_booking', { p_booking_id: booked.data.id, p_starts_at: kajang(37, '09:00') })).error,
+    null,
+  );
+  assert.deepEqual(await mine(hakim), []);
+
+  // Deleting an account takes its requests with it.
+  const jasonId = userId('jason@demo.potongku.my');
+  assert.ok(tables().waitlist.some((w) => w.customer_id === jasonId));
+  assert.equal((await jason.rpc('delete_my_account')).error, null);
+  assert.ok(!tables().waitlist.some((w) => w.customer_id === jasonId));
+});
+
+test('Ali’s sample shop has a Saturday with no time left and two customers waiting, whatever the day and hour', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  try {
+    // Every hour of the day, each on a different weekday in turn.
+    for (let hour = 0; hour < 24; hour++) {
+      const date = addDays(today(), hour % 7);
+      const at = dayBounds(date, TZ).start.getTime() + (hour * 60 + 7) * 60_000;
+      const when = `on ${date} at ${hour}:07`;
+      setClock(() => at);
+      resetDemo();
+      const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+      const saturday = [7, 8, 9, 10, 11, 12, 13]
+        .map((n) => addDays(date, n))
+        .find((d) => new Date(`${d}T00:00:00Z`).getUTCDay() === 6)!;
+      for (const service of tables().services.filter((v) => v.shop_id === shop.id)) {
+        const { data } = await hakim.rpc('available_slots', { p_service_id: service.id, p_day: saturday });
+        assert.deepEqual(data, [], `${service.name} ${when}`);
+      }
+      const list = (await ali.rpc('shop_waitlist', { p_day: saturday })).data as Row[];
+      assert.deepEqual(
+        list.map((w) => [w.name, w.service_name, w.barber_name, w.offered_at]),
+        [
+          ['Farid', 'Haircut', null, null],
+          ['Aiman', 'Skin fade', 'Danial', null],
+        ],
+        when,
+      );
+      // Hakim isn't on it, and can be.
+      assert.deepEqual((await hakim.rpc('my_waitlist')).data, [], when);
+    }
+    const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+    const haircut = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!;
+    const saturday = String(tables().waitlist[0].day);
+    assert.equal((await hakim.rpc('join_waitlist', { p_service_id: haircut.id, p_day: saturday })).error, null);
+  } finally {
+    setClock(() => Date.now());
   }
 });
