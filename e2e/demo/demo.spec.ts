@@ -1428,6 +1428,129 @@ test('customers pick a barber by their intro and stars and read one barber’s r
   await expect(app.getByRole('radio', { name: /^Ali\. Rated \d\.\d out of 5 from \d+ reviews$/ })).toBeVisible();
 });
 
+/**
+ * The demo's full Saturday at Ali's, both chairs booked end to end: 7 to 13 days ahead in Kajang, so
+ * all of it is still to come at any hour, and Danial (off on Mondays) works it.
+ */
+function fullSaturday() {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+  const day = Array.from({ length: 7 }, (_, i) => new Date(Date.parse(`${today}T00:00:00Z`) + (i + 7) * 86_400_000)).find(
+    (d) => d.getUTCDay() === 6,
+  )!;
+  const part = (opts: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat('en-MY', { timeZone: 'UTC', ...opts }).format(day);
+  return {
+    /** Its chip in a day strip: "Sat 24 Oct". */
+    chip: new RegExp(`^Sat\\s*${part({ day: 'numeric' })} ${part({ month: 'short' })}$`),
+    /** As the app writes it: "Sat, 24 Oct". */
+    text: part({ weekday: 'short', day: 'numeric', month: 'short' }),
+  };
+}
+
+/** With the spaces that keep a time or a day on one line made plain. */
+const plain = (text: string | null) => (text ?? '').replace(/[\u00a0\u202f]/g, ' ');
+
+test('a customer on a full day asks to hear of a cancellation, the shop offers him the time on WhatsApp, and booking it ends his request', async ({
+  page,
+  context,
+}) => {
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const saturday = fullSaturday();
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  await network(page, { log: true });
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  // A day with free times never asks for his waiting list.
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await expect(app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first()).toBeVisible();
+  expect(await asked(page, '/rest/v1/rpc/my_waitlist')).toBe(0);
+
+  // Nothing free on the Saturday: he can ask to hear if a time frees up, without being promised one.
+  await app.getByRole('radio', { name: saturday.chip }).click();
+  await expect(app.getByText(/^No free times this day\./)).toBeVisible();
+  await expect(app.getByText('If someone cancels, the shop can WhatsApp you. They decide who gets the time.')).toBeVisible();
+  await snap(page, 'demo-45-waitlist-full-day');
+  await button(app, 'Tell the shop I’d take a cancellation').click();
+  await expect(app.getByText(`You’re on the waiting list for ${saturday.text}`)).toBeVisible();
+  await expect(app.getByText('Haircut, any barber. If a time frees up, the shop may WhatsApp you.')).toBeVisible();
+  await expect(button(app, `Leave the waiting list for ${saturday.text}`)).toBeVisible();
+  // Asked once, when the day turned out full.
+  expect(await asked(page, '/rest/v1/rpc/my_waitlist')).toBe(1);
+  await snap(page, 'demo-46-waitlist-joined');
+
+  // My bookings has it above his upcoming cut.
+  await app.getByLabel('Go back').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  const request = app.getByRole('heading', { name: `Waiting for a time on ${saturday.text}` });
+  await expect(request).toBeVisible();
+  await expect(app.getByText('Haircut, any barber', { exact: true })).toBeVisible();
+  await expect(app.getByText(/^Skin fade with (Ali|Danial) · RM25$/)).toBeVisible();
+  await snap(page, 'demo-47-waitlist-my-bookings');
+
+  // Ali's Saturday: three waiting, oldest first, Hakim last.
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await app.getByRole('radio', { name: saturday.chip }).click();
+  await expect(app.getByText('Waiting for a time (3)')).toBeVisible();
+  const removes = app.getByRole('button', { name: /^Remove \w+ from the waiting list$/ });
+  await expect(removes).toHaveCount(3);
+  expect(await removes.evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual([
+    'Remove Farid from the waiting list',
+    'Remove Aiman from the waiting list',
+    'Remove Hakim from the waiting list',
+  ]);
+  await expect(app.getByText('Skin fade with Danial', { exact: true })).toBeVisible();
+  await expect(app.getByText(/^Asked /)).toHaveCount(3);
+  await snap(page, 'demo-48-waitlist-barber');
+
+  // Mr Tan can't make his 11:30: the half hour fits a haircut with anyone, so Hakim is offered it.
+  await button(app, 'More actions for Mr Tan').click();
+  await button(app, 'Cancel booking').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Cancel booking', exact: true }).click();
+  await expect(app.getByText('11:30 am with Ali is free')).toHaveCount(2);
+  const opened = context.waitForEvent('page');
+  await button(app, 'Offer Hakim 11:30 am on WhatsApp').click();
+  const whatsapp = await opened;
+  await whatsapp.waitForLoadState();
+  const url = new URL(whatsapp.url());
+  expect(url.pathname).toBe('/601122334455');
+  expect(plain(url.searchParams.get('text'))).toMatch(
+    new RegExp(
+      `^Hi Hakim, an 11:30 am Haircut with Ali just opened on ${saturday.text} at Ali Barber Sungai Chua\\. ` +
+        'Want it\\? Reply here or book at \\S+/shop/ali-barber$',
+    ),
+  );
+  await whatsapp.close();
+  // Every phone in the shop sees it was offered, and when.
+  await expect(app.getByText(/^✓ Offered \d{1,2}:\d{2}\s(am|pm)$/)).toBeVisible();
+  await snap(page, 'demo-49-waitlist-offered');
+
+  // Hakim takes it from My bookings, and his request ends.
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await button(app, `See free times on ${saturday.text} at Ali Barber Sungai Chua`).click();
+  await app.getByRole('radio', { name: /^11:30\sam$/ }).click();
+  await button(app, 'Confirm booking').click();
+  await expect(app.getByText('You’re booked!')).toBeVisible();
+  await button(app, 'See my bookings').click();
+  await expect(app.getByText(/^Haircut with Ali · RM20$/)).toBeVisible();
+  await expect(request).toHaveCount(0);
+
+  // Plans change: he cancels, and Ali hears that two people are still waiting for a time that day.
+  await button(app, `Cancel booking on ${saturday.text}`).click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Cancel booking', exact: true }).click();
+  await expect(app.getByText(/^Haircut with Ali · RM20$/)).toHaveCount(0);
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await expect(app.getByText(/^Hakim cancelled .+\. 2 people are waiting for a time that day/)).toBeVisible();
+  await snap(page, 'demo-50-waitlist-news');
+  await app.getByRole('radio', { name: saturday.chip }).click();
+  await expect(app.getByText('Waiting for a time (2)')).toBeVisible();
+  await expect(button(app, 'Remove Hakim from the waiting list')).toHaveCount(0);
+});
+
 test.describe('on an iPhone', () => {
   // Chromium, telling the app it is Safari on an iPhone.
   test.use({ userAgent: devices['iPhone 13'].userAgent });

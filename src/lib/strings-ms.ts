@@ -1071,6 +1071,8 @@ export const ms: Record<string, string> = {
   '{service}, any barber': '{service}, mana-mana barber',
   'Hi {who}, a {time} {service} with {barber} just opened on {day} at {shop}. Want it? Reply here or book at {link}':
     'Hai {who}, slot {service} bersama {barber} jam {time} pada {day} baru kosong di {shop}. Nak ambil? Balas di sini atau tempah di {link}',
+  'Hi {who}, an {time} {service} with {barber} just opened on {day} at {shop}. Want it? Reply here or book at {link}':
+    'Hai {who}, slot {service} bersama {barber} jam {time} pada {day} baru kosong di {shop}. Nak ambil? Balas di sini atau tempah di {link}',
   'Hi {who}, this is {shop} about the {service} you asked for on {day}. Reply here and we’ll sort out a time.':
     'Hai {who}, ini {shop} berkenaan {service} yang anda minta pada {day}. Balas di sini dan kami akan aturkan masanya.',
   'Offered {time}': 'Ditawarkan {time}',

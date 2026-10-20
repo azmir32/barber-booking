@@ -147,15 +147,12 @@ export function offerMessage({
   const who = request.name || t('Customer');
   const dayText = formatDay(dayBounds(day, timeZone).start, timeZone);
   if (free) {
-    return t('Hi {who}, a {time} {service} with {barber} just opened on {day} at {shop}. Want it? Reply here or book at {link}', {
-      who,
-      time: formatTime(free.startsAt, timeZone),
-      service: request.service_name,
-      barber: free.barberName,
-      day: dayText,
-      shop,
-      link,
-    });
+    const time = formatTime(free.startsAt, timeZone);
+    const vars = { who, time, service: request.service_name, barber: free.barberName, day: dayText, shop, link };
+    // "an 8:00 am", "an 11:30 am": said with a vowel.
+    return /^(8|11)\D/.test(time)
+      ? t('Hi {who}, an {time} {service} with {barber} just opened on {day} at {shop}. Want it? Reply here or book at {link}', vars)
+      : t('Hi {who}, a {time} {service} with {barber} just opened on {day} at {shop}. Want it? Reply here or book at {link}', vars);
   }
   return t('Hi {who}, this is {shop} about the {service} you asked for on {day}. Reply here and we’ll sort out a time.', {
     who,

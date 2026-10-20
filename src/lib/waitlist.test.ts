@@ -149,6 +149,19 @@ test('the WhatsApp offers the time that fits, or else asks them to reply', () =>
     'Hi Hakim, a 5:30 pm Haircut with Ali just opened on Sat, 24 Oct at Ali Barber Sungai Chua. Want it? ' +
       'Reply here or book at https://potongku.my/shop/ali-barber',
   );
+  // Eight and eleven take "an".
+  assert.match(
+    plain(offerMessage({ ...vars, request: request(), free: { barberName: 'Ali', startsAt: kajang(`${DAY}T11:30:00`) } })),
+    /^Hi Hakim, an 11:30 am Haircut with Ali just opened on /,
+  );
+  assert.match(
+    plain(offerMessage({ ...vars, request: request(), free: { barberName: 'Ali', startsAt: kajang(`${DAY}T20:00:00`) } })),
+    /^Hi Hakim, an 8:00 pm Haircut /,
+  );
+  assert.match(
+    plain(offerMessage({ ...vars, request: request(), free: { barberName: 'Ali', startsAt: kajang(`${DAY}T13:00:00`) } })),
+    /^Hi Hakim, a 1:00 pm Haircut /,
+  );
   assert.equal(
     plain(offerMessage({ ...vars, request: request(), free: null })),
     'Hi Hakim, this is Ali Barber Sungai Chua about the Haircut you asked for on Sat, 24 Oct. Reply here and we’ll sort out a time.',

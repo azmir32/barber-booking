@@ -133,7 +133,12 @@ const SCENARIOS = {
         p_barber_id: null,
       }),
     ),
-  'My bookings': async () => must(client(idOf(`customer${pick(CUSTOMERS)}`)).rpc('my_bookings')),
+  // With the days they are waiting on, shown above their bookings.
+  'My bookings': async () => {
+    const c = customer();
+    const [bookings] = await Promise.all([must(c.rpc('my_bookings')), must(c.rpc('my_waitlist'))]);
+    return bookings;
+  },
   // Not something the app sends, but anyone with an account can: the
   // bookings policy has to stay fast without the app's filter.
   'Every booking I may see': async () =>
@@ -163,6 +168,8 @@ const SCENARIOS = {
           .select('id, barbers!inner(shop_id)', { count: 'exact', head: true })
           .eq('barbers.shop_id', shopId),
       ),
+      // Who is waiting for a time that day.
+      must(c.rpc('shop_waitlist', { p_day: day })),
       // The Bookings tab's number, asked every minute: as a phone that has never looked, the most to count.
       must(c.rpc('shop_changes', { p_since: null, p_limit: 5 })),
     ]);
@@ -192,6 +199,22 @@ const SCENARIOS = {
     const res = await c.rpc('book_appointment', { p_service_id: service, p_starts_at: slot.starts_at });
     // Losing a race or hitting the 4-per-shop limit is a normal answer, not a failure.
     if (res.error && res.error.code !== 'P0001') throw new Error(`${res.error.code}: ${res.error.message}`);
+    return res;
+  },
+  // A full day's "Tell the shop I'd take a cancellation", then Leave, so the table stays the size seeded.
+  'Join and leave a waiting list': async () => {
+    const i = pick(SHOPS);
+    const c = customer();
+    const res = await c.rpc('join_waitlist', {
+      p_service_id: idOf(`service${i}-1`),
+      p_day: localDate(pick(14)),
+      p_barber_id: null,
+    });
+    // Already waiting or booked that day, three lists already, or a closed day: normal answers.
+    if (res.error && res.error.code !== 'P0001' && res.error.code !== '23505') {
+      throw new Error(`${res.error.code}: ${res.error.message}`);
+    }
+    if (!res.error) await must(c.rpc('leave_waitlist', { p_id: res.data.id }));
     return res;
   },
 };

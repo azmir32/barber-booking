@@ -106,5 +106,22 @@ update public.barbers b set rating_count = x.n, rating_sum = x.total
 from (select barber_id, count(*)::int as n, sum(rating)::int as total from public.reviews group by barber_id) x
 where x.barber_id = b.id;
 
+\echo › waiting lists
+-- Three customers wait on each shop's Saturdays, the coming ones and the
+-- last two months' (nothing clears those: lists leave them out), asking
+-- for a service with one barber or any. One in three was sent a time.
+insert into public.waitlist (shop_id, customer_id, day, service_id, barber_id, offered_at, created_at)
+select md5('shop' || i)::uuid,
+       md5('customer' || (1 + (i * 97 + w * 1009 + (d + 60) * 7) % :customers))::uuid,
+       current_date + d,
+       md5('service' || i || '-' || (1 + (i + w) % 5))::uuid,
+       case when w > 0 then md5('barber' || i || '-' || w)::uuid end,
+       case when (i + w + d) % 3 = 0 then (current_date + d - 1) + time '18:00' end,
+       (current_date + d - 2) + time '09:00' + w * interval '20 minutes'
+from generate_series(1, :shops) i,
+     generate_series(0, 2) w,
+     generate_series(-60, 30) d
+where extract(dow from current_date + d) = 6;
+
 analyze;
 \echo › done
