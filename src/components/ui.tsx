@@ -1,8 +1,9 @@
 // Small set of shared building blocks so every screen looks the same.
 
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useState, type ComponentProps, type ReactNode, type Ref } from 'react';
+import { useEffect, useId, useState, type ComponentProps, type ReactNode, type Ref } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   Animated,
   Easing,
@@ -197,7 +198,7 @@ export function Button({
       ]}>
       {icon ? (
         <View style={[styles.buttonInner, { opacity: loading ? 0 : 1 }]}>
-          <Ionicons name={icon} size={20} color={iconColor ?? fg} />
+          <Ionicons aria-hidden name={icon} size={20} color={iconColor ?? fg} />
           <Text style={[text, styles.buttonTextBesideIcon, { color: fg }]}>{title}</Text>
         </View>
       ) : (
@@ -225,13 +226,16 @@ export function Field({
   const theme = useTheme();
   const scale = useTextScale();
   const [focused, setFocused] = useState(false);
+  const below = useId();
   return (
     <View style={styles.field}>
       <T variant="label">{label}</T>
       <TextInput
         ref={ref}
         accessibilityLabel={label}
-        accessibilityHint={hint}
+        // Read on reaching the field, after its name: what is wrong with it, or else the hint.
+        accessibilityHint={error || hint}
+        aria-describedby={error || hint ? below : undefined}
         aria-invalid={Boolean(error)}
         placeholderTextColor={theme.textSecondary}
         {...props}
@@ -257,7 +261,13 @@ export function Field({
           props.style,
         ]}
       />
-      {error ? <ErrorText message={error} /> : hint ? <T variant="small">{hint}</T> : null}
+      {error ? (
+        <ErrorText id={below} message={error} />
+      ) : hint ? (
+        <T variant="small" id={below}>
+          {hint}
+        </T>
+      ) : null}
     </View>
   );
 }
@@ -316,12 +326,12 @@ export function LinkCard({
   return (
     <Card role="link" onPress={onPress} accessibilityLabel={`${title}: ${summary}`}>
       <View style={styles.linkRow}>
-        <Ionicons name={icon} size={24} color={theme.tint} />
+        <Ionicons aria-hidden name={icon} size={24} color={theme.tint} />
         <View style={styles.linkInfo}>
           <T variant="heading">{title}</T>
           <T variant="muted">{summary}</T>
         </View>
-        <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+        <Ionicons aria-hidden name="chevron-forward" size={22} color={theme.textSecondary} />
       </View>
     </Card>
   );
@@ -392,7 +402,7 @@ export function Chip({
       style={[styles.chip, look.box, style]}>
       {icon ? (
         <View style={styles.buttonInner}>
-          <Ionicons name={icon} size={18} color={look.text} />
+          <Ionicons aria-hidden name={icon} size={18} color={look.text} />
           <Text style={[text, { color: look.text }]}>{label}</Text>
         </View>
       ) : (
@@ -429,7 +439,7 @@ export function IconButton({
       onPress={onPress}
       hitSlop={4}
       style={({ pressed }) => [styles.iconButton, { backgroundColor: bg, borderColor: border, opacity: pressed ? 0.8 : 1 }]}>
-      <Ionicons name={icon} size={22} color={fg} />
+      <Ionicons aria-hidden name={icon} size={22} color={fg} />
     </Pressable>
   );
 }
@@ -584,7 +594,7 @@ export function StaleNote({
       role="status"
       accessibilityLiveRegion="polite"
       style={[styles.staleNote, { backgroundColor: theme.card, borderColor: theme.border }]}>
-      <Ionicons name="cloud-offline-outline" size={20} color={theme.warning} />
+      <Ionicons aria-hidden name="cloud-offline-outline" size={20} color={theme.warning} />
       <T variant="small" style={[styles.staleText, { flexBasis: 140 * grow }, grow > 1 && styles.staleTextWrapping]}>
         {staleLine(savedAt, now, timeZone)}
       </T>
@@ -593,12 +603,17 @@ export function StaleNote({
   );
 }
 
-export function ErrorText({ message }: { message: string | null }) {
+export function ErrorText({ message, id }: { message: string | null; id?: string }) {
   const theme = useTheme();
   const scale = useTextScale();
+  useEffect(() => {
+    // iOS has no live regions, so VoiceOver is told a new error out loud.
+    if (message && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(message);
+  }, [message]);
   if (!message) return null;
   return (
     <Text
+      id={id}
       role="alert"
       accessibilityLiveRegion="polite"
       // Text's own size, 14, grown with the rest.

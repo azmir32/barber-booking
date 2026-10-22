@@ -100,7 +100,7 @@ export default function Poster() {
         // Unlike the white poster below, so it isn't skipped on the way to Print.
         <Card style={{ borderColor: theme.warning, borderWidth: 2 }}>
           <View style={styles.warningTitle}>
-            <Ionicons name="warning-outline" size={22} color={theme.warning} />
+            <Ionicons aria-hidden name="warning-outline" size={22} color={theme.warning} />
             <T variant="heading" style={styles.grow}>
               {shop.is_published
                 ? t('Hidden from customers')

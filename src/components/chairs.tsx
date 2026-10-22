@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 
 import { Bone, Empty, IconButton, Skeleton, T } from '@/components/ui';
-import { chairFills, type Palette } from '@/constants/colors';
+import { chairEdges, chairFills, type Palette } from '@/constants/colors';
 import { Fonts, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -554,7 +554,7 @@ function FreeGap({
         />
       ) : null}
       <View style={styles.freeHint}>
-        <Ionicons name="add" size={Math.round(16 * Math.max(1, text.total))} color={theme.textSecondary} />
+        <Ionicons aria-hidden name="add" size={Math.round(16 * Math.max(1, text.total))} color={theme.textSecondary} />
         <Text
           numberOfLines={1}
           maxFontSizeMultiplier={text.maxFontSizeMultiplier}
@@ -751,21 +751,8 @@ function moveFocus(node: View | null | undefined) {
 }
 
 function look(status: ChairStatus, theme: Palette, fills: ReturnType<typeof chairFills>) {
-  switch (status) {
-    case 'upcoming':
-      return { fill: fills.upcoming, edge: theme.tint };
-    case 'now':
-      return { fill: fills.now, edge: theme.success };
-    case 'toMark':
-      return { fill: fills.toMark, edge: theme.warning };
-    case 'done':
-      return { fill: fills.done, edge: theme.textSecondary };
-    // Over, so grey like a done one, with a red edge.
-    case 'noShow':
-      return { fill: fills.done, edge: theme.danger };
-    default:
-      return { fill: fills.block, edge: theme.inputBorder };
-  }
+  // A no-show is over, so grey like a done one, with a red edge.
+  return { fill: status === 'noShow' ? fills.done : fills[status], edge: chairEdges(theme)[status] };
 }
 
 /** A barber's name over their chair, with Away under it for one marked away who still has customers booked. */

@@ -8,8 +8,8 @@ export const Colors = {
     background: '#F7F6F3',
     card: '#FFFFFF',
     border: '#E3E1DC',
-    /** Edges of things you type in or tap: dark enough to see (3:1). */
-    inputBorder: '#8F8B83',
+    /** Edges of things you type in or tap, and of blocked time in the chairs: dark enough to see (3:1) on each. */
+    inputBorder: '#85827B',
     /** Fill of primary buttons and selected chips, under white text. */
     accent: '#C8283C',
     accentText: '#FFFFFF',
@@ -30,7 +30,7 @@ export const Colors = {
     background: '#0F1115',
     card: '#191C22',
     border: '#2A2E36',
-    inputBorder: '#6B7280',
+    inputBorder: '#767C89',
     accent: '#C8283C',
     accentText: '#FFFFFF',
     tint: '#FF7A8A',
@@ -66,5 +66,20 @@ export function chairFills(c: Palette) {
     done: c.chip,
     block: blend(c.textSecondary, c.card, 0.16),
     shade: blend(c.textSecondary, c.card, 0.1),
+  };
+}
+
+/**
+ * The edge down the left of each kind of booking in the chairs, which tells
+ * them apart at a glance: 3:1 on its fill (a no-show has the done fill).
+ */
+export function chairEdges(c: Palette) {
+  return {
+    upcoming: c.tint,
+    now: c.success,
+    toMark: c.warning,
+    done: c.textSecondary,
+    noShow: c.danger,
+    block: c.inputBorder,
   };
 }

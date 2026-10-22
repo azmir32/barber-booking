@@ -21,21 +21,21 @@ export default function CustomerTabs() {
         name="index"
         options={{
           title: t('Barbers'),
-          tabBarIcon: ({ color, size }) => <Ionicons name="cut-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => <Ionicons aria-hidden name="cut-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="bookings"
         options={{
           title: t('My bookings'),
-          tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => <Ionicons aria-hidden name="calendar-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="account"
         options={{
           title: t('Account'),
-          tabBarIcon: ({ color, size }) => <Ionicons name="person-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => <Ionicons aria-hidden name="person-outline" color={color} size={size} />,
         }}
       />
     </Tabs>

@@ -60,7 +60,7 @@ function NextCutCard({ next, more, now }: { next: NonNullable<MyShops['next']>; 
       onPress={() => router.push('/customer/bookings')}
       accessibilityLabel={andMore ? `${label}. ${andMore}` : label}>
       <View style={styles.linkRow}>
-        <Ionicons name="calendar-outline" size={24} color={theme.tint} />
+        <Ionicons aria-hidden name="calendar-outline" size={24} color={theme.tint} />
         <View style={styles.info}>
           {/* The time stays whole; a long Malay day and time wrap after the date. */}
           <T style={styles.strong}>{`${day}, ${noBreak(time)}`}</T>
@@ -72,7 +72,7 @@ function NextCutCard({ next, more, now }: { next: NonNullable<MyShops['next']>; 
             </T>
           ) : null}
         </View>
-        <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+        <Ionicons aria-hidden name="chevron-forward" size={22} color={theme.textSecondary} />
       </View>
     </Card>
   );

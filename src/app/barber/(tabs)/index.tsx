@@ -801,12 +801,12 @@ export default function BarberBookings() {
           onPress={() => router.push('/barber/shop')}
           accessibilityLabel={`${notTaking.title}: ${notTaking.body}`}>
           <View style={styles.compactRow}>
-            <Ionicons name="storefront-outline" size={22} color={theme.tint} />
+            <Ionicons aria-hidden name="storefront-outline" size={22} color={theme.tint} />
             <View style={styles.info}>
               <T variant="label">{notTaking.title}</T>
               <T variant="small">{notTaking.body}</T>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+            <Ionicons aria-hidden name="chevron-forward" size={22} color={theme.textSecondary} />
           </View>
         </Card>
       ) : null}
@@ -841,12 +841,12 @@ export default function BarberBookings() {
           onPress={() => pickDay(addDays(day, 1))}
           accessibilityLabel={`${t('Remind tomorrow’s customers')}: ${t('{count} still to remind', { count: toRemind })}`}>
           <View style={styles.compactRow}>
-            <Ionicons name="logo-whatsapp" size={22} color={theme.success} />
+            <Ionicons aria-hidden name="logo-whatsapp" size={22} color={theme.success} />
             <View style={styles.info}>
               <T variant="label">{t('Remind tomorrow’s customers')}</T>
               <T variant="small">{t('{count} still to remind', { count: toRemind })}</T>
             </View>
-            <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+            <Ionicons aria-hidden name="chevron-forward" size={22} color={theme.textSecondary} />
           </View>
         </Card>
       ) : null}
@@ -973,7 +973,12 @@ export default function BarberBookings() {
               onPress={() => setShowFinished(!showFinished)}
               style={styles.fold}>
               <T variant="heading">{finishedTitle}</T>
-              <Ionicons name={finishedOpen ? 'chevron-up' : 'chevron-down'} size={22} color={theme.textSecondary} />
+              <Ionicons
+                aria-hidden
+                name={finishedOpen ? 'chevron-up' : 'chevron-down'}
+                size={22}
+                color={theme.textSecondary}
+              />
             </Pressable>
           )}
           {finishedOpen ? (
@@ -1265,13 +1270,13 @@ function NewsCard({
             accessibilityLabel={`${text}. ${when}`}
             onPress={() => onOpen(c)}
             style={({ pressed }) => [styles.newsLine, pressed && { opacity: 0.6 }]}>
-            <Ionicons name={look[c.change].icon} size={22} color={look[c.change].color} />
+            <Ionicons aria-hidden name={look[c.change].icon} size={22} color={look[c.change].color} />
             <T style={styles.newsText}>
               {text}
               {/* Kept together and with the word before, so the dot never starts or ends a line. */}
               <Text style={{ color: theme.textSecondary }}>{noBreak(` · ${when}`)}</Text>
             </T>
-            <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
+            <Ionicons aria-hidden name="chevron-forward" size={20} color={theme.textSecondary} />
           </Pressable>
         );
       })}

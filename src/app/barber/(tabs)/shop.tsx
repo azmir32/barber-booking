@@ -303,7 +303,7 @@ export default function MyShop() {
             <T variant="small">{t('Put it in your Instagram bio, WhatsApp status and on a poster at the shop.')}</T>
           ) : (
             <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
-              <Ionicons name="warning-outline" size={18} color={theme.warning} style={{ marginTop: 1 }} />
+              <Ionicons aria-hidden name="warning-outline" size={18} color={theme.warning} style={{ marginTop: 1 }} />
               <T variant="label" style={{ flex: 1 }}>
                 {billing.tone === 'danger'
                   ? t('Customers can’t book from this link until you subscribe.')

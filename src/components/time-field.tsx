@@ -89,7 +89,7 @@ export function TimeField({
           },
         ]}>
         <T style={{ flex: 1, color: value ? theme.text : theme.textSecondary }}>{shown}</T>
-        <Ionicons name="time-outline" size={20} color={theme.textSecondary} />
+        <Ionicons aria-hidden name="time-outline" size={20} color={theme.textSecondary} />
       </Pressable>
       {hint ? <T variant="small">{hint}</T> : null}
       {open ? (

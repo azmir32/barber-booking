@@ -29,9 +29,10 @@ const ONE_TO_FIVE = [1, 2, 3, 4, 5];
 export function Stars({ rating, size = 16, label }: { rating: number; size?: number; label?: string }) {
   const theme = useTheme();
   return (
-    <View role="img" accessibilityLabel={label ?? starsLabel(rating)} style={styles.stars}>
+    <View role="img" accessible accessibilityLabel={label ?? starsLabel(rating)} style={styles.stars}>
       {ONE_TO_FIVE.map((n) => (
         <Ionicons
+          aria-hidden
           key={n}
           name={n <= rating ? 'star' : 'star-outline'}
           size={size}
@@ -69,7 +70,7 @@ export function RatingSummary({
   );
   if (!onPress) {
     return (
-      <View role="img" accessibilityLabel={summary.label}>
+      <View role="img" accessible accessibilityLabel={summary.label}>
         {text}
       </View>
     );
@@ -146,6 +147,7 @@ export function StarPicker({ value, onChange }: { value: number; onChange: (star
           onPress={() => onChange(n)}
           style={({ pressed }) => [styles.starButton, pressed && { opacity: 0.6 }]}>
           <Ionicons
+            aria-hidden
             name={n <= value ? 'star' : 'star-outline'}
             size={34}
             color={n <= value ? theme.warning : theme.inputBorder}
