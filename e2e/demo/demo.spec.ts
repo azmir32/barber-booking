@@ -1429,23 +1429,28 @@ test('customers pick a barber by their intro and stars and read one barber’s r
 });
 
 /**
- * The demo's full Saturday at Ali's, both chairs booked end to end: 7 to 13 days ahead in Kajang, so
- * all of it is still to come at any hour, and Danial (off on Mondays) works it.
+ * The given weekday (0 is Sunday) 7 to 13 days ahead in Kajang: all of it still to come at any hour,
+ * and in the demo nobody is booked then but on its full Saturday.
  */
-function fullSaturday() {
+function weekAhead(weekday: number) {
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
   const day = Array.from({ length: 7 }, (_, i) => new Date(Date.parse(`${today}T00:00:00Z`) + (i + 7) * 86_400_000)).find(
-    (d) => d.getUTCDay() === 6,
+    (d) => d.getUTCDay() === weekday,
   )!;
   const part = (opts: Intl.DateTimeFormatOptions) =>
     new Intl.DateTimeFormat('en-MY', { timeZone: 'UTC', ...opts }).format(day);
   return {
     /** Its chip in a day strip: "Sat 24 Oct". */
-    chip: new RegExp(`^Sat\\s*${part({ day: 'numeric' })} ${part({ month: 'short' })}$`),
+    chip: new RegExp(`^${part({ weekday: 'short' })}\\s*${part({ day: 'numeric' })} ${part({ month: 'short' })}$`),
+    /** Its chip when it can't be picked, saying why: "Tue Off". */
+    shut: (why: string) => new RegExp(`^${part({ weekday: 'short' })}\\s*${why}$`),
     /** As the app writes it: "Sat, 24 Oct". */
     text: part({ weekday: 'short', day: 'numeric', month: 'short' }),
   };
 }
+
+/** The demo's full Saturday at Ali's, both chairs booked end to end; Danial (off on Mondays) works it. */
+const fullSaturday = () => weekAhead(6);
 
 /** With the spaces that keep a time or a day on one line made plain. */
 const plain = (text: string | null) => (text ?? '').replace(/[\u00a0\u202f]/g, ' ');
@@ -1549,6 +1554,54 @@ test('a customer on a full day asks to hear of a cancellation, the shop offers h
   await app.getByRole('radio', { name: saturday.chip }).click();
   await expect(app.getByText('Waiting for a time (2)')).toBeVisible();
   await expect(button(app, 'Remove Hakim from the waiting list')).toHaveCount(0);
+
+  // Ali WhatsApps Farid about the 11:30 and he says yes: added by hand with his number, he is off the list.
+  await button(app, '+ Add booking or block time').first().click();
+  await app.getByRole('radio', { name: /^11:30\sam$/ }).click();
+  await app.getByLabel('Customer name (optional)', { exact: true }).fill('Farid');
+  await app.getByLabel('Customer phone (optional)', { exact: true }).fill('+60 12-778 9012');
+  await button(app, 'Add booking').click();
+  await expect(app.getByText('Waiting for a time (1)')).toBeVisible();
+  await expect(button(app, 'Remove Farid from the waiting list')).toHaveCount(0);
+  await expect(button(app, 'Remove Aiman from the waiting list')).toBeVisible();
+});
+
+test('a barber’s whole day off shows as Off for them on the shop page, so nobody is asked to wait for it', async ({
+  page,
+}) => {
+  // Both work Tuesdays; Danial works Sundays on his own.
+  const tuesday = weekAhead(2);
+  const sunday = weekAhead(0);
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  for (const day of [tuesday, sunday]) {
+    await app.getByRole('radio', { name: day.chip }).click();
+    await button(app, '+ Add booking or block time').first().click();
+    await app.getByRole('radio', { name: 'Block time', exact: true }).click();
+    await app.getByRole('radio', { name: 'Danial', exact: true }).click();
+    await app.getByRole('radio', { name: 'Whole day', exact: true }).click();
+    await app.getByLabel('Reason (optional)', { exact: true }).fill('Cuti');
+    await button(app, 'Block the day').click();
+    await expect(app.getByText('Cuti · Danial', { exact: true })).toBeVisible();
+  }
+  // Nobody else works Sundays, so that one is closed, on Ali's strip too.
+  await expect(app.getByRole('radio', { name: sunday.shut('Closed') })).toBeVisible();
+
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  // Any barber: Ali is in on the Tuesday, and the Sunday can't be picked.
+  await app.getByRole('radio', { name: tuesday.chip }).click();
+  await expect(app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first()).toBeVisible();
+  await expect(app.getByRole('radio', { name: sunday.shut('Closed') })).toBeDisabled();
+  // With Danial, his Tuesday is Off rather than a full day to wait for.
+  await app.getByRole('radio', { name: /^Danial\. / }).click();
+  const off = app.getByRole('radio', { name: tuesday.shut('Off') });
+  await expect(off).toBeDisabled();
+  await expect(off).not.toBeChecked();
+  await expect(button(app, 'Tell the shop I’d take a cancellation')).toHaveCount(0);
+  await snap(page, 'demo-51-barber-day-off');
 });
 
 test.describe('on an iPhone', () => {

@@ -1346,13 +1346,18 @@ $$;
 -- other days, so the page shows that barber off rather than fully booked
 -- (where waiting for a time could never work). Only the owner sees the
 -- reason. is_closure marks the first kind, which Reopen undoes.
+-- plpgsql so that each connection plans the query once: every shop page
+-- asks for it, and as plain SQL planning it took ten times as long as
+-- running it (see README, "How many users it handles").
 create function public.shop_closed_days(p_shop_id uuid, p_from date, p_to date)
 returns table (day date, reason text, is_closure boolean, barber_id uuid)
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
+begin
+  return query
   with shop as (
     select sh.id, sh.time_zone, sh.owner_id = (select auth.uid()) as mine,
            least(p_to, p_from + 90) as last_day
@@ -1403,6 +1408,7 @@ as $$
   select o.day, case when shop.mine then o.reason end, false, o.barber_id
   from off o join off_days d on d.day = o.day and not d.all_off, shop
   order by 1, 4;
+end;
 $$;
 
 -- The owner's takings for a run of days by the shop's clock (p_from to p_to,
