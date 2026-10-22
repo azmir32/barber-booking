@@ -210,8 +210,8 @@ const SCENARIOS = {
       p_day: localDate(pick(14)),
       p_barber_id: null,
     });
-    // Already waiting or booked that day, three lists already, or a closed day: normal answers.
-    if (res.error && res.error.code !== 'P0001' && res.error.code !== '23505') {
+    // Already waiting or booked that day, three lists already (P0001), or a closed day (22023): normal answers.
+    if (res.error && !['P0001', '22023', '23505'].includes(res.error.code)) {
       throw new Error(`${res.error.code}: ${res.error.message}`);
     }
     if (!res.error) await must(c.rpc('leave_waitlist', { p_id: res.data.id }));
