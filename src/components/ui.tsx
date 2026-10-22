@@ -1,6 +1,8 @@
 // Small set of shared building blocks so every screen looks the same.
 
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { router } from 'expo-router';
+import { HeaderBackButton } from 'expo-router/react-navigation';
 import { useEffect, useId, useState, type ComponentProps, type ReactNode, type Ref } from 'react';
 import {
   AccessibilityInfo,
@@ -15,6 +17,7 @@ import {
   Text,
   TextInput,
   View,
+  type ColorValue,
   type TextInputProps,
   type TextProps,
   type DimensionValue,
@@ -560,13 +563,22 @@ export function ScreenTitle({ title, refreshing }: { title: string; refreshing?:
 }
 
 /**
- * True once text is a fifth bigger than Normal or more, the app's choice and
- * the phone's together: the point where things that sit side by side, like a
- * start time and what was booked, read better one under the other.
+ * A stack's back button on the web (headerLeft). React Navigation's own is
+ * read as "Go back" in English but "Kembali, back" in Malay; this one says
+ * Go back in the app's language and looks the same. Phones keep their own.
  */
-export function useBigText(): boolean {
-  return useTextFit().total >= 1.2;
-}
+export const webBackButton =
+  Platform.OS === 'web'
+    ? ({ canGoBack, tintColor, href }: { canGoBack?: boolean; tintColor?: ColorValue; href?: string }) =>
+        canGoBack ? (
+          <HeaderBackButton
+            tintColor={tintColor}
+            href={href}
+            accessibilityLabel={t('Go back')}
+            onPress={() => router.back()}
+          />
+        ) : null
+    : undefined;
 
 /**
  * When asking the server again failed: what is on screen stays, with one

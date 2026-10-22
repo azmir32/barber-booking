@@ -4,21 +4,7 @@ import { Linking, StyleSheet, View } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { RateForm, ShopReply, Stars } from '@/components/reviews';
-import {
-  Bone,
-  Button,
-  Card,
-  Empty,
-  ErrorText,
-  Row,
-  Screen,
-  ScreenTitle,
-  Section,
-  Skeleton,
-  StaleNote,
-  T,
-  useBigText,
-} from '@/components/ui';
+import { Bone, Button, Card, Empty, ErrorText, Row, Screen, ScreenTitle, Section, Skeleton, StaleNote, T } from '@/components/ui';
 import { APP_NAME, bookingLink } from '@/constants/brand';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
@@ -34,6 +20,7 @@ import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
 import { canRate, rateUntil, starsLabel, type MyReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { useBigText } from '@/lib/text-size-provider';
 import { formatDay, formatPrice, formatTime, noBreak } from '@/lib/time';
 import type { Booking } from '@/lib/types';
 

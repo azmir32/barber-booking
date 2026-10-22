@@ -2,7 +2,7 @@ import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
 import { ConfirmHost } from '@/components/confirm-host';
-import { Empty, Screen, T } from '@/components/ui';
+import { Empty, Screen, T, webBackButton } from '@/components/ui';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider } from '@/lib/auth';
@@ -56,7 +56,7 @@ export default function RootLayout() {
 function AppStack() {
   const headerTitleStyle = useHeaderTitleStyle();
   return (
-    <Stack screenOptions={{ headerShown: false, headerBackTitle: t('Back'), headerTitleStyle }}>
+    <Stack screenOptions={{ headerShown: false, headerBackTitle: t('Back'), headerTitleStyle, headerLeft: webBackButton }}>
       <Stack.Screen name="shop/[slug]" options={{ headerShown: true, title: '' }} />
       <Stack.Screen name="sign-in" options={{ headerShown: true, title: t('Sign in') }} />
       <Stack.Screen name="sign-up" options={{ headerShown: true, title: t('Create account') }} />

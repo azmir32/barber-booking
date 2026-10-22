@@ -1072,4 +1072,5 @@ export const ms: Record<string, string> = {
   Large: 'Besar',
   Largest: 'Paling besar',
   'Your phone’s own text size makes it bigger still.': 'Saiz teks telefon anda menjadikannya lebih besar lagi.',
+  'Go back': 'Kembali',
 };

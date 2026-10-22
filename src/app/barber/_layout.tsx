@@ -4,7 +4,7 @@ import { View } from 'react-native';
 
 import { LanguagePicker, TextSizePicker } from '@/components/account-panel';
 import { ShopForm } from '@/components/shop-form';
-import { Button, ErrorText, Loading, Screen, T } from '@/components/ui';
+import { Button, ErrorText, Loading, Screen, T, webBackButton } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
@@ -55,7 +55,7 @@ function BarberStack() {
   }
 
   return (
-    <Stack screenOptions={{ headerBackTitle: t('Back'), headerTitleStyle }}>
+    <Stack screenOptions={{ headerBackTitle: t('Back'), headerTitleStyle, headerLeft: webBackButton }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="hours/[id]" options={{ title: t('Working hours') }} />
       <Stack.Screen name="new-booking" options={{ title: t('Add to the day') }} />

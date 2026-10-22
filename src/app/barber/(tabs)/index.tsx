@@ -24,7 +24,6 @@ import {
   Skeleton,
   StaleNote,
   T,
-  useBigText,
 } from '@/components/ui';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
@@ -43,6 +42,7 @@ import { whatsappUrl } from '@/lib/phone';
 import { canRemind, needsReminder, reminderMessage } from '@/lib/reminders';
 import { useShopNews } from '@/lib/shop-news';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { useBigText } from '@/lib/text-size-provider';
 import {
   addDays,
   dayBounds,
@@ -1343,7 +1343,8 @@ function FinishedRow({
           <StartTime at={b.starts_at} tz={tz} variant="label" />
         </View>
         <View style={styles.info}>
-          <T variant="label" numberOfLines={1}>
+          {/* One line keeps a finished row short; with big text the whole name comes first. */}
+          <T variant="label" numberOfLines={big ? undefined : 1}>
             {who}
           </T>
           <Row style={styles.badges}>

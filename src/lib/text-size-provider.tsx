@@ -55,6 +55,15 @@ export function useTextFit(cap?: number) {
   return fitText(useTextScale(), cap, fontScale);
 }
 
+/**
+ * True once text is a fifth bigger than Normal or more, the app's choice and
+ * the phone's together: the point where things that sit side by side, like a
+ * start time and what was booked, read better one under the other.
+ */
+export function useBigText(): boolean {
+  return useTextFit().total >= 1.2;
+}
+
 // React Navigation's own sizes: a tab's label under its icon, the bar it sits in, and a screen's title in the header.
 const TAB_LABEL = 10;
 const TAB_BAR = 49;
@@ -78,8 +87,12 @@ export function useTabBarText(): { tabBarLabelStyle?: TextStyle; barHeight: { he
   };
 }
 
-/** A stack screen's title in the header, grown with the app's text up to 1.25 times, so a long Malay one still fits beside Back. */
+/**
+ * A stack screen's title in the header, grown with the app's text up to 1.15
+ * times, so a long Malay one ("Tutup kedai beberapa hari") still fits on its
+ * one line beside Back at 360 wide. The screen's own words below grow fully.
+ */
 export function useHeaderTitleStyle(): TextStyle | undefined {
-  const { scale } = fitText(useTextScale(), 1.25);
+  const { scale } = fitText(useTextScale(), 1.15);
   return scale === 1 ? undefined : { fontSize: HEADER_TITLE * scale };
 }
