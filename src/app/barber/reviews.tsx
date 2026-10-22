@@ -119,10 +119,10 @@ export default function Reviews() {
   return (
     <Screen edges={['bottom']} onRefresh={load}>
       {totals && average != null ? (
-        <View style={styles.summary} role="img" accessibilityLabel={ratingLabel(average, totals.count)}>
+        <View style={styles.summary} role="img" accessible accessibilityLabel={ratingLabel(average, totals.count)}>
           <Row>
             <T variant="title">{averageText(average)}</T>
-            <Ionicons name="star" size={26} color={theme.warning} />
+            <Ionicons aria-hidden name="star" size={26} color={theme.warning} />
           </Row>
           <T variant="muted">{reviewCount(totals.count)}</T>
         </View>

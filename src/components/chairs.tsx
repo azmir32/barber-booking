@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 
 import { Bone, Empty, IconButton, Skeleton, T } from '@/components/ui';
-import { chairFills, type Palette } from '@/constants/colors';
+import { chairEdges, chairFills, type Palette } from '@/constants/colors';
 import { Fonts, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -37,14 +37,22 @@ import {
   type Span,
 } from '@/lib/chairs';
 import { t } from '@/lib/lang';
+import { scaleText } from '@/lib/text-size';
+import { useTextFit } from '@/lib/text-size-provider';
 import { clockParts, formatClockOnly, formatTime } from '@/lib/time';
 import type { Booking } from '@/lib/types';
 
 /** A quarter hour is a finger's height, so the shortest booking (drawn a quarter hour at least) or free time is easy to tap. */
 const QUARTER_PX = 44;
-const PER_MINUTE = QUARTER_PX / 15;
 /** The row of barbers' names over the chairs, and its copy that stays at the top of the screen. */
-export const NAMES_HEIGHT = 48;
+const NAMES_HEIGHT = 48;
+/**
+ * The most the chairs' words grow, the app's text size and the phone's
+ * together. A chair is 120 to 160 wide on a phone, so past this a name is cut
+ * short; the quarter hours grow with the words, so one still holds a name and
+ * a time. The list, and a booking's actions, show everything at full size.
+ */
+const CHAIR_TEXT_CAP = 1.25;
 const TIME_WIDTH = 56;
 /** Narrower than this, a chair can't show a name and a service; two still fit on a 360-wide phone. */
 const MIN_CHAIR_WIDTH = 120;
@@ -64,6 +72,8 @@ export type ChairsFrame = {
   x: number;
   width: number;
   chairWidth: number;
+  /** The row of names, taller with bigger text. */
+  namesHeight: number;
 };
 
 /**
@@ -129,29 +139,36 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
   const blocks = useRef(new Map<string, View>());
   const lastSelected = useRef(selectedId);
 
+  // Bigger text makes the quarter hours and the row of names taller, so its lines still fit.
+  const text = useTextFit(CHAIR_TEXT_CAP);
+  const grow = Math.max(1, text.total);
+  const perMinute = (QUARTER_PX * grow) / 15;
+  const namesHeight = Math.round(NAMES_HEIGHT * grow);
+  const timeWidth = Math.round(TIME_WIDTH * grow);
+
   const content = measured || Math.min(windowWidth, MaxContentWidth) - 2 * Spacing.lg;
   const gridWidth = Math.max(content, Math.min(windowWidth, MAX_GRID_WIDTH + 2 * Spacing.lg) - 2 * Spacing.lg);
-  const room = gridWidth - TIME_WIDTH;
+  const room = gridWidth - timeWidth;
   const count = grid.chairs.length;
   const fit = Math.max(1, Math.floor(room / MIN_CHAIR_WIDTH));
   // With more chairs than fit, a quarter of the next one shows at the edge, so it's clear there are more.
   const chairWidth = Math.floor(count <= fit ? room / Math.max(count, 1) : room / (fit + 0.25));
-  const height = (grid.to - grid.from) * PER_MINUTE;
-  const y = (minute: number) => (minute - grid.from) * PER_MINUTE;
+  const height = (grid.to - grid.from) * perMinute;
+  const y = (minute: number) => (minute - grid.from) * perMinute;
   const nowMinute = minutesInto(day, now, tz);
   const nowShown = nowMinute >= grid.from && nowMinute <= grid.to && grid.to > grid.from;
   const top = rootY !== null && gridY !== null ? rootY + gridY : null;
 
   useEffect(() => {
-    if (top !== null && strip) onFrame({ top, x: strip.x, width: strip.width, chairWidth });
-  }, [top, strip, chairWidth, onFrame]);
+    if (top !== null && strip) onFrame({ top, x: strip.x, width: strip.width, chairWidth, namesHeight });
+  }, [top, strip, chairWidth, namesHeight, onFrame]);
 
   // Today can open on now, with the hour before it in view; a booking opened from the news card scrolls there instead.
   useEffect(() => {
     if (!openAtNow || top === null || count === 0) return;
-    const above = (nowMinute - grid.from - 60) * PER_MINUTE;
+    const above = (nowMinute - grid.from - 60) * perMinute;
     onOpenAtNow(!focus && nowShown && above > 0 ? top + above : null);
-  }, [openAtNow, top, count, focus, nowShown, nowMinute, grid.from, onOpenAtNow]);
+  }, [openAtNow, top, count, focus, nowShown, nowMinute, grid.from, perMinute, onOpenAtNow]);
 
   // A booking's actions closed: back to its block, so a screen reader or keyboard carries on from there.
   useEffect(() => {
@@ -196,6 +213,7 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
 
   const hours: number[] = [];
   for (let h = grid.from; h < grid.to; h += 60) hours.push(h);
+  const pill = Math.round(20 * grow);
 
   return (
     <View
@@ -232,25 +250,41 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
             aria-hidden
             importantForAccessibility="no-hide-descendants"
             accessibilityElementsHidden
-            style={{ width: TIME_WIDTH }}>
-            <View style={{ height: NAMES_HEIGHT }} />
+            style={{ width: timeWidth }}>
+            <View style={{ height: namesHeight }} />
             <View style={{ height }}>
               {hours.map((h) => {
                 const { clock, period } = clockParts(Math.floor(h / 60) % 24, 0);
                 // "tengah hari" takes two lines in the narrow column.
-                const bottom = y(h) + 2 + 16 + 14 * (period.length > 8 ? 2 : 1);
+                const bottom = y(h) + 2 + (16 + 14 * (period.length > 8 ? 2 : 1)) * grow;
                 // The now pill says the time itself, so an hour it would half cover steps aside.
-                if (nowShown && y(nowMinute) + 10 > y(h) && y(nowMinute) - 10 < bottom) return null;
+                if (nowShown && y(nowMinute) + pill / 2 > y(h) && y(nowMinute) - pill / 2 < bottom) return null;
                 return (
                   <View key={h} style={[styles.hour, { top: y(h) + 2 }]}>
-                    <Text style={[styles.hourClock, { color: theme.textSecondary }]}>{clock}</Text>
-                    <Text style={[styles.hourPeriod, { color: theme.textSecondary }]}>{period}</Text>
+                    <Text
+                      maxFontSizeMultiplier={text.maxFontSizeMultiplier}
+                      style={[scaleText(styles.hourClock, text.scale), { color: theme.textSecondary }]}>
+                      {clock}
+                    </Text>
+                    <Text
+                      maxFontSizeMultiplier={text.maxFontSizeMultiplier}
+                      style={[scaleText(styles.hourPeriod, text.scale), { color: theme.textSecondary }]}>
+                      {period}
+                    </Text>
                   </View>
                 );
               })}
               {nowShown ? (
-                <View style={[styles.nowPill, { top: y(nowMinute) - 10, backgroundColor: theme.accent }]}>
-                  <Text style={[styles.nowText, { color: theme.accentText }]}>{formatClockOnly(new Date(now), tz)}</Text>
+                <View
+                  style={[
+                    styles.nowPill,
+                    { top: y(nowMinute) - pill / 2, height: pill, backgroundColor: theme.accent },
+                  ]}>
+                  <Text
+                    maxFontSizeMultiplier={text.maxFontSizeMultiplier}
+                    style={[scaleText(styles.nowText, text.scale), { color: theme.accentText }]}>
+                    {formatClockOnly(new Date(now), tz)}
+                  </Text>
                 </View>
               ) : null}
             </View>
@@ -274,9 +308,9 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
                   aria-hidden
                   importantForAccessibility="no-hide-descendants"
                   accessibilityElementsHidden
-                  style={[styles.names, { borderBottomColor: theme.border }]}>
+                  style={[styles.names, { height: namesHeight, borderBottomColor: theme.border }]}>
                   {grid.chairs.map((c) => (
-                    <ChairName key={c.barber.id} barber={c.barber} width={chairWidth} />
+                    <ChairName key={c.barber.id} barber={c.barber} width={chairWidth} height={namesHeight} />
                   ))}
                 </View>
                 <View style={[styles.body, { height }]}>
@@ -288,6 +322,9 @@ export function Chairs<Br extends ChairsBarber, B extends ChairsBooking>({
                       height={height}
                       hours={hours}
                       y={y}
+                      perMinute={perMinute}
+                      namesHeight={namesHeight}
+                      text={text}
                       tz={tz}
                       now={now}
                       nowMinute={nowShown ? nowMinute : null}
@@ -321,6 +358,9 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
   height,
   hours,
   y,
+  perMinute,
+  namesHeight,
+  text,
   tz,
   now,
   nowMinute,
@@ -340,6 +380,10 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
   /** The hours down the side, for a line at each hour and a fainter one at each half. */
   hours: number[];
   y: (minute: number) => number;
+  perMinute: number;
+  namesHeight: number;
+  /** How the chair's words grow (useTextFit with CHAIR_TEXT_CAP). */
+  text: ReturnType<typeof useTextFit>;
   tz: string;
   now: number;
   /** Where the now line goes; null when now isn't on this day's time line. */
@@ -359,15 +403,20 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
   const theme = useTheme();
   const barber = chair.barber.name;
   const pieces: { at: number; node: ReactNode }[] = [];
+  const grow = Math.max(1, text.total);
 
   for (const shade of chair.shades) {
-    const h = (shade.to - shade.from) * PER_MINUTE;
+    const h = (shade.to - shade.from) * perMinute;
     pieces.push({
       at: shade.from,
       node: (
         <View key={`s${shade.from}`} style={[styles.shade, { top: y(shade.from), height: h, backgroundColor: fills.shade }]}>
-          {h >= 24 ? (
-            <Text numberOfLines={1} style={[styles.shadeText, { color: theme.textSecondary }]}>
+          {h >= 24 * grow ? (
+            <Text
+              // Two lines where there is room, so "Tidak bekerja" in a narrow chair at large text is never cut short.
+              numberOfLines={h >= 40 * grow ? 2 : 1}
+              maxFontSizeMultiplier={text.maxFontSizeMultiplier}
+              style={[scaleText(styles.shadeText, text.scale), { color: theme.textSecondary }]}>
               {shade.kind === 'break' ? t('Break') : t('Not working')}
             </Text>
           ) : null}
@@ -393,6 +442,8 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
             to: clockText(gap.to),
           })}
           fill={fills.upcoming}
+          perMinute={perMinute}
+          text={text}
           onAdd={onAdd}
         />
       ),
@@ -414,7 +465,8 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
           status={status}
           label={bookingLabel(b, nameOf, barber, tz, now)}
           top={y(item.from)}
-          height={(item.end - item.from) * PER_MINUTE}
+          height={(item.end - item.from) * perMinute}
+          line={Math.ceil(18 * grow)}
           fills={fills}
           selected={b.id === selectedId}
           onPress={() => onOpen(b)}
@@ -436,7 +488,7 @@ function ChairColumn<Br extends ChairsBarber, B extends ChairsBooking>({
       {pieces.map((p) => p.node)}
       {focusAt !== null ? (
         // Half an hour above the booking, and the height of the names' copy at the top, so a little of what comes before shows.
-        <View ref={focusRef} style={[styles.marker, { top: y(focusAt - 30) - NAMES_HEIGHT }]} />
+        <View ref={focusRef} style={[styles.marker, { top: y(focusAt - 30) - namesHeight }]} />
       ) : null}
       {nowMinute !== null ? (
         <View style={[styles.nowLine, { top: y(nowMinute) - 1, backgroundColor: theme.tint }]} />
@@ -456,6 +508,8 @@ function FreeGap({
   top,
   label,
   fill,
+  perMinute,
+  text,
   onAdd,
 }: {
   gap: Span;
@@ -464,6 +518,8 @@ function FreeGap({
   label: string;
   /** The quarter hour pressed lights up in this. */
   fill: string;
+  perMinute: number;
+  text: ReturnType<typeof useTextFit>;
   onAdd: (clock: string) => void;
 }) {
   const theme = useTheme();
@@ -473,7 +529,7 @@ function FreeGap({
   const slotOf = (e: GestureResponderEvent) => {
     const { locationY, offsetY } = e.nativeEvent as { locationY?: number; offsetY?: number };
     const down = locationY ?? offsetY;
-    return typeof down === 'number' && Number.isFinite(down) ? slotAt(slots, first.from + down / PER_MINUTE) : first;
+    return typeof down === 'number' && Number.isFinite(down) ? slotAt(slots, first.from + down / perMinute) : first;
   };
   return (
     <Pressable
@@ -484,22 +540,25 @@ function FreeGap({
       onPressIn={(e) => setPressed(slotOf(e))}
       onPressOut={() => setPressed(null)}
       onPress={(e) => onAdd(clockOf(slotOf(e).at))}
-      style={[styles.gap, { top, height: (gap.to - first.from) * PER_MINUTE }]}>
+      style={[styles.gap, { top, height: (gap.to - first.from) * perMinute }]}>
       {pressed ? (
         <View
           style={[
             styles.pressedSlot,
             {
-              top: (pressed.from - first.from) * PER_MINUTE,
-              height: (pressed.to - pressed.from) * PER_MINUTE,
+              top: (pressed.from - first.from) * perMinute,
+              height: (pressed.to - pressed.from) * perMinute,
               backgroundColor: fill,
             },
           ]}
         />
       ) : null}
       <View style={styles.freeHint}>
-        <Ionicons name="add" size={16} color={theme.textSecondary} />
-        <Text numberOfLines={1} style={[styles.freeText, { color: theme.textSecondary }]}>
+        <Ionicons aria-hidden name="add" size={Math.round(16 * Math.max(1, text.total))} color={theme.textSecondary} />
+        <Text
+          numberOfLines={1}
+          maxFontSizeMultiplier={text.maxFontSizeMultiplier}
+          style={[scaleText(styles.freeText, text.scale), { color: theme.textSecondary }]}>
           {t('Free')}
         </Text>
       </View>
@@ -517,6 +576,7 @@ function ChairBlock({
   label,
   top,
   height,
+  line,
   fills,
   selected,
   onPress,
@@ -530,14 +590,16 @@ function ChairBlock({
   label: string;
   top: number;
   height: number;
+  /** A line of its words: 18, more with bigger text. */
+  line: number;
   fills: ReturnType<typeof chairFills>;
   selected: boolean;
   onPress: () => void;
 }) {
   const theme = useTheme();
   const { fill, edge } = look(status, theme, fills);
-  // Lines of 18pt inside the block's gap and padding: a quarter hour has two, half an hour four.
-  const lines = Math.floor((height - 2 - 2 * BLOCK_PADDING) / 18);
+  // Lines inside the block's gap and padding: a quarter hour has two, half an hour four.
+  const lines = Math.floor((height - 2 - 2 * BLOCK_PADDING) / line);
   const sub = status === 'done' || status === 'noShow' ? theme.textSecondary : theme.text;
   const { title, rows } = blockText(lines, { name, detail, clock, word: statusWord(status) });
   return (
@@ -554,12 +616,12 @@ function ChairBlock({
         pressed && { opacity: 0.8 },
       ]}>
       {title ? (
-        <T variant="label" numberOfLines={1} style={{ color: sub }}>
+        <T variant="label" numberOfLines={1} maxScale={CHAIR_TEXT_CAP} style={{ color: sub }}>
           {title}
         </T>
       ) : null}
       {rows.map((row, i) => (
-        <T key={i} variant="small" numberOfLines={1} style={{ color: sub }}>
+        <T key={i} variant="small" numberOfLines={1} maxScale={CHAIR_TEXT_CAP} style={{ color: sub }}>
           {row}
         </T>
       ))}
@@ -598,10 +660,8 @@ function BlockedDay({
         selected && { borderColor: theme.text, borderWidth: 2, borderStyle: 'solid' },
         pressed && { opacity: 0.8 },
       ]}>
-      <T variant="label" numberOfLines={1}>
-        {barber}
-      </T>
-      <T variant="small" numberOfLines={1} style={{ color: theme.text }}>
+      <T variant="label">{barber}</T>
+      <T variant="small" style={{ color: theme.text }}>
         {reason ? `${t('Blocked all day')} · ${reason}` : t('Blocked all day')}
       </T>
     </Pressable>
@@ -691,32 +751,19 @@ function moveFocus(node: View | null | undefined) {
 }
 
 function look(status: ChairStatus, theme: Palette, fills: ReturnType<typeof chairFills>) {
-  switch (status) {
-    case 'upcoming':
-      return { fill: fills.upcoming, edge: theme.tint };
-    case 'now':
-      return { fill: fills.now, edge: theme.success };
-    case 'toMark':
-      return { fill: fills.toMark, edge: theme.warning };
-    case 'done':
-      return { fill: fills.done, edge: theme.textSecondary };
-    // Over, so grey like a done one, with a red edge.
-    case 'noShow':
-      return { fill: fills.done, edge: theme.danger };
-    default:
-      return { fill: fills.block, edge: theme.inputBorder };
-  }
+  // A no-show is over, so grey like a done one, with a red edge.
+  return { fill: status === 'noShow' ? fills.done : fills[status], edge: chairEdges(theme)[status] };
 }
 
 /** A barber's name over their chair, with Away under it for one marked away who still has customers booked. */
-function ChairName({ barber, width }: { barber: ChairsBarber; width: number }) {
+function ChairName({ barber, width, height }: { barber: ChairsBarber; width: number; height: number }) {
   return (
-    <View style={[styles.name, { width }]}>
-      <T variant="label" numberOfLines={1}>
+    <View style={[styles.name, { width, height }]}>
+      <T variant="label" numberOfLines={1} maxScale={CHAIR_TEXT_CAP}>
         {barber.name}
       </T>
       {barber.is_active ? null : (
-        <T variant="small" numberOfLines={1}>
+        <T variant="small" numberOfLines={1} maxScale={CHAIR_TEXT_CAP}>
           {t('Away')}
         </T>
       )}
@@ -748,10 +795,10 @@ export function ChairNames<Br extends ChairsBarber, B>({
       importantForAccessibility="no-hide-descendants"
       accessibilityElementsHidden
       style={[styles.sticky, { paddingTop: topInset, backgroundColor: theme.background, borderBottomColor: theme.border }]}>
-      <View style={{ marginLeft: frame.x, width: frame.width, height: NAMES_HEIGHT, overflow: 'hidden' }}>
+      <View style={{ marginLeft: frame.x, width: frame.width, height: frame.namesHeight, overflow: 'hidden' }}>
         <Animated.View style={[styles.namesRow, { transform: [{ translateX: shift }] }]}>
           {chairs.map((c) => (
-            <ChairName key={c.barber.id} barber={c.barber} width={frame.chairWidth} />
+            <ChairName key={c.barber.id} barber={c.barber} width={frame.chairWidth} height={frame.namesHeight} />
           ))}
         </Animated.View>
       </View>
@@ -785,9 +832,9 @@ const styles = StyleSheet.create({
   root: { gap: Spacing.sm },
   grid: { flexDirection: 'row' },
   strip: { flex: 1 },
-  names: { flexDirection: 'row', height: NAMES_HEIGHT, borderBottomWidth: 1 },
+  names: { flexDirection: 'row', borderBottomWidth: 1 },
   namesRow: { flexDirection: 'row' },
-  name: { height: NAMES_HEIGHT, justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.xs },
+  name: { justifyContent: 'center', alignItems: 'center', paddingHorizontal: Spacing.xs },
   body: { flexDirection: 'row' },
   line: { position: 'absolute', left: 0, right: 0, height: 1 },
   halfLine: { opacity: 0.5 },
@@ -799,7 +846,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: Spacing.xs,
-    height: 20,
     borderRadius: Radius.pill,
     alignItems: 'center',
     justifyContent: 'center',

@@ -20,6 +20,7 @@ import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
 import { canRate, rateUntil, starsLabel, type MyReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { useBigText } from '@/lib/text-size-provider';
 import { formatDay, formatPrice, formatTime, noBreak } from '@/lib/time';
 import type { Booking } from '@/lib/types';
 import { openRequests, requestService, type MyWaiting } from '@/lib/waitlist';
@@ -60,6 +61,7 @@ function MyBookings() {
   const { session, profile } = useAuth();
   const theme = useTheme();
   const now = useNow();
+  const big = useBigText();
   // Last visit's list shows at once, while the server is asked again.
   const [kept] = useState(() => (session ? appCache.peek<MyBooking[]>(cacheKey(session.user.id, 'my-bookings')) : null));
   const [bookings, setBookings] = useState<MyBooking[]>(kept?.data ?? []);
@@ -495,8 +497,8 @@ function MyBookings() {
         <Section title={t('Book again')}>
           {lastVisits.map((b) => (
             <Card key={b.shop_id}>
-              <Row style={{ flexWrap: 'nowrap' }}>
-                <View style={{ flex: 1, gap: Spacing.xs }}>
+              <Row style={big ? undefined : styles.noWrap}>
+                <View style={[styles.lastVisit, big && styles.wholeLine]}>
                   <T variant="heading">{b.shops?.name}</T>
                   <T variant="muted">
                     {withBarber(b)} · {when(b).day}
@@ -629,6 +631,10 @@ function YourRating({
 }
 
 const styles = StyleSheet.create({
+  noWrap: { flexWrap: 'nowrap' },
+  lastVisit: { flex: 1, gap: Spacing.xs },
+  // With big text (useBigText) Book again goes under the shop's name rather than squeezing it.
+  wholeLine: { flexBasis: '100%' },
   rule: { height: StyleSheet.hairlineWidth, marginVertical: Spacing.xs },
   rating: { gap: Spacing.xs },
   // Two even columns, so the card stays short and the buttons line up.

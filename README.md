@@ -10,6 +10,7 @@ One app serves both sides: people choose "Customer" or "Barber / shop owner" whe
 - Email and password sign-in, with password reset by emailed code
 - Delete account from the Account screen (required by the App Store and Google Play)
 - English or Bahasa Melayu: follows the phone's language, with a switch on the welcome screen and under Account
+- Easy to read and use with big text or a screen reader. Text size under Account (and on the welcome and shop set-up screens): Normal, Large or Largest (1, 1.25 or 1.5 times), kept on the phone and on top of the phone's own text size on iPhone and Android; on the web, where the phone's setting never reaches the page, the choice is what makes it bigger. At Largest on a 360-wide phone, in English and Malay, every screen fits: rows and buttons wrap instead of running off the side, line heights grow with the words, and prices, times and names show whole. The day as chairs and the Takings charts stop at 1.25 times so blocks and bars keep their shape (a long name in a short booking is cut short there, but reads out whole and opens in full), tab labels at 1.4 so four still fit, and screen titles at 1.15 so a long Malay one fits beside Back. TalkBack and VoiceOver hear what each button, chip, tab and card is and does, and whether it is picked, turned off or busy; icons are silent, titles are headings, and a mistake in a form is read out as it appears. Text and icon colours pass WCAG AA in light and dark (4.5:1 for words, 3:1 for edges, icons and bars), which `npm test` checks
 - Opens at once on a slow line: Find a barber, My bookings, the barber's Bookings tab and My shop's Takings, Customers, Reviews and Holidays show what they showed last time straight away (kept on the phone for a day, for that account only, and forgotten on sign out or account deletion), with a small spinner by the title while the server's answer comes. If that fails the old answer stays, with "Couldn't refresh. Showing what you saw at 3:05 pm." and Try again; buttons that change a booking wait for the fresh list. A first visit shows grey shapes of what is coming, and a shop opened from the list shows its name, stars and address while the rest loads. In the demo, with every request taking 1.5 seconds, opening the app again shows the barbers in 0.2 seconds instead of 3.5, and My bookings in 0.1 seconds instead of 1.9
 
 **Customers**
@@ -110,7 +111,7 @@ Tip for testing: in Supabase under Authentication > Sign In / Providers > Email,
 ```bash
 npm run typecheck   # TypeScript
 npm run lint        # ESLint
-npm test            # date, money, phone, reminder, distance and language helpers, and the demo backend
+npm test            # date, money, phone, reminder, distance, language and text size helpers, colour contrast, and the demo backend
 npm run test:db     # schema + booking rules against a throwaway local Postgres 16+
 npm run test:e2e    # the whole app in a browser: barber sets up, customers book
 npm run test:demo   # the one-file demo, in a locked-down iframe with no network

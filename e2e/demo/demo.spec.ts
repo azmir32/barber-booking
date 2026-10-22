@@ -1326,6 +1326,99 @@ test('the barber sees the day as chairs side by side, opens a booking from there
   await expect(app.getByRole('group', { name: /’s chair$/ }).first()).toBeVisible();
 });
 
+/**
+ * Every line of text in `target` shows whole: on the screen, not cut short
+ * with "…", and not clipped by the box around it. Brought into view first.
+ */
+async function expectWhole(target: Locator) {
+  await target.scrollIntoViewIfNeeded();
+  const cut = await target.evaluate((root) => {
+    const found: string[] = [];
+    const width = document.documentElement.clientWidth;
+    for (const el of [root, ...root.querySelectorAll('*')]) {
+      if (![...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim())) continue;
+      const text = el.textContent?.trim();
+      const box = el.getBoundingClientRect();
+      if (box.left < -1 || box.right > width + 1) found.push(`off the screen: ${text}`);
+      if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) found.push(`cut short: ${text}`);
+      // The nearest box that hides what spills out of it must hold the text whole.
+      for (let up = el.parentElement; up; up = up.parentElement) {
+        const style = getComputedStyle(up);
+        if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+        const holder = up.getBoundingClientRect();
+        if (box.top < holder.top - 1 || box.bottom > holder.bottom + 1 || box.left < holder.left - 1 || box.right > holder.right + 1)
+          found.push(`clipped: ${text}`);
+        break;
+      }
+    }
+    return found;
+  });
+  expect(cut).toEqual([]);
+}
+
+test('with the largest text on a small phone, a customer books and the barber runs the day, nothing cut off', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const app = await open(page);
+  // The choice is on the welcome screen too, so it can be made before signing in.
+  const largest = app.getByRole('radiogroup', { name: 'Text size' }).getByRole('radio', { name: 'Largest', exact: true });
+  await largest.click();
+  await expect(largest).toBeChecked();
+  // Half as big again: a heading's 18 is 27, with its line height.
+  const welcome = app.getByRole('heading', { name: 'Try it with sample shops in Kajang' });
+  await expect(welcome).toHaveCSS('font-size', '27px');
+  await expect(welcome).toHaveCSS('line-height', '36px');
+  await expectWhole(welcome);
+  await expectWhole(button(app, 'Try as a customer'));
+  await snap(page, 'demo-largest-01-welcome');
+  await button(app, 'Try as a customer').click();
+
+  await expectWhole(listed(app, 'Ali Barber Sungai Chua').last());
+  await snap(page, 'demo-largest-02-explore');
+  await listed(app, 'Ali Barber Sungai Chua').last().click();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  const time = app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
+  await time.click();
+  await expect(time).toBeChecked();
+  await expectWhole(time);
+  // The bar at the bottom: when, what and the price, and Confirm, all whole.
+  const summary = app.getByText(/· Haircut with (Ali|Danial) · RM20$/);
+  await expectWhole(summary);
+  await expectWhole(button(app, 'Confirm booking'));
+  await snap(page, 'demo-largest-03-shop');
+  await button(app, 'Confirm booking').click();
+
+  await expect(app.getByText('You’re booked!')).toBeVisible();
+  await expectWhole(app.getByText('RM20 · Pay at the shop.'));
+  await expectWhole(button(app, 'See my bookings'));
+  await snap(page, 'demo-largest-04-booked');
+  await button(app, 'See my bookings').click();
+  const booked = app.getByText(/^Haircut with (Ali|Danial) · RM20$/);
+  await expectWhole(booked);
+  await snap(page, 'demo-largest-05-my-bookings');
+
+  // Kept for the barber side too.
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await expect(largest).toBeChecked();
+  await button(app, 'See the barber side').click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await app.getByRole('radio', { name: 'Chairs', exact: true }).click();
+  const hakim = button(app, /^Hakim, Skin fade, 4:30 pm to 5:15 pm, with (Ali|Danial)$/);
+  await expectWhole(hakim.getByText('Hakim', { exact: true }));
+  await expectWhole(hakim.getByText('Skin fade', { exact: true }));
+  await expectWhole(app.getByRole('radio', { name: 'Chairs', exact: true }));
+  await snap(page, 'demo-largest-06-chairs');
+
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await expectWhole(app.getByText('You are live'));
+  await expectWhole(app.getByRole('link', { name: /^Takings: / }));
+  await expectWhole(app.getByRole('link', { name: /^Customers: / }));
+  await expectWhole(app.getByRole('tab', { name: /My shop/ }));
+  await snap(page, 'demo-largest-07-my-shop');
+});
+
 test('customers pick a barber by their intro and stars and read one barber’s reviews; the owner writes the intros', async ({
   page,
 }) => {

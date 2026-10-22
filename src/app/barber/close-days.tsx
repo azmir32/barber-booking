@@ -225,7 +225,7 @@ export default function CloseDays() {
       {inTheWay.length > 0 || told.length > 0 ? (
         <Card style={{ borderColor: theme.warning }}>
           <View style={styles.titleRow}>
-            <Ionicons name="warning-outline" size={22} color={theme.warning} />
+            <Ionicons aria-hidden name="warning-outline" size={22} color={theme.warning} />
             <T variant="heading" style={styles.grow}>
               {inTheWay.length === 0
                 ? t('Bookings cancelled')

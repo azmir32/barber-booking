@@ -1122,4 +1122,14 @@ export const ms: Record<string, string> = {
   'You can be on 3 waiting lists at a time. Leave one to join another.':
     'Anda boleh berada dalam 3 senarai menunggu pada satu masa. Tarik diri daripada satu untuk menyertai yang lain.',
   "They're no longer on the waiting list.": 'Mereka sudah tiada dalam senarai menunggu.',
+
+  // Round 12: text size, and every screen readable with large text and a
+  // screen reader (components/account-panel.tsx, components/ui.tsx,
+  // lib/text-size.ts, welcome.tsx)
+  'Text size': 'Saiz teks',
+  Normal: 'Biasa',
+  Large: 'Besar',
+  Largest: 'Paling besar',
+  'Your phone’s own text size makes it bigger still.': 'Saiz teks telefon anda menjadikannya lebih besar lagi.',
+  'Go back': 'Kembali',
 };

@@ -35,7 +35,7 @@ export function ReviewsCard({ reviews }: { reviews?: ShopCardNumbers['reviews'] 
       onPress={() => router.push('/barber/reviews')}
       accessibilityLabel={[`${t('Reviews')}: ${spoken}`, quote].filter(Boolean).join('. ')}>
       <View style={styles.row}>
-        <Ionicons name="star" size={24} color={theme.tint} />
+        <Ionicons aria-hidden name="star" size={24} color={theme.tint} />
         <View style={styles.info}>
           <T variant="heading">{t('Reviews')}</T>
           <T variant="muted">{summary}</T>
@@ -45,7 +45,7 @@ export function ReviewsCard({ reviews }: { reviews?: ShopCardNumbers['reviews'] 
             </T>
           ) : null}
         </View>
-        <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+        <Ionicons aria-hidden name="chevron-forward" size={22} color={theme.textSecondary} />
       </View>
     </Card>
   );

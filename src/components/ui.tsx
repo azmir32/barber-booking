@@ -1,8 +1,11 @@
 // Small set of shared building blocks so every screen looks the same.
 
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useState, type ComponentProps, type ReactNode, type Ref } from 'react';
+import { router } from 'expo-router';
+import { HeaderBackButton } from 'expo-router/react-navigation';
+import { useEffect, useId, useState, type ComponentProps, type ReactNode, type Ref } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   Animated,
   Easing,
@@ -14,6 +17,7 @@ import {
   Text,
   TextInput,
   View,
+  type ColorValue,
   type TextInputProps,
   type TextProps,
   type DimensionValue,
@@ -28,6 +32,8 @@ import { useReduceMotion } from '@/hooks/use-reduce-motion';
 import { useTheme } from '@/hooks/use-theme';
 import { staleLine } from '@/lib/cache';
 import { t } from '@/lib/lang';
+import { fitText, scaleText } from '@/lib/text-size';
+import { useTextFit, useTextScale } from '@/lib/text-size-provider';
 
 export function Screen({
   children,
@@ -99,15 +105,39 @@ export function Screen({
 
 type Variant = 'title' | 'heading' | 'body' | 'muted' | 'small' | 'label';
 
-export function T({ variant = 'body', style, ...rest }: TextProps & { variant?: Variant }) {
+export function T({
+  variant = 'body',
+  style,
+  maxScale,
+  ...rest
+}: TextProps & {
+  variant?: Variant;
+  /**
+   * The most this text may grow, the phone's text size and the app's
+   * together, where wrapping would break the layout (a booking's block in
+   * the chairs). Without it, it grows as much as asked.
+   */
+  maxScale?: number;
+}) {
   const theme = useTheme();
+  const fit = fitText(useTextScale(), maxScale);
   const color = variant === 'muted' || variant === 'small' ? theme.textSecondary : theme.text;
   // Titles and headings are headings to screen readers too (h1/h2 on the web).
   const heading =
     variant === 'title' || variant === 'heading'
       ? ({ role: 'heading', 'aria-level': variant === 'title' ? 1 : 2 } as TextProps)
       : null;
-  return <Text {...heading} style={[{ color, fontFamily: Fonts?.sans }, textStyles[variant], style]} {...rest} />;
+  // Font size and line height grow together, so bigger lines never overlap.
+  const sized =
+    fit.scale === 1 ? [textStyles[variant], style] : scaleText(StyleSheet.flatten([textStyles[variant], style]), fit.scale);
+  return (
+    <Text
+      {...heading}
+      maxFontSizeMultiplier={fit.maxFontSizeMultiplier}
+      style={[{ color, fontFamily: Fonts?.sans }, sized]}
+      {...rest}
+    />
+  );
 }
 
 /**
@@ -143,6 +173,7 @@ export function Button({
   iconColor?: string;
 }) {
   const theme = useTheme();
+  const text = scaleText(styles.buttonText, useTextScale());
   const bg =
     variant === 'primary'
       ? theme.accent
@@ -170,11 +201,11 @@ export function Button({
       ]}>
       {icon ? (
         <View style={[styles.buttonInner, { opacity: loading ? 0 : 1 }]}>
-          <Ionicons name={icon} size={20} color={iconColor ?? fg} />
-          <Text style={[styles.buttonText, styles.buttonTextBesideIcon, { color: fg }]}>{title}</Text>
+          <Ionicons aria-hidden name={icon} size={20} color={iconColor ?? fg} />
+          <Text style={[text, styles.buttonTextBesideIcon, { color: fg }]}>{title}</Text>
         </View>
       ) : (
-        <Text style={[styles.buttonText, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
+        <Text style={[text, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
       )}
       {loading ? <ActivityIndicator color={fg} style={StyleSheet.absoluteFill} /> : null}
     </Pressable>
@@ -196,14 +227,18 @@ export function Field({
   ref?: Ref<TextInput>;
 }) {
   const theme = useTheme();
+  const scale = useTextScale();
   const [focused, setFocused] = useState(false);
+  const below = useId();
   return (
     <View style={styles.field}>
       <T variant="label">{label}</T>
       <TextInput
         ref={ref}
         accessibilityLabel={label}
-        accessibilityHint={hint}
+        // Read on reaching the field, after its name: what is wrong with it, or else the hint.
+        accessibilityHint={error || hint}
+        aria-describedby={error || hint ? below : undefined}
         aria-invalid={Boolean(error)}
         placeholderTextColor={theme.textSecondary}
         {...props}
@@ -216,7 +251,7 @@ export function Field({
           props.onBlur?.(e);
         }}
         style={[
-          styles.input,
+          scaleText(styles.input, scale),
           {
             color: theme.text,
             backgroundColor: theme.card,
@@ -225,11 +260,17 @@ export function Field({
           },
           // The coloured border shows focus, so the browser's own outline is not needed.
           Platform.OS === 'web' && ({ outlineStyle: 'none' } as unknown as TextStyle),
-          props.multiline && { minHeight: 88, textAlignVertical: 'top' },
+          props.multiline && { minHeight: 88 * scale, textAlignVertical: 'top' },
           props.style,
         ]}
       />
-      {error ? <ErrorText message={error} /> : hint ? <T variant="small">{hint}</T> : null}
+      {error ? (
+        <ErrorText id={below} message={error} />
+      ) : hint ? (
+        <T variant="small" id={below}>
+          {hint}
+        </T>
+      ) : null}
     </View>
   );
 }
@@ -288,12 +329,12 @@ export function LinkCard({
   return (
     <Card role="link" onPress={onPress} accessibilityLabel={`${title}: ${summary}`}>
       <View style={styles.linkRow}>
-        <Ionicons name={icon} size={24} color={theme.tint} />
+        <Ionicons aria-hidden name={icon} size={24} color={theme.tint} />
         <View style={styles.linkInfo}>
           <T variant="heading">{title}</T>
           <T variant="muted">{summary}</T>
         </View>
-        <Ionicons name="chevron-forward" size={22} color={theme.textSecondary} />
+        <Ionicons aria-hidden name="chevron-forward" size={22} color={theme.textSecondary} />
       </View>
     </Card>
   );
@@ -335,6 +376,8 @@ export function Chip({
   style?: ViewStyle;
 }) {
   const theme = useTheme();
+  const scale = useTextScale();
+  const text = scaleText(styles.chipText, scale);
   const choice = selected !== undefined;
   const look = selected
     ? { box: { backgroundColor: theme.accent, borderColor: theme.accent }, text: theme.accentText, sub: theme.accentText }
@@ -362,13 +405,13 @@ export function Chip({
       style={[styles.chip, look.box, style]}>
       {icon ? (
         <View style={styles.buttonInner}>
-          <Ionicons name={icon} size={18} color={look.text} />
-          <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+          <Ionicons aria-hidden name={icon} size={18} color={look.text} />
+          <Text style={[text, { color: look.text }]}>{label}</Text>
         </View>
       ) : (
-        <Text style={[styles.chipText, { color: look.text }]}>{label}</Text>
+        <Text style={[text, { color: look.text }]}>{label}</Text>
       )}
-      {sublabel ? <Text style={[styles.chipSub, { color: look.sub }]}>{sublabel}</Text> : null}
+      {sublabel ? <Text style={[scaleText(styles.chipSub, scale), { color: look.sub }]}>{sublabel}</Text> : null}
     </Pressable>
   );
 }
@@ -399,18 +442,19 @@ export function IconButton({
       onPress={onPress}
       hitSlop={4}
       style={({ pressed }) => [styles.iconButton, { backgroundColor: bg, borderColor: border, opacity: pressed ? 0.8 : 1 }]}>
-      <Ionicons name={icon} size={22} color={fg} />
+      <Ionicons aria-hidden name={icon} size={22} color={fg} />
     </Pressable>
   );
 }
 
 export function Badge({ label, tone = 'neutral' }: { label: string; tone?: 'neutral' | 'success' | 'warning' | 'danger' }) {
   const theme = useTheme();
+  const text = scaleText(styles.badgeText, useTextScale());
   const color =
     tone === 'success' ? theme.success : tone === 'warning' ? theme.warning : tone === 'danger' ? theme.danger : theme.textSecondary;
   return (
     <View style={[styles.badge, { borderColor: color }]}>
-      <Text style={[styles.badgeText, { color }]}>{label}</Text>
+      <Text style={[text, { color }]}>{label}</Text>
     </View>
   );
 }
@@ -519,6 +563,24 @@ export function ScreenTitle({ title, refreshing }: { title: string; refreshing?:
 }
 
 /**
+ * A stack's back button on the web (headerLeft). React Navigation's own is
+ * read as "Go back" in English but "Kembali, back" in Malay; this one says
+ * Go back in the app's language and looks the same. Phones keep their own.
+ */
+export const webBackButton =
+  Platform.OS === 'web'
+    ? ({ canGoBack, tintColor, href }: { canGoBack?: boolean; tintColor?: ColorValue; href?: string }) =>
+        canGoBack ? (
+          <HeaderBackButton
+            tintColor={tintColor}
+            href={href}
+            accessibilityLabel={t('Go back')}
+            onPress={() => router.back()}
+          />
+        ) : null
+    : undefined;
+
+/**
  * When asking the server again failed: what is on screen stays, with one
  * line saying when it is from, and Try again.
  */
@@ -537,13 +599,15 @@ export function StaleNote({
   const theme = useTheme();
   // "Yesterday" once midnight passes with the line still up.
   const now = useNow();
+  // With big text, Try again goes on a line of its own rather than squeezing the line into a sliver.
+  const grow = Math.max(1, useTextFit().total);
   return (
     <View
       role="status"
       accessibilityLiveRegion="polite"
       style={[styles.staleNote, { backgroundColor: theme.card, borderColor: theme.border }]}>
-      <Ionicons name="cloud-offline-outline" size={20} color={theme.warning} />
-      <T variant="small" style={styles.staleText}>
+      <Ionicons aria-hidden name="cloud-offline-outline" size={20} color={theme.warning} />
+      <T variant="small" style={[styles.staleText, { flexBasis: 140 * grow }, grow > 1 && styles.staleTextWrapping]}>
         {staleLine(savedAt, now, timeZone)}
       </T>
       <Button title={t('Try again')} variant="ghost" loading={retrying} onPress={onRetry} style={styles.staleButton} />
@@ -551,11 +615,21 @@ export function StaleNote({
   );
 }
 
-export function ErrorText({ message }: { message: string | null }) {
+export function ErrorText({ message, id }: { message: string | null; id?: string }) {
   const theme = useTheme();
+  const scale = useTextScale();
+  useEffect(() => {
+    // iOS has no live regions, so VoiceOver is told a new error out loud.
+    if (message && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(message);
+  }, [message]);
   if (!message) return null;
   return (
-    <Text role="alert" accessibilityLiveRegion="polite" style={{ color: theme.danger }}>
+    <Text
+      id={id}
+      role="alert"
+      accessibilityLiveRegion="polite"
+      // Text's own size, 14, grown with the rest.
+      style={[{ color: theme.danger }, scale === 1 ? null : { fontSize: 14 * scale }]}>
       {message}
     </Text>
   );
@@ -602,8 +676,12 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     borderWidth: 1,
     paddingHorizontal: Spacing.lg,
+    // Room above and below a label that wraps to more lines than the height holds, at large text.
+    paddingVertical: Spacing.xs,
     alignItems: 'center',
     justifyContent: 'center',
+    // No wider than what holds it: in a row that wraps, a long label at large text wraps inside the button instead of running off the screen.
+    maxWidth: '100%',
   },
   buttonInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
   // Centred, so a label that wraps in a narrow button still sits in the middle.
@@ -684,6 +762,7 @@ const styles = StyleSheet.create({
   titleSpinner: { width: 24, height: 24, marginLeft: 'auto', alignItems: 'center', justifyContent: 'center' },
   staleNote: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: Spacing.sm,
     borderWidth: 1,
@@ -691,7 +770,9 @@ const styles = StyleSheet.create({
     paddingLeft: Spacing.md,
     paddingVertical: Spacing.xs,
   },
-  staleText: { flex: 1, paddingVertical: Spacing.xs },
-  staleButton: { paddingHorizontal: Spacing.md },
+  staleText: { flexGrow: 1, flexShrink: 1, paddingVertical: Spacing.xs },
+  // Off the edge, which it can reach once Try again is on the next line.
+  staleTextWrapping: { paddingRight: Spacing.md },
+  staleButton: { paddingHorizontal: Spacing.md, marginLeft: 'auto' },
   empty: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xxl },
 });

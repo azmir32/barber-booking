@@ -836,7 +836,8 @@ export default function ShopPage() {
   const footer =
     service && startsAt ? (
       <>
-        <T variant="label" numberOfLines={2}>
+        {/* Whole, however many lines it takes with big text or a long name: the time and price matter. */}
+        <T variant="label">
           {dayAndTime(startsAt)} · {serviceWith(service.name)} · {formatPrice(moving ? moving.price : service.price)}
         </T>
         {moving ? (

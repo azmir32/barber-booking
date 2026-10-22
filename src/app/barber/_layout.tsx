@@ -2,15 +2,16 @@ import { Redirect, router, Stack } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 
-import { LanguagePicker } from '@/components/account-panel';
+import { LanguagePicker, TextSizePicker } from '@/components/account-panel';
 import { ShopForm } from '@/components/shop-form';
-import { Button, ErrorText, Loading, Screen, T } from '@/components/ui';
+import { Button, ErrorText, Loading, Screen, T, webBackButton } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { MyShopProvider, useMyShop } from '@/lib/my-shop';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { useHeaderTitleStyle } from '@/lib/text-size-provider';
 
 export default function BarberLayout() {
   const { session, profile, loading } = useAuth();
@@ -27,6 +28,7 @@ export default function BarberLayout() {
 
 function BarberStack() {
   const { shop, loading, reload } = useMyShop();
+  const headerTitleStyle = useHeaderTitleStyle();
   // Set once the form below makes the shop: the barber lands on My shop, where its steps to the first booking are.
   const created = useRef(false);
   useEffect(() => {
@@ -53,7 +55,7 @@ function BarberStack() {
   }
 
   return (
-    <Stack screenOptions={{ headerBackTitle: t('Back') }}>
+    <Stack screenOptions={{ headerBackTitle: t('Back'), headerTitleStyle, headerLeft: webBackButton }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="hours/[id]" options={{ title: t('Working hours') }} />
       <Stack.Screen name="new-booking" options={{ title: t('Add to the day') }} />
@@ -70,7 +72,7 @@ function BarberStack() {
 /**
  * Under the set-up form, which is all a barber account without a shop sees:
  * who is signed in, a way out for anyone who picked "Barber / shop owner" by
- * mistake or wants another account, and the language.
+ * mistake or wants another account, the language and the text size.
  */
 function SetUpWayOut() {
   const { session, signOut, refreshProfile } = useAuth();
@@ -113,6 +115,7 @@ function SetUpWayOut() {
         }}
       />
       <LanguagePicker />
+      <TextSizePicker />
     </View>
   );
 }

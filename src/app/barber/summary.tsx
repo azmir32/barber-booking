@@ -300,7 +300,7 @@ function ChangeLine({ change }: { change: Change }) {
         : { icon: 'remove' as const, color: theme.textSecondary };
   return (
     <View style={styles.change}>
-      <Ionicons name={look.icon} size={16} color={look.color} style={styles.changeIcon} />
+      <Ionicons aria-hidden name={look.icon} size={16} color={look.color} style={styles.changeIcon} />
       <T variant="small" style={styles.grow}>
         {change.label}
       </T>

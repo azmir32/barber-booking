@@ -231,7 +231,7 @@ export function ShopForm({
         {point ? (
           <>
             <Row style={{ flexWrap: 'nowrap', gap: Spacing.xs }}>
-              <Ionicons name="checkmark-circle" size={20} color={theme.success} />
+              <Ionicons aria-hidden name="checkmark-circle" size={20} color={theme.success} />
               <T style={{ flex: 1 }}>{t('Location set')}</T>
             </Row>
             <Row>

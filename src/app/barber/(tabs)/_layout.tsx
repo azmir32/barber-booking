@@ -6,6 +6,7 @@ import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { badgeText, changesLabel } from '@/lib/news';
 import { ShopNewsProvider, useShopNews } from '@/lib/shop-news';
+import { useTabBarText } from '@/lib/text-size-provider';
 
 export default function BarberTabs() {
   const { shop } = useMyShop();
@@ -18,6 +19,7 @@ export default function BarberTabs() {
 
 function TabBar() {
   const theme = useTheme();
+  const { tabBarLabelStyle, barHeight } = useTabBarText();
   const { news } = useShopNews();
   const count = news?.count ?? 0;
   return (
@@ -26,13 +28,14 @@ function TabBar() {
         headerShown: false,
         tabBarActiveTintColor: theme.tint,
         tabBarInactiveTintColor: theme.textSecondary,
-        tabBarStyle: { backgroundColor: theme.card, borderTopColor: theme.border },
+        tabBarStyle: { backgroundColor: theme.card, borderTopColor: theme.border, ...barHeight },
+        tabBarLabelStyle,
       }}>
       <Tabs.Screen
         name="index"
         options={{
           title: t('Bookings'),
-          tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => <Ionicons aria-hidden name="calendar-outline" color={color} size={size} />,
           // What customers booked, moved or cancelled since this phone last looked.
           tabBarBadge: badgeText(count),
           tabBarBadgeStyle: { backgroundColor: theme.accent, color: theme.accentText },
@@ -44,21 +47,21 @@ function TabBar() {
         name="services"
         options={{
           title: t('Services'),
-          tabBarIcon: ({ color, size }) => <Ionicons name="pricetags-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => <Ionicons aria-hidden name="pricetags-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="team"
         options={{
           title: t('Barbers'),
-          tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => <Ionicons aria-hidden name="people-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="shop"
         options={{
           title: t('My shop'),
-          tabBarIcon: ({ color, size }) => <Ionicons name="storefront-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => <Ionicons aria-hidden name="storefront-outline" color={color} size={size} />,
         }}
       />
     </Tabs>

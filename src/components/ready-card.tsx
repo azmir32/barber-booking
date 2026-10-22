@@ -57,7 +57,7 @@ export function ReadyCard({
     return (
       <Card>
         <View role="status" accessibilityLiveRegion="polite" style={styles.readyRow}>
-          <Ionicons name="checkmark-circle" size={28} color={theme.success} />
+          <Ionicons aria-hidden name="checkmark-circle" size={28} color={theme.success} />
           <View style={styles.grow}>
             <T variant="heading">{t('Your shop is ready.')}</T>
             <T variant="muted">{t('Customers can book you now.')}</T>
@@ -154,6 +154,7 @@ function StepRow({
       onPress={onPress}
       style={({ pressed }) => [styles.step, { borderTopColor: theme.border, opacity: pressed ? 0.7 : 1 }]}>
       <Ionicons
+        aria-hidden
         name={step.done ? 'checkmark-circle' : next ? 'arrow-forward-circle' : 'ellipse-outline'}
         size={26}
         color={step.done ? theme.success : next ? theme.tint : theme.textSecondary}
@@ -165,7 +166,7 @@ function StepRow({
         {/* Steps for later keep to their names, so the card stays short; their line is still read out. */}
         {step.done || next ? <T variant="small">{text.detail}</T> : null}
       </View>
-      <Ionicons name="chevron-forward" size={20} color={theme.textSecondary} />
+      <Ionicons aria-hidden name="chevron-forward" size={20} color={theme.textSecondary} />
     </Pressable>
   );
 }

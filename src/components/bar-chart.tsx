@@ -3,9 +3,15 @@ import { StyleSheet, View } from 'react-native';
 import { T } from '@/components/ui';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useTextFit } from '@/lib/text-size-provider';
 import { formatCount } from '@/lib/time';
 
 const VALUE_ROOM = 20;
+/**
+ * The most the numbers on and under the bars grow: an hour's bar is about 25
+ * wide on a small phone, and past this its "10" would be cut short.
+ */
+const CHART_TEXT_CAP = 1.25;
 
 /**
  * A small column chart made of plain Views: one bar per value, rising from
@@ -34,7 +40,8 @@ export function BarChart({
 }) {
   const theme = useTheme();
   const top = Math.max(1, ...values.map((v) => v ?? 0));
-  const room = height - VALUE_ROOM;
+  // The tallest bar leaves room for its number above it, however big that is.
+  const room = height - VALUE_ROOM * Math.max(1, useTextFit(CHART_TEXT_CAP).total);
   return (
     <View accessible role="img" accessibilityLabel={label} style={styles.chart}>
       <View style={[styles.plot, { height, borderColor: theme.border }]}>
@@ -43,7 +50,10 @@ export function BarChart({
           return (
             <View key={i} style={styles.slot}>
               {value !== null && (valuesShown === 'all' || peak) ? (
-                <T variant="small" style={[styles.value, peak && { color: theme.text, fontWeight: '700' }]}>
+                <T
+                  variant="small"
+                  maxScale={CHART_TEXT_CAP}
+                  style={[styles.value, peak && { color: theme.text, fontWeight: '700' }]}>
                   {formatCount(value)}
                 </T>
               ) : null}
@@ -69,6 +79,7 @@ export function BarChart({
             key={i}
             variant="small"
             numberOfLines={1}
+            maxScale={CHART_TEXT_CAP}
             style={[styles.tick, highlight.includes(i) && { color: theme.text, fontWeight: '700' }]}>
             {text}
           </T>

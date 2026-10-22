@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { formatClock, openStatus, summarizeWeek } from './hours.ts';
 import { setCurrentLang, t } from './lang.ts';
 import { ms } from './strings-ms.ts';
+import { TEXT_SIZES } from './text-size.ts';
 import { formatDay, formatDuration, formatTime, formatTimeParts, groupByPartOfDay, upcomingDays } from './time.ts';
 import { WEEKDAYS } from './types.ts';
 
@@ -35,6 +36,7 @@ function literalKeys(): Set<string> {
 // quick-add services and the database's error messages.
 const DYNAMIC_KEYS = [
   ...WEEKDAYS,
+  ...TEXT_SIZES.map((s) => s.name),
   'Morning',
   'Midday',
   'Afternoon',
