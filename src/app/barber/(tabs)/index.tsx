@@ -76,7 +76,7 @@ type Unsaved = { startsAt: string; reason: string };
 
 type BarberWithHours = Barber & { working_hours: WorkingHours[] };
 
-type ClosedDay = { day: string; reason: string | null; is_closure: boolean };
+type ClosedDay = { day: string; reason: string | null; is_closure: boolean; barber_id?: string | null };
 
 /** Everything a day's screen asks for, as kept for next time; null for a part whose request failed. */
 type DayAnswer = {
@@ -231,7 +231,8 @@ export default function BarberBookings() {
     if (a.barbers) setBarbers(a.barbers);
     if (a.closed) {
       setClosures(Object.fromEntries(a.closed.filter((d) => d.is_closure).map((d) => [d.day, d.reason])));
-      setAllOff(new Set(a.closed.filter((d) => !d.is_closure).map((d) => d.day)));
+      // One barber's own day off shows as their block on the day, not as the shop closed.
+      setAllOff(new Set(a.closed.filter((d) => !d.is_closure && !d.barber_id).map((d) => d.day)));
     }
     if (a.tomorrow) setTomorrow(a.tomorrow);
     // A request that failed keeps the list already shown for this day, never another day's.

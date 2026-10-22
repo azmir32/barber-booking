@@ -1250,6 +1250,16 @@ begin
     raise exception 'That barber already has a booking at that time.' using errcode = 'P0001';
   end;
 
+  -- Someone waiting for a time that day, put in by hand after a WhatsApp:
+  -- their number finds them (in the one form shop_customers compares), and
+  -- they have their time now. Only that day's few requests are looked at.
+  if v_booking.guest_phone is not null then
+    delete from waitlist w using profiles p
+    where w.shop_id = v_shop.id and w.day = p_day and p.id = w.customer_id
+      and nullif(regexp_replace(regexp_replace(coalesce(p.phone, ''), '\D', '', 'g'), '^0', '60'), '')
+          = nullif(regexp_replace(regexp_replace(v_booking.guest_phone, '\D', '', 'g'), '^0', '60'), '');
+  end if;
+
   return v_booking;
 end;
 $$;
@@ -1331,10 +1341,13 @@ end;
 $$;
 
 -- Days in a range the booking page should show as closed: days the owner
--- closed the shop, and days every barber has the whole day off. Only the
--- owner sees the reason. is_closure marks the first kind, which Reopen undoes.
+-- closed the shop, and days everyone who works that weekday has the whole
+-- day off. Then, with barber_id, each barber's own whole days off on the
+-- other days, so the page shows that barber off rather than fully booked
+-- (where waiting for a time could never work). Only the owner sees the
+-- reason. is_closure marks the first kind, which Reopen undoes.
 create function public.shop_closed_days(p_shop_id uuid, p_from date, p_to date)
-returns table (day date, reason text, is_closure boolean)
+returns table (day date, reason text, is_closure boolean, barber_id uuid)
 language sql
 stable
 security definer
@@ -1346,12 +1359,9 @@ as $$
     from shops sh
     where sh.id = p_shop_id and (public.shop_is_live(sh) or sh.owner_id = (select auth.uid()))
   ),
-  team as (
-    select count(*) as n from barbers b join shop on b.shop_id = shop.id where b.is_active
-  ),
-  all_off as (
-    select (bk.starts_at at time zone shop.time_zone)::date as day,
-           count(distinct bk.barber_id) as n,
+  off as (
+    -- Each active barber's whole days off, on days the shop isn't closed.
+    select (bk.starts_at at time zone shop.time_zone)::date as day, bk.barber_id,
            min(bk.service_name) as reason
     from bookings bk
     join shop on bk.shop_id = shop.id
@@ -1361,17 +1371,38 @@ as $$
       and bk.ends_at - bk.starts_at >= interval '24 hours'
       and bk.starts_at >= p_from::timestamp at time zone shop.time_zone
       and bk.starts_at < (shop.last_day + 1)::timestamp at time zone shop.time_zone
-    group by 1
+      and not exists (
+        select 1 from shop_closures c
+        where c.shop_id = shop.id and c.day = (bk.starts_at at time zone shop.time_zone)::date
+      )
+    group by 1, 2
+  ),
+  off_days as (
+    -- A barber who never works that weekday is off anyway, so doesn't keep the day open.
+    select o.day, min(o.reason) as reason,
+           not exists (
+             select 1
+             from barbers b
+             join shop on b.shop_id = shop.id
+             where b.is_active
+               and exists (select 1 from working_hours wh
+                           where wh.barber_id = b.id and wh.weekday = extract(dow from o.day)::int)
+               and not exists (select 1 from off x where x.day = o.day and x.barber_id = b.id)
+           ) as all_off
+    from off o
+    group by o.day
   )
-  select c.day, case when shop.mine then c.reason end, true
+  select c.day, case when shop.mine then c.reason end, true, null::uuid
   from shop_closures c join shop on c.shop_id = shop.id
   where c.day between p_from and shop.last_day
   union all
-  select a.day, case when shop.mine then a.reason end, false
-  from all_off a, team, shop
-  where a.n = team.n and team.n > 0
-    and not exists (select 1 from shop_closures c where c.shop_id = shop.id and c.day = a.day)
-  order by 1;
+  select d.day, case when shop.mine then d.reason end, false, null
+  from off_days d, shop
+  where d.all_off
+  union all
+  select o.day, case when shop.mine then o.reason end, false, o.barber_id
+  from off o join off_days d on d.day = o.day and not d.all_off, shop
+  order by 1, 4;
 $$;
 
 -- The owner's takings for a run of days by the shop's clock (p_from to p_to,
@@ -2073,8 +2104,9 @@ create function public.max_waiting_per_customer() returns int language sql immut
 -- service with a barber (null: any). The day must be one they could book:
 -- the shop live, the service and barber still offered, today up to the
 -- booking horizon by the shop's clock, the shop not closed, and someone
--- working it. Whether the day is full is the app's to judge: a time may
--- have freed up by now, and waiting then does no harm.
+-- in that day (the barber asked for, if any). Whether the day is full is
+-- the app's to judge: a time may have freed up by now, and waiting then
+-- does no harm.
 create function public.join_waitlist(p_service_id uuid, p_day date, p_barber_id uuid default null)
 returns public.waitlist
 language plpgsql
@@ -2086,6 +2118,8 @@ declare
   v_service services;
   v_shop shops;
   v_today date;
+  v_open boolean;
+  v_barber_in boolean;
   v_row waitlist;
 begin
   if v_uid is null then
@@ -2109,23 +2143,26 @@ begin
     raise exception 'Pick a day from today up to 60 days ahead.' using errcode = '22023';
   end if;
 
-  -- Closed, or nobody (or not the barber asked for) works it, or has it all
-  -- blocked off.
-  if exists (select 1 from shop_closures c where c.shop_id = v_shop.id and c.day = p_day)
-     or not exists (
-       select 1 from barbers b
-       join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from p_day)::int
-       where b.shop_id = v_shop.id and b.is_active
-         and (p_barber_id is null or b.id = p_barber_id)
-         and not exists (
-           select 1 from bookings bk
-           where bk.barber_id = b.id and bk.status = 'confirmed'
-             and tstzrange(bk.starts_at, bk.ends_at) @> tstzrange(
-                   p_day::timestamp at time zone v_shop.time_zone,
-                   (p_day + 1)::timestamp at time zone v_shop.time_zone)
-         )
-     ) then
-    raise exception 'The shop isn''t taking bookings that day.' using errcode = 'P0001';
+  -- Who is in that day: working it and without the whole day blocked off.
+  -- The booking page shows such days as closed, or off for that barber, so
+  -- these only catch a day that changed while it was open. Like the day
+  -- range, 22023: the day itself can't be waited on.
+  select bool_or(true), bool_or(b.id = p_barber_id) into v_open, v_barber_in
+  from barbers b
+  where b.shop_id = v_shop.id and b.is_active
+    and exists (select 1 from working_hours wh where wh.barber_id = b.id and wh.weekday = extract(dow from p_day)::int)
+    and not exists (
+      select 1 from bookings bk
+      where bk.barber_id = b.id and bk.status = 'confirmed'
+        and tstzrange(bk.starts_at, bk.ends_at) @> tstzrange(
+              p_day::timestamp at time zone v_shop.time_zone,
+              (p_day + 1)::timestamp at time zone v_shop.time_zone)
+    );
+  if exists (select 1 from shop_closures c where c.shop_id = v_shop.id and c.day = p_day) or v_open is null then
+    raise exception 'The shop isn''t taking bookings that day.' using errcode = '22023';
+  end if;
+  if p_barber_id is not null and not v_barber_in then
+    raise exception 'That barber is off that day. Try any barber.' using errcode = '22023';
   end if;
 
   -- One at a time per customer, so two at once can't both get under the

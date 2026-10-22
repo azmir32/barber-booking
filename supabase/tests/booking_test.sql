@@ -611,10 +611,14 @@ declare
   d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 40;
   off bookings;
 begin
-  -- One barber's day off doesn't close the shop.
+  -- One barber's day off doesn't close the shop, but the booking page hears that barber is off.
   off := add_shop_booking('00000000-0000-0000-0000-0000000000a2', d + 1, '00:00', 1440,
     p_note => 'Day off', p_is_block => true);
-  assert (select count(*) from shop_closed_days(shop, d, d + 5)) = 0, 'one barber off is not a closed shop';
+  assert (select count(*) from shop_closed_days(shop, d, d + 5) where barber_id is null) = 0,
+    'one barber off is not a closed shop';
+  assert (select array_agg(row(day, reason, is_closure, barber_id)::text) from shop_closed_days(shop, d, d + 5))
+         = array[row(d + 1, 'Day off', false, '00000000-0000-0000-0000-0000000000a2'::uuid)::text],
+    'that barber is off that day';
 
   assert close_shop_days(d, 3, '  Hari Raya  ') = 3, 'closing returns the number of days';
   assert (select array_agg(day order by day) from shop_closed_days(shop, d - 1, d + 5)) = array[d, d + 1, d + 2],
@@ -724,14 +728,23 @@ begin
   -- When every barber has the day off, the day reads as closed but isn't a closure.
   perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d + 7, '00:00', 1440, p_note => 'Kursus', p_is_block => true);
   perform add_shop_booking('00000000-0000-0000-0000-0000000000a2', d + 7, '00:00', 1440, p_note => 'Kursus', p_is_block => true);
-  assert (select not is_closure and reason = 'Kursus' from shop_closed_days(shop, d + 7, d + 7)),
+  assert (select not is_closure and reason = 'Kursus' and barber_id is null from shop_closed_days(shop, d + 7, d + 7)),
     'a day everyone is off reads as closed';
+  -- Danial works Mondays only, so on another day Ali off is everyone who works it off.
+  declare
+    other date := d + 8 + (extract(dow from d + 8) = 1)::int;
+  begin
+    perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', other, '00:00', 1440, p_is_block => true);
+    assert (select array_agg(row(day, is_closure, barber_id)::text) from shop_closed_days(shop, other, other))
+           = array[row(other, false, null::uuid)::text], 'a barber who doesn''t work that weekday doesn''t keep it open';
+  end;
 
   assert reopen_shop_days(d, 8) = 3, 'reopening counts the closed days it opened';
-  assert (select array_agg(day) from shop_closed_days(shop, d, d + 7)) = array[d + 7],
+  assert (select array_agg(row(day, barber_id)::text order by day) from shop_closed_days(shop, d, d + 7))
+         = array[row(d + 1, '00000000-0000-0000-0000-0000000000a2'::uuid)::text, row(d + 7, null::uuid)::text],
     'only the barbers'' own days off are left';
   assert (select count(*) from bookings where shop_id = shop and is_block and status = 'confirmed'
-          and starts_at >= (d::timestamp at time zone 'Asia/Kuala_Lumpur')) = 3,
+          and starts_at >= (d::timestamp at time zone 'Asia/Kuala_Lumpur')) = 4,
     'reopening leaves the barbers'' own days off alone';
   assert exists (select 1 from available_slots('00000000-0000-0000-0000-0000000000e1', d + 2)),
     'the slots come back';
@@ -3058,8 +3071,8 @@ begin
   begin
     perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 2, '00000000-0000-0000-0000-0000000000a2');
     raise exception 'a barber who doesn''t work that day should be refused';
-  exception when sqlstate 'P0001' then
-    assert sqlerrm = 'The shop isn''t taking bookings that day.', sqlerrm;
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'That barber is off that day. Try any barber.', sqlerrm;
   end;
   assert jsonb_array_length(my_waitlist()) = 2, 'nothing refused was kept: ' || my_waitlist()::text;
 end $$;
@@ -3084,17 +3097,63 @@ begin
   begin
     perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 3);
     raise exception 'a closed day should be refused';
-  exception when sqlstate 'P0001' then
+  exception when sqlstate '22023' then
     assert sqlerrm = 'The shop isn''t taking bookings that day.', sqlerrm;
   end;
   begin
-    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 4);
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 4, '00000000-0000-0000-0000-0000000000a1');
     raise exception 'a day everyone has off should be refused';
-  exception when sqlstate 'P0001' then null;
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'The shop isn''t taking bookings that day.', sqlerrm;
   end;
   w := join_waitlist('00000000-0000-0000-0000-0000000000e1', d + 5, '00000000-0000-0000-0000-0000000000a1');
   assert w.day = d + 5, 'half a day off is still a working day';
 end $$;
+
+-- One barber's whole day off, with the other in: everyone sees it, without
+-- the reason, so the booking page shows that barber off rather than full,
+-- and asking to wait for them says so (the day went off with the page open).
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  perform set_barber_hours('00000000-0000-0000-0000-0000000000a2',
+    (select jsonb_agg(jsonb_build_object('weekday', d, 'opens_at', '10:00', 'closes_at', '18:00'))
+     from generate_series(0, 6) d));
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a2', (now() at time zone 'Asia/Kuala_Lumpur')::date + 38,
+    '00:00', 1440, p_note => 'Cuti', p_is_block => true);
+end $$;
+reset role;
+set request.jwt.claim.sub = '';
+set role anon;
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 38;
+begin
+  assert (select array_agg(row(day, reason, is_closure, barber_id)::text) from shop_closed_days('00000000-0000-0000-0000-00000000005a', d, d))
+         = array[row(d, null, false, '00000000-0000-0000-0000-0000000000a2'::uuid)::text], 'Danial is off that day';
+end $$;
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c5';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 38;
+  w waitlist;
+begin
+  begin
+    perform join_waitlist('00000000-0000-0000-0000-0000000000e1', d, '00000000-0000-0000-0000-0000000000a2');
+    raise exception 'waiting for a barber who has the day off should be refused';
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'That barber is off that day. Try any barber.', sqlerrm;
+  end;
+  w := join_waitlist('00000000-0000-0000-0000-0000000000e1', d);
+  assert w.barber_id is null, 'any barber is fine: Ali is in';
+  perform leave_waitlist(w.id);
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  perform set_barber_hours('00000000-0000-0000-0000-0000000000a2', '[]');
+end $$;
+
 reset role;
 update shops set is_published = false where id = '00000000-0000-0000-0000-00000000005b';
 set role authenticated;
@@ -3314,6 +3373,30 @@ end $$;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
 do $$ begin
   assert my_waitlist() = '[]', 'the shop moved him into day 37: ' || my_waitlist()::text;
+end $$;
+
+-- The shop putting someone waiting in by hand (after a WhatsApp, say) ends
+-- their request: their number finds them, however it was typed. Another
+-- number, another day or blocked time doesn't.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  d date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 35;
+begin
+  assert (select array_agg(name) from shop_waitlist(d)) = array['Dawud'], 'Dawud waits for day 35';
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '20:00', null,
+    '00000000-0000-0000-0000-0000000000e1', 'Someone else', '011-222 3334');
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d + 1, '20:00', null,
+    '00000000-0000-0000-0000-0000000000e1', 'Dawud', '011-222 3333');
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '21:00', 30, p_is_block => true);
+  assert (select array_agg(name) from shop_waitlist(d)) = array['Dawud'], 'still waiting';
+  perform add_shop_booking('00000000-0000-0000-0000-0000000000a1', d, '20:30', null,
+    '00000000-0000-0000-0000-0000000000e1', 'Dawud', '+60 11-222 3333');
+  assert not exists (select 1 from shop_waitlist(d)), 'put in by hand, so no longer waiting';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c5';
+do $$ begin
+  assert my_waitlist() = '[]', 'his list says so too: ' || my_waitlist()::text;
 end $$;
 
 -- Deleting an account takes its requests with it.

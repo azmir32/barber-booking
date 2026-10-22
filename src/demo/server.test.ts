@@ -1335,25 +1335,34 @@ test('a barber closes the shop for Hari Raya, customers see it, and it reopens',
       day: string;
       reason: string | null;
       is_closure: boolean;
+      barber_id: string | null;
     }[];
 
-  // One barber's own day off doesn't close the shop, and closing leaves it alone.
+  // One barber's own day off doesn't close the shop, but the booking page hears that barber is off,
+  // and closing leaves it alone. Danial works Sundays on his own, so his Sunday off is the shop's.
+  const offDay = addDays(from, 1);
   const off = await barber.rpc('add_shop_booking', {
     p_barber_id: barbers![1].id,
-    p_day: addDays(from, 1),
+    p_day: offDay,
     p_time: '00:00',
     p_duration_min: 1440,
     p_note: 'Day off',
     p_is_block: true,
   });
   assert.equal(off.error, null);
-  assert.deepEqual(await closed(barber), []);
+  const sunday = new Date(`${offDay}T00:00:00Z`).getUTCDay() === 0;
+  assert.deepEqual(await closed(barber), [
+    { day: offDay, reason: 'Day off', is_closure: false, barber_id: sunday ? null : barbers![1].id },
+  ]);
 
   const close = await barber.rpc('close_shop_days', { p_from: from, p_days: 3, p_reason: '  Hari Raya ' });
   assert.equal(close.error, null);
   assert.equal(close.data, 3);
   const days = [0, 1, 2].map((i) => addDays(from, i));
-  assert.deepEqual(await closed(barber), days.map((day) => ({ day, reason: 'Hari Raya', is_closure: true })));
+  assert.deepEqual(
+    await closed(barber),
+    days.map((day) => ({ day, reason: 'Hari Raya', is_closure: true, barber_id: null })),
+  );
   assert.equal(tables().bookings.find((b) => b.id === off.data.id)!.status, 'confirmed');
   // Closing again changes the reason, not the days.
   await barber.rpc('close_shop_days', { p_from: from, p_days: 3, p_reason: 'Hari Raya Aidilfitri' });
@@ -1361,7 +1370,7 @@ test('a barber closes the shop for Hari Raya, customers see it, and it reopens',
 
   // Guests see the days, not the reason, and no free times on them.
   const guest = client();
-  assert.deepEqual(await closed(guest), days.map((day) => ({ day, reason: null, is_closure: true })));
+  assert.deepEqual(await closed(guest), days.map((day) => ({ day, reason: null, is_closure: true, barber_id: null })));
   const { data: service } = await guest.from('services').select('id').eq('shop_id', shop.id).limit(1).single();
   const slots = await guest.rpc('available_slots', { p_service_id: service!.id, p_day: addDays(from, 1) });
   assert.deepEqual(slots.data, []);
@@ -1406,7 +1415,8 @@ test('a barber closes the shop for Hari Raya, customers see it, and it reopens',
   const reopen = await barber.rpc('reopen_shop_days', { p_from: from, p_days: 3 });
   assert.equal(reopen.error, null);
   assert.equal(reopen.data, 3);
-  assert.deepEqual(await closed(guest), []);
+  // Danial's day off is his own again, now that Hakim works that day too.
+  assert.deepEqual(await closed(guest), [{ day: offDay, reason: null, is_closure: false, barber_id: barbers![1].id }]);
   assert.equal(tables().bookings.find((b) => b.id === off.data.id)!.status, 'confirmed');
   assert.notDeepEqual((await guest.rpc('available_slots', { p_service_id: service!.id, p_day: from })).data, []);
 });
@@ -1428,7 +1438,7 @@ test('a day every barber is off reads as closed, and closing today works once cu
     assert.equal(off.error, null);
   }
   const allOff = await barber.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: day, p_to: day });
-  assert.deepEqual(allOff.data, [{ day, reason: 'Kursus', is_closure: false }]);
+  assert.deepEqual(allOff.data, [{ day, reason: 'Kursus', is_closure: false, barber_id: null }]);
   assert.equal((await barber.rpc('reopen_shop_days', { p_from: day, p_days: 1 })).data, 0);
 
   // Today: a customer already seen doesn't stop the shop closing for the rest of the day.
@@ -1455,7 +1465,7 @@ test('a day every barber is off reads as closed, and closing today works once cu
   const close = await barber.rpc('close_shop_days', { p_from: today(), p_days: 1 });
   assert.equal(close.error, null);
   assert.deepEqual((await barber.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: today(), p_to: today() })).data, [
-    { day: today(), reason: null, is_closure: true },
+    { day: today(), reason: null, is_closure: true, barber_id: null },
   ]);
   assert.deepEqual(await hours(), { opens_today: null, closes_today: null });
   assert.deepEqual(await listed(), [null, null]);
@@ -3062,8 +3072,9 @@ test('customers wait for a time on a day they could book, and only the shop sees
   assert.equal(await refused(hakim, aliChair.id, day(2), null, 'This service is no longer available.'), 'P0002');
   assert.equal(await refused(hakim, haircut.id, day(2), kemasBarbers![0].id, 'Barber not found.'), 'P0002');
   // Danial has no hours, so his days are never full: there is nothing to wait for.
+  const barberOff = 'That barber is off that day. Try any barber.';
+  assert.equal(await refused(hakim, haircut.id, day(2), danial.id, barberOff), '22023');
   const notTaking = 'The shop isn\'t taking bookings that day.';
-  assert.equal(await refused(hakim, haircut.id, day(2), danial.id, notTaking), 'P0001');
   assert.equal((await mine(hakim)).length, 2, 'nothing refused was kept');
 
   // Closed days and a whole day off; half a day off still leaves the evening.
@@ -3072,8 +3083,8 @@ test('customers wait for a time on a day they could book, and only the shop sees
     ali.rpc('add_shop_booking', { p_barber_id: aliChair.id, p_day: d, p_time: time, p_duration_min: minutes, p_is_block: true });
   assert.equal((await block(day(4), '00:00', 1440)).error, null);
   assert.equal((await block(day(5), '08:00', 360)).error, null);
-  await refused(jason, haircut.id, day(3), null, notTaking);
-  await refused(jason, haircut.id, day(4), null, notTaking);
+  assert.equal(await refused(jason, haircut.id, day(3), null, notTaking), '22023');
+  assert.equal(await refused(jason, haircut.id, day(4), aliChair.id, notTaking), '22023');
   assert.equal((await join(jason, haircut.id, day(5), aliChair.id)).error, null);
   // A paused shop takes nobody.
   await rahman.from('shops').update({ is_published: false }).eq('id', kemas.id);
@@ -3246,4 +3257,85 @@ test('Ali’s sample shop has a Saturday with no time left and two customers wai
   } finally {
     setClock(() => Date.now());
   }
+});
+
+/** The first given weekday (0 is Sunday) from a month out, clear of the sample bookings. */
+const monthOutOn = (weekday: number) => {
+  const from = addDays(today(), 30);
+  return addDays(from, (weekday - new Date(`${from}T00:00:00Z`).getUTCDay() + 7) % 7);
+};
+
+test('a barber’s own day off shows on the booking page, and waiting for them that day says so', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const guest = client();
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const danial = barbers![1];
+  const haircut = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!;
+  // Both work Tuesdays; Danial works Sundays on his own.
+  const [tuesday, sunday] = [monthOutOn(2), monthOutOn(0)];
+  for (const day of [tuesday, sunday]) {
+    const off = await ali.rpc('add_shop_booking', {
+      p_barber_id: danial.id,
+      p_day: day,
+      p_time: '00:00',
+      p_duration_min: 1440,
+      p_note: 'Cuti',
+      p_is_block: true,
+    });
+    assert.equal(off.error, null);
+  }
+  const closed = async (c: ReturnType<typeof client>, day: string) =>
+    (await c.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: day, p_to: day })).data;
+
+  // Everyone sees it, only the owner why: Danial off on the Tuesday, and the Sunday closed, as nobody else works it.
+  assert.deepEqual(await closed(guest, tuesday), [{ day: tuesday, reason: null, is_closure: false, barber_id: danial.id }]);
+  assert.deepEqual(await closed(ali, tuesday), [{ day: tuesday, reason: 'Cuti', is_closure: false, barber_id: danial.id }]);
+  assert.deepEqual(await closed(guest, sunday), [{ day: sunday, reason: null, is_closure: false, barber_id: null }]);
+
+  // Asked for anyway, the day having gone off with the page open: said plainly, and any barber still works.
+  const join = (day: string, barberId: string | null) =>
+    hakim.rpc('join_waitlist', { p_service_id: haircut.id, p_day: day, p_barber_id: barberId });
+  const withDanial = await join(tuesday, danial.id);
+  assert.deepEqual(
+    [withDanial.error?.code, withDanial.error?.message],
+    ['22023', 'That barber is off that day. Try any barber.'],
+  );
+  const onSunday = await join(sunday, null);
+  assert.deepEqual([onSunday.error?.code, onSunday.error?.message], ['22023', 'The shop isn\'t taking bookings that day.']);
+  assert.equal((await join(tuesday, null)).error, null);
+});
+
+test('the shop putting someone waiting in by hand ends their request', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const { data: barbers } = await ali.from('barbers').select('*').eq('shop_id', shop.id).order('sort_order');
+  const aliChair = barbers![0];
+  const haircut = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!;
+  // A Tuesday, which Ali works.
+  const day = monthOutOn(2);
+  assert.equal((await hakim.rpc('join_waitlist', { p_service_id: haircut.id, p_day: day })).error, null);
+  const add = (d: string, time: string, extra: Record<string, unknown>) =>
+    ali.rpc('add_shop_booking', { p_barber_id: aliChair.id, p_day: d, p_time: time, ...extra });
+  const waiting = async () => ((await ali.rpc('shop_waitlist', { p_day: day })).data as Row[]).map((w) => w.name);
+
+  // Another number, another day or blocked time leaves it.
+  for (const [d, time, extra] of [
+    [day, '12:00', { p_service_id: haircut.id, p_guest_name: 'Someone else', p_guest_phone: '011-2233 4456' }],
+    [addDays(day, 1), '12:00', { p_service_id: haircut.id, p_guest_name: 'Hakim', p_guest_phone: '011-2233 4455' }],
+    [day, '13:00', { p_duration_min: 30, p_is_block: true }],
+  ] as const) {
+    assert.equal((await add(d, time, extra)).error, null);
+  }
+  assert.deepEqual(await waiting(), ['Hakim']);
+
+  // His number, however it was typed, finds him: he has his time now.
+  assert.equal(
+    (await add(day, '14:00', { p_service_id: haircut.id, p_guest_name: 'Hakim', p_guest_phone: '+60 11-2233 4455' })).error,
+    null,
+  );
+  assert.deepEqual(await waiting(), []);
+  assert.deepEqual((await hakim.rpc('my_waitlist')).data, []);
 });

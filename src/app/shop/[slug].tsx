@@ -95,14 +95,23 @@ export default function ShopPage() {
   const [barberId, setBarberId] = useState<string | null>(null); // null = any barber
   const days = useMemo(() => upcomingDays(DAYS_AHEAD, shop?.time_zone), [shop?.time_zone]);
   const today = days[0]?.date ?? null;
-  // Days the barber closed the whole shop, like Hari Raya.
-  const [shutDays, setShutDays] = useState<Set<string>>(new Set());
+  // Days the barber closed the whole shop, like Hari Raya, and each barber's own whole days off ("day|barber").
+  const [shutDays, setShutDays] = useState<{ shop: Set<string>; barbers: Set<string> }>(() => ({
+    shop: new Set(),
+    barbers: new Set(),
+  }));
   const shopId = shop?.id;
   useEffect(() => {
     if (!shopId || days.length === 0) return;
     supabase
       .rpc('shop_closed_days', { p_shop_id: shopId, p_from: days[0].date, p_to: days[days.length - 1].date })
-      .then(({ data }) => setShutDays(new Set(((data ?? []) as { day: string }[]).map((d) => d.day))));
+      .then(({ data }) => {
+        const rows = (data ?? []) as { day: string; barber_id?: string | null }[];
+        setShutDays({
+          shop: new Set(rows.filter((d) => !d.barber_id).map((d) => d.day)),
+          barbers: new Set(rows.filter((d) => d.barber_id).map((d) => `${d.day}|${d.barber_id}`)),
+        });
+      });
   }, [shopId, days, reload]);
   // Today's hours, leaving out barbers with the day off and a shop closed for the day.
   // Fetched again after midnight, so a page left open doesn't show yesterday's.
@@ -121,14 +130,26 @@ export default function ShopPage() {
       active = false;
     };
   }, [shopId, todayDate, reload]);
-  // Days nobody works (or the picked barber doesn't), so they can be shown as closed.
-  const closedDays = useMemo(() => {
-    const working = barbers.filter((b) => !barberId || b.id === barberId);
-    const open = new Set(working.flatMap((b) => (b.working_hours ?? []).map((h) => h.weekday)));
-    return new Set(
-      days.filter((d) => shutDays.has(d.date) || !open.has(new Date(`${d.date}T00:00:00Z`).getUTCDay())).map((d) => d.date),
-    );
-  }, [barbers, barberId, days, shutDays]);
+  // Who is in on a day: working that weekday and without the whole day off.
+  const barbersIn = useCallback(
+    (date: string) => {
+      const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+      return barbers.filter(
+        (b) => !shutDays.barbers.has(`${date}|${b.id}`) && (b.working_hours ?? []).some((h) => h.weekday === weekday),
+      );
+    },
+    [barbers, shutDays],
+  );
+  // Days nobody is in (or the picked barber isn't), so they can be shown as closed, or off.
+  const closedDays = useMemo(
+    () =>
+      new Set(
+        days
+          .filter((d) => shutDays.shop.has(d.date) || !barbersIn(d.date).some((b) => !barberId || b.id === barberId))
+          .map((d) => d.date),
+      ),
+    [days, shutDays, barbersIn, barberId],
+  );
   const [pickedDay, setPickedDay] = useState<string | null>(null);
   // Late in the evening today has nothing left. Remember that for this service and
   // barber, so the page opens on the next open day instead of an empty Today.
@@ -172,6 +193,9 @@ export default function ShopPage() {
   const joinedHere = useRef(new Set<string>());
   const [waitBusy, setWaitBusy] = useState(false);
   const [waitError, setWaitError] = useState<string | null>(null);
+  // A pick the server said can't be waited on (closed, or that barber took the day off since the page
+  // loaded), and why: the card then says so instead of offering a button that would fail again.
+  const [refused, setRefused] = useState<{ key: string; message: string } | null>(null);
 
   const scrollRef = useRef<ScrollView>(null);
   const noteRef = useRef<TextInput>(null);
@@ -375,6 +399,7 @@ export default function ShopPage() {
   // A day the customer picked with nothing free that could still free up: under "No free times" they
   // can ask to hear if it does. Only then is their waiting list asked for, never on an ordinary visit
   // (nor for a Today the page is about to skip).
+  const waitKey = `${pickKey}|${day}`;
   const canWait = Boolean(
     service &&
       shop &&
@@ -385,7 +410,7 @@ export default function ShopPage() {
       !slotsError &&
       freeCount === 0 &&
       !closedDays.has(day) &&
-      couldFreeUp(day, barbers, barberId, service.duration_min, now, shop.time_zone),
+      couldFreeUp(day, barbersIn(day), barberId, service.duration_min, now, shop.time_zone),
   );
   useEffect(() => {
     if (canWait && uid && askedWaits.current !== uid) loadWaits(uid);
@@ -473,6 +498,7 @@ export default function ShopPage() {
     });
     setWaitBusy(false);
     if (error) {
+      if (error.code === '22023') return setRefused({ key: waitKey, message: errorMessage(error) });
       setWaitError(errorMessage(error));
       // Already on it from another phone, say: the list then shows it.
       loadWaits(user);
@@ -838,6 +864,7 @@ export default function ShopPage() {
     ) : null;
   // The request is per day at the shop, so the one there shows whatever its service.
   const waitingHere = day ? myWaits?.find((w) => w.shop_id === shop.id && w.day === day) : undefined;
+  const refusal = !waitingHere && refused?.key === waitKey ? refused.message : null;
   // A move skips the service step, so the steps after it come up one.
   const timeTitle = moving
     ? barbers.length > 1 ? t('2. Pick a new time') : t('1. Pick a new time')
@@ -981,7 +1008,7 @@ export default function ShopPage() {
                                 onPress={() => leaveWaitlist(waitingHere)}
                               />
                             </>
-                          ) : (
+                          ) : refusal ? null : (
                             <>
                               <T variant="small">
                                 {t('If someone cancels, the shop can WhatsApp you. They decide who gets the time.')}
@@ -994,7 +1021,7 @@ export default function ShopPage() {
                               />
                             </>
                           )}
-                          <ErrorText message={waitError} />
+                          <ErrorText message={refusal ?? waitError} />
                         </Card>
                       ) : null}
                       {nextOpen ? (

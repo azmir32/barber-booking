@@ -91,14 +91,18 @@ function MyBookings() {
     setLoading(true);
     const [{ data, error }, waitlist] = await Promise.all([supabase.rpc('my_bookings'), supabase.rpc('my_waitlist')]);
     setLoading(false);
+    // The waiting list on its own: if only it fails, the bookings still come and last visit's requests stay.
+    if (!waitlist.error) {
+      const waiting = (waitlist.data ?? []) as MyWaiting[];
+      setWaits(waiting);
+      appCache.write(cacheKey(session.user.id, 'my-waitlist'), waiting);
+    }
     // A refresh that fails keeps the bookings already on screen.
-    if (error || waitlist.error) return setRefreshError(errorMessage(error ?? waitlist.error));
+    if (error) return setRefreshError(errorMessage(error));
     const list = (data ?? []) as MyBooking[];
-    const waiting = (waitlist.data ?? []) as MyWaiting[];
     setRefreshError(null);
     setError(null);
     setBookings(list);
-    setWaits(waiting);
     setJustRated(new Set());
     setSavedId(null);
     setEditingId(null);
@@ -106,7 +110,6 @@ function MyBookings() {
     setSavedAt(Date.now());
     setFromCache(false);
     appCache.write(cacheKey(session.user.id, 'my-bookings'), list);
-    appCache.write(cacheKey(session.user.id, 'my-waitlist'), waiting);
   }, [session]);
 
   useFocusEffect(

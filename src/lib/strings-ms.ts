@@ -1116,6 +1116,7 @@ export const ms: Record<string, string> = {
   'Please sign in to join the waiting list.': 'Sila log masuk untuk menyertai senarai menunggu.',
   'Pick a day from today up to 60 days ahead.': 'Pilih hari dari hari ini hingga 60 hari ke depan.',
   "The shop isn't taking bookings that day.": 'Kedai tidak menerima tempahan pada hari itu.',
+  'That barber is off that day. Try any barber.': 'Barber itu cuti pada hari itu. Cuba mana-mana barber.',
   'You already have a booking here that day.': 'Anda sudah ada tempahan di sini pada hari itu.',
   "You're already on the waiting list for that day.": 'Anda sudah berada dalam senarai menunggu untuk hari itu.',
   'You can be on 3 waiting lists at a time. Leave one to join another.':

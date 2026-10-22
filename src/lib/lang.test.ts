@@ -82,6 +82,7 @@ const DYNAMIC_KEYS = [
   'Please sign in to join the waiting list.',
   'Pick a day from today up to 60 days ahead.',
   "The shop isn't taking bookings that day.",
+  'That barber is off that day. Try any barber.',
   'You already have a booking here that day.',
   "You're already on the waiting list for that day.",
   'You can be on 3 waiting lists at a time. Leave one to join another.',
