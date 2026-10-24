@@ -713,6 +713,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minWidth: 64,
     minHeight: 48,
+    // Like a button: a long name (a service, a barber) wraps inside the chip instead of running off the screen.
+    maxWidth: '100%',
   },
   chipDisabled: { backgroundColor: 'transparent', borderStyle: 'dashed' },
   // A thicker edge, with the padding trimmed to match, so it stays the size of its neighbours.
@@ -739,7 +741,8 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     gap: Spacing.sm,
   },
-  chipText: { fontSize: 15, fontWeight: '600', textAlign: 'center' },
+  // Shrinks beside an icon, so a long label wraps rather than pushing the chip wider than the screen.
+  chipText: { fontSize: 15, fontWeight: '600', textAlign: 'center', flexShrink: 1 },
   chipSub: { fontSize: 12, textAlign: 'center' },
   badge: {
     borderWidth: 1,

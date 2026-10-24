@@ -80,6 +80,7 @@ function MyBookings() {
   // Why an action failed.
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [noticeHeight, setNoticeHeight] = useState(0);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
   // Rated for the first time since the list loaded: kept where they were rated, with the thanks,
@@ -283,8 +284,9 @@ function MyBookings() {
         <View
           role="status"
           accessibilityLiveRegion="polite"
+          onLayout={(e) => setNoticeHeight(e.nativeEvent.layout.height)}
           style={[styles.bar, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <T style={{ flex: 1 }}>{notice.message}</T>
+          <T style={[styles.barText, big && styles.wholeLine]}>{notice.message}</T>
           {notice.whatsapp ? (
             <Button
               title={t('WhatsApp the shop')}
@@ -534,8 +536,8 @@ function MyBookings() {
           ))}
         </Section>
       ) : null}
-      {/* Room for the bar, so it never covers the last card. */}
-      {notice ? <View style={{ height: 72 }} /> : null}
+      {/* Room for the bar, so it never covers the last card; with big text it is taller. */}
+      {notice ? <View style={{ height: Math.max(72, noticeHeight) }} /> : null}
     </Screen>
   );
 }
@@ -633,7 +635,8 @@ function YourRating({
 const styles = StyleSheet.create({
   noWrap: { flexWrap: 'nowrap' },
   lastVisit: { flex: 1, gap: Spacing.xs },
-  // With big text (useBigText) Book again goes under the shop's name rather than squeezing it.
+  // With big text (useBigText) Book again goes under the shop's name rather than squeezing it,
+  // and WhatsApp the shop under Booking cancelled.
   wholeLine: { flexBasis: '100%' },
   rule: { height: StyleSheet.hairlineWidth, marginVertical: Spacing.xs },
   rating: { gap: Spacing.xs },
@@ -651,9 +654,12 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     pointerEvents: 'box-none',
   },
+  // With big text the button goes on a line of its own, at the right, rather than off the side of the screen.
   bar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: Spacing.sm,
     borderWidth: 1,
     borderRadius: Radius.md,
@@ -662,4 +668,6 @@ const styles = StyleSheet.create({
     paddingRight: Spacing.xs,
     boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
   },
+  // Beside the button, the message takes what room is left (on the web, never less than its longest word).
+  barText: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
 });

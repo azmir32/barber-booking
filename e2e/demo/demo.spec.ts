@@ -1288,8 +1288,8 @@ test('the barber sees the day as chairs side by side, opens a booking from there
   await expect(actions).toHaveCount(0);
   await expect(hakim).toBeFocused();
 
-  // Scrolled down, the names stay on top and take their own taps: a booking under them can't be hit.
-  // Encik Rosli's late morning one, as a day with one barber in can end too soon after Hakim's to scroll his up there.
+  // Scrolled down, the names stay on top and take their own taps: Encik Rosli's block under them can't be hit.
+  // His is late morning, so the day scrolls far enough on any weekday (Hakim's, late on a short day, may not).
   const rosli = button(chair, `Encik Rosli, Haircut, 11:30 am to 12:00 pm, with ${barber}`);
   const frame = (await page.locator('#app').boundingBox())!;
   const before = (await rosli.boundingBox())!;
@@ -1434,6 +1434,42 @@ test('with the largest text on a small phone, a customer books and waits for a f
   await expectWhole(app.getByRole('link', { name: /^Customers: / }));
   await expectWhole(app.getByRole('tab', { name: /My shop/ }));
   await snap(page, 'demo-largest-08-my-shop');
+});
+
+test('with the largest text, the cancel bar keeps its button on screen and a long name wraps inside its chip', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const app = await open(page);
+  await app.getByRole('radiogroup', { name: 'Text size' }).getByRole('radio', { name: 'Largest', exact: true }).click();
+  await button(app, 'Try as a customer').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await button(app, /^Cancel booking on /).first().click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Cancel booking', exact: true }).click();
+  // The one prompt to tell the shop about a late cancel: under the message, not off the side.
+  const bar = app.getByRole('status').filter({ hasText: 'Booking cancelled.' });
+  await expectWhole(bar);
+  await expectWhole(bar.getByRole('button', { name: 'WhatsApp the shop', exact: true }));
+  await snap(page, 'demo-largest-08-cancelled');
+
+  // Wider than the screen at this size, on one line.
+  const name = 'Muhammad Hafiz Hakimi bin Abdul Rahman';
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  // The customer side has a Barbers tab too.
+  await expect(app.getByRole('tab', { name: /My shop/ })).toBeVisible();
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+  await app.getByRole('textbox', { name: 'Name', exact: true }).fill(name);
+  await button(app, 'Add barber').click();
+  await expect(app.getByText(name, { exact: true })).toBeVisible();
+  await app.getByRole('tab', { name: /Bookings/ }).click();
+  await expectWhole(
+    app.getByRole('radiogroup', { name: 'Show bookings for' }).getByRole('radio', { name, exact: true }),
+  );
+  await snap(page, 'demo-largest-09-bookings-filter');
+  await button(app, '+ Add booking or block time').click();
+  await expectWhole(app.getByRole('radio', { name: new RegExp(`^${name}`) }));
+  await snap(page, 'demo-largest-10-add-to-the-day');
 });
 
 test('customers pick a barber by their intro and stars and read one barber’s reviews; the owner writes the intros', async ({
