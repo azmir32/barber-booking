@@ -1356,7 +1356,7 @@ async function expectWhole(target: Locator) {
   expect(cut).toEqual([]);
 }
 
-test('with the largest text on a small phone, a customer books and the barber runs the day, nothing cut off', async ({
+test('with the largest text on a small phone, a customer books and waits for a full day, and the barber runs the day, nothing cut off', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 360, height: 780 });
@@ -1378,6 +1378,14 @@ test('with the largest text on a small phone, a customer books and the barber ru
   await snap(page, 'demo-largest-02-explore');
   await listed(app, 'Ali Barber Sungai Chua').last().click();
   await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  // The full Saturday's waiting-list card, before and after joining.
+  const saturday = fullSaturday();
+  await app.getByRole('radio', { name: saturday.chip }).click();
+  await expectWhole(app.getByText('If someone cancels, the shop can WhatsApp you. They decide who gets the time.'));
+  await expectWhole(button(app, 'Tell the shop I’d take a cancellation'));
+  await button(app, 'Tell the shop I’d take a cancellation').click();
+  await expectWhole(app.getByText(`You’re on the waiting list for ${saturday.text}`));
+  await expectWhole(button(app, `Leave the waiting list for ${saturday.text}`));
   await app.getByRole('radio', { name: /^Tomorrow/ }).click();
   const time = app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first();
   await time.click();
@@ -1397,26 +1405,33 @@ test('with the largest text on a small phone, a customer books and the barber ru
   await button(app, 'See my bookings').click();
   const booked = app.getByText(/^Haircut with (Ali|Danial) · RM20$/);
   await expectWhole(booked);
+  await expectWhole(app.getByRole('heading', { name: `Waiting for a time on ${saturday.text}` }));
+  await expectWhole(button(app, `See free times on ${saturday.text} at Ali Barber Sungai Chua`));
   await snap(page, 'demo-largest-05-my-bookings');
 
   // Kept for the barber side too.
   await app.getByRole('tab', { name: /Account/ }).click();
   await expect(largest).toBeChecked();
   await button(app, 'See the barber side').click();
+  // Saturday's waiting list: each name, what they asked for and when, beside its two buttons.
+  await app.getByRole('radio', { name: saturday.chip }).click();
+  await expectWhole(app.getByRole('heading', { name: 'Waiting for a time (3)' }).locator('..'));
+  await expectWhole(button(app, 'Remove Hakim from the waiting list'));
+  await snap(page, 'demo-largest-06-waiting');
   await app.getByRole('radio', { name: /^Tomorrow/ }).click();
   await app.getByRole('radio', { name: 'Chairs', exact: true }).click();
   const hakim = button(app, /^Hakim, Skin fade, 4:30 pm to 5:15 pm, with (Ali|Danial)$/);
   await expectWhole(hakim.getByText('Hakim', { exact: true }));
   await expectWhole(hakim.getByText('Skin fade', { exact: true }));
   await expectWhole(app.getByRole('radio', { name: 'Chairs', exact: true }));
-  await snap(page, 'demo-largest-06-chairs');
+  await snap(page, 'demo-largest-07-chairs');
 
   await app.getByRole('tab', { name: /My shop/ }).click();
   await expectWhole(app.getByText('You are live'));
   await expectWhole(app.getByRole('link', { name: /^Takings: / }));
   await expectWhole(app.getByRole('link', { name: /^Customers: / }));
   await expectWhole(app.getByRole('tab', { name: /My shop/ }));
-  await snap(page, 'demo-largest-07-my-shop');
+  await snap(page, 'demo-largest-08-my-shop');
 });
 
 test('customers pick a barber by their intro and stars and read one barber’s reviews; the owner writes the intros', async ({

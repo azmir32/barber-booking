@@ -339,7 +339,7 @@ function MyBookings() {
                   <Button
                     title={t('See free times')}
                     variant="secondary"
-                    style={styles.action}
+                    style={big ? styles.wholeAction : styles.action}
                     accessibilityLabel={t('See free times on {day} at {shop}', { day, shop: w.shop.name })}
                     onPress={() => seeTimes(w)}
                   />
@@ -347,7 +347,7 @@ function MyBookings() {
                     title={t('Leave')}
                     variant="secondary"
                     tone="danger"
-                    style={styles.action}
+                    style={big ? styles.wholeAction : styles.action}
                     accessibilityLabel={t('Leave the waiting list for {day}', { day })}
                     onPress={() => leave(w)}
                   />
@@ -640,6 +640,8 @@ const styles = StyleSheet.create({
   // Two even columns, so the card stays short and the buttons line up.
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   action: { flexGrow: 1, flexBasis: '40%', paddingHorizontal: Spacing.sm },
+  // A waiting request's two buttons with big text (useBigText): one under the other, rather than a long Malay label on three lines.
+  wholeAction: { flexGrow: 1, flexBasis: '100%', paddingHorizontal: Spacing.sm },
   actionBone: { flexGrow: 1, flexBasis: '40%', width: 'auto', borderRadius: Radius.md },
   overlay: { position: 'absolute', left: 0, right: 0, bottom: 0, pointerEvents: 'box-none' },
   overlayInner: {

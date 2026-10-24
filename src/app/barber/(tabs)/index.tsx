@@ -1382,6 +1382,7 @@ function WaitingCard({
   onRemove: (w: ShopWaiting) => void;
 }) {
   const theme = useTheme();
+  const big = useBigText();
   return (
     <Card style={styles.compactCard}>
       <T variant="heading" style={styles.newsHeading}>
@@ -1394,7 +1395,8 @@ function WaitingCard({
         return (
           <View key={w.id} style={styles.compactRow}>
             <View style={styles.info}>
-              <T variant="label" numberOfLines={1}>
+              {/* One line keeps a row short; with big text the whole name comes first. */}
+              <T variant="label" numberOfLines={big ? undefined : 1}>
                 {name}
               </T>
               <T variant="small">{requestService(w)}</T>
@@ -1414,25 +1416,28 @@ function WaitingCard({
                 </T>
               ) : null}
             </View>
-            {w.phone ? (
+            {/* With big text the two go one above the other, as on a booking's card, leaving the words more room. */}
+            <View style={big ? undefined : styles.iconPair}>
+              {w.phone ? (
+                <IconButton
+                  icon="logo-whatsapp"
+                  label={
+                    free
+                      ? t('Offer {name} {time} on WhatsApp', { name, time: formatTime(free.startsAt, tz) })
+                      : t('WhatsApp {name}', { name })
+                  }
+                  variant="ghost"
+                  color={theme.success}
+                  onPress={() => onOffer(row)}
+                />
+              ) : null}
               <IconButton
-                icon="logo-whatsapp"
-                label={
-                  free
-                    ? t('Offer {name} {time} on WhatsApp', { name, time: formatTime(free.startsAt, tz) })
-                    : t('WhatsApp {name}', { name })
-                }
+                icon="trash-outline"
+                label={t('Remove {name} from the waiting list', { name })}
                 variant="ghost"
-                color={theme.success}
-                onPress={() => onOffer(row)}
+                onPress={() => onRemove(w)}
               />
-            ) : null}
-            <IconButton
-              icon="trash-outline"
-              label={t('Remove {name} from the waiting list', { name })}
-              variant="ghost"
-              onPress={() => onRemove(w)}
-            />
+            </View>
           </View>
         );
       })}
@@ -1588,6 +1593,8 @@ const styles = StyleSheet.create({
   // A Malay period under the clock: smaller, so "tengah hari" fits the column on one line.
   period: { fontSize: 13, lineHeight: 18, fontWeight: '600' },
   info: { flex: 1, gap: 2 },
+  // A waiting row's WhatsApp and remove buttons, side by side at the usual text size.
+  iconPair: { flexDirection: 'row', gap: Spacing.sm },
   fold: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 48 },
   overlay: { position: 'absolute', left: 0, right: 0, bottom: 0, pointerEvents: 'box-none' },
   overlayInner: {

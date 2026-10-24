@@ -990,37 +990,38 @@ export default function ShopPage() {
                       </T>
                       {canWait ? (
                         <Card>
+                          {/* Joining and leaving keep the button pressed where it was (it becomes Leave, or back),
+                              so a screen reader stays on it and hears this line change. */}
+                          {refusal ? null : (
+                            <T variant={waitingHere ? 'label' : 'small'} role="status" accessibilityLiveRegion="polite">
+                              {waitingHere
+                                ? t('You’re on the waiting list for {day}', { day: noBreak(dayText(waitingHere.day)) })
+                                : t('If someone cancels, the shop can WhatsApp you. They decide who gets the time.')}
+                            </T>
+                          )}
                           {waitingHere ? (
-                            <>
-                              <T variant="label">
-                                {t('You’re on the waiting list for {day}', { day: noBreak(dayText(waitingHere.day)) })}
-                              </T>
-                              <T variant="small">
-                                {t('{service}. If a time frees up, the shop may WhatsApp you.', {
-                                  service: requestService(waitingHere),
-                                })}
-                              </T>
-                              <Button
-                                title={t('Leave')}
-                                accessibilityLabel={t('Leave the waiting list for {day}', { day: dayText(waitingHere.day) })}
-                                variant="secondary"
-                                tone="danger"
-                                loading={waitBusy}
-                                onPress={() => leaveWaitlist(waitingHere)}
-                              />
-                            </>
+                            <T variant="small">
+                              {t('{service}. If a time frees up, the shop may WhatsApp you.', {
+                                service: requestService(waitingHere),
+                              })}
+                            </T>
+                          ) : null}
+                          {waitingHere ? (
+                            <Button
+                              title={t('Leave')}
+                              accessibilityLabel={t('Leave the waiting list for {day}', { day: dayText(waitingHere.day) })}
+                              variant="secondary"
+                              tone="danger"
+                              loading={waitBusy}
+                              onPress={() => leaveWaitlist(waitingHere)}
+                            />
                           ) : refusal ? null : (
-                            <>
-                              <T variant="small">
-                                {t('If someone cancels, the shop can WhatsApp you. They decide who gets the time.')}
-                              </T>
-                              <Button
-                                title={t('Tell the shop I’d take a cancellation')}
-                                variant="secondary"
-                                loading={waitBusy}
-                                onPress={joinWaitlist}
-                              />
-                            </>
+                            <Button
+                              title={t('Tell the shop I’d take a cancellation')}
+                              variant="secondary"
+                              loading={waitBusy}
+                              onPress={joinWaitlist}
+                            />
                           )}
                           <ErrorText message={refusal ?? waitError} />
                         </Card>
