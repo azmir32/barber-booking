@@ -1288,9 +1288,11 @@ test('the barber sees the day as chairs side by side, opens a booking from there
   await expect(actions).toHaveCount(0);
   await expect(hakim).toBeFocused();
 
-  // Scrolled down, the names stay on top and take their own taps: Hakim's block under them can't be hit.
+  // Scrolled down, the names stay on top and take their own taps: a booking under them can't be hit.
+  // Encik Rosli's late morning one, as a day with one barber in can end too soon after Hakim's to scroll his up there.
+  const rosli = button(chair, `Encik Rosli, Haircut, 11:30 am to 12:00 pm, with ${barber}`);
   const frame = (await page.locator('#app').boundingBox())!;
-  const before = (await hakim.boundingBox())!;
+  const before = (await rosli.boundingBox())!;
   await page.mouse.move(frame.x + frame.width / 2, frame.y + frame.height / 2);
   await page.mouse.wheel(0, before.y - frame.y - 16);
   const pinned = { x: before.x - frame.x + before.width / 2, y: 30 };
@@ -1303,7 +1305,7 @@ test('the barber sees the day as chairs side by side, opens a booking from there
       }, pinned),
     )
     .toEqual({ names: expect.stringContaining(barber), button: null });
-  const under = (await hakim.boundingBox())!;
+  const under = (await rosli.boundingBox())!;
   expect(under.y - frame.y).toBeLessThan(pinned.y);
   expect(under.y + under.height - frame.y).toBeGreaterThan(pinned.y);
 
