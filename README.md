@@ -130,15 +130,16 @@ GitHub Actions runs all of these on every push (`.github/workflows/ci.yml`) exce
 
 | Screen | Requests a second | Typical (p50) | Slow (p95) |
 | --- | --- | --- | --- |
-| Find a barber, signed in (open now, next free time, your next cut and your barbers) | 143 | 303 ms | 764 ms |
-| Barbers near me (the same list, nearest first) | 145 | 297 ms | 810 ms |
-| Search for a barber | 294 | 128 ms | 451 ms |
-| Shop page (with closed days, today's hours, each barber's stars and the newest reviews) | 228 | 213 ms | 304 ms |
-| Free times for a day | 1,094 | 44 ms | 62 ms |
-| Book a cut (free times, then book) | 544 | 96 ms | 120 ms |
-| My bookings (with ratings) | 635 | 74 ms | 136 ms |
-| Barber's day (with what customers changed) | 263 | 188 ms | 250 ms |
-| My shop (takings, customers, reviews, closed days and the set-up steps) | 337 | 142 ms | 218 ms |
+| Find a barber, signed in (open now, next free time, your next cut and your barbers) | 132 | 335 ms | 854 ms |
+| Barbers near me (the same list, nearest first) | 142 | 309 ms | 771 ms |
+| Search for a barber | 269 | 136 ms | 504 ms |
+| Shop page (with closed days, today's hours, each barber's stars and the newest reviews) | 230 | 211 ms | 293 ms |
+| Free times for a day | 965 | 49 ms | 75 ms |
+| Book a cut (free times, then book) | 541 | 94 ms | 130 ms |
+| My bookings (with ratings and waiting lists) | 435 | 105 ms | 202 ms |
+| Barber's day (with what customers changed and who is waiting) | 203 | 240 ms | 345 ms |
+| My shop (takings, customers, reviews, closed days and the set-up steps) | 299 | 162 ms | 240 ms |
+| Join and leave a waiting list | 662 | 76 ms | 110 ms |
 
 In the rush, six customers got the last evening times and the other 294 were told the time was just taken, all within half a second and with no errors.
 
@@ -152,7 +153,7 @@ One barber's reviews are asked for by the barber alone (`reviews?barber_id=eq.â€
 
 A new shop's steps (`shop_setup`) never read bookings: on a throwaway Postgres with 1,001 shops and one shop holding 29,070 bookings, it takes 0.2 ms of database time for that shop (median 0.27 ms over 200 calls, 0.65 ms at most), through the shops, services, barbers and working-hours indexes only. The go-live check adds 0.3 ms to turning bookings on. The load test's "My shop" screen sends it on every visit, though the app only does while a shop is getting ready.
 
-The waiting list is read through two indexes: the owner's day by `waitlist_shop_day_idx` (shop, day, when asked) and a customer's own by the unique (customer, day, shop) key, so lists from days gone by, which nothing deletes, are never read. On a throwaway Postgres with the load-test data (40,340 requests; shop 1 has 1,379, three years of Saturdays) the owner's list for next Saturday takes 0.59 ms of database time at shop 1 (median of 200 calls; 1.17 ms at p95) and 0.47 ms across 200 shops, 0.31 ms for a day nobody waits on and 0.35 ms for a Saturday gone by; `EXPLAIN ANALYZE` shows one index scan of `waitlist_shop_day_idx` returning the day's 3 rows. A customer's own list takes 0.26 ms (My bookings' bookings take 2.5 ms alongside it), joining and leaving 0.51 ms together, and `shop_changes` with its waiting counts 0.25 ms. The shop page sends nothing new on an ordinary visit. Its closed days (`shop_closed_days`) now also say which barber has a day off, and are plpgsql so that each connection plans the query once: as plain SQL it was planned on every call, which took ten times as long as running it. Across 200 load-test shops a call now takes 0.073 ms of database time (median of 400 calls as a guest; 0.13 ms at p95) instead of 0.78 ms, and at shop 1 with five whole days off over three days of its 14, 0.16 ms instead of 0.87; the bookings are read by one range scan of `bookings_shop_starts_idx` over the 14 days (195 rows). The owner adding a booking by hand looks for someone waiting with that number among the day's few requests (`waitlist_shop_day_idx`, then each one's profile by id): 0.11 ms across 200 shops. The load test's "My bookings" scenario now asks for the waiting list too, "Barber's day" its list, and "Join and leave a waiting list" is new; the table above is from before this round.
+The waiting list is read through two indexes: the owner's day by `waitlist_shop_day_idx` (shop, day, when asked) and a customer's own by the unique (customer, day, shop) key, so lists from days gone by, which nothing deletes, are never read. On a throwaway Postgres with the load-test data (40,340 requests; shop 1 has 1,379, three years of Saturdays) the owner's list for next Saturday takes 0.59 ms of database time at shop 1 (median of 200 calls; 1.17 ms at p95) and 0.47 ms across 200 shops, 0.31 ms for a day nobody waits on and 0.35 ms for a Saturday gone by; `EXPLAIN ANALYZE` shows one index scan of `waitlist_shop_day_idx` returning the day's 3 rows. A customer's own list takes 0.26 ms (My bookings' bookings take 2.5 ms alongside it), joining and leaving 0.51 ms together, and `shop_changes` with its waiting counts 0.25 ms. The shop page sends nothing new on an ordinary visit. Its closed days (`shop_closed_days`) now also say which barber has a day off, and are plpgsql so that each connection plans the query once: as plain SQL it was planned on every call, which took ten times as long as running it. Across 200 load-test shops a call now takes 0.073 ms of database time (median of 400 calls as a guest; 0.13 ms at p95) instead of 0.78 ms, and at shop 1 with five whole days off over three days of its 14, 0.16 ms instead of 0.87; the bookings are read by one range scan of `bookings_shop_starts_idx` over the 14 days (195 rows). The owner adding a booking by hand looks for someone waiting with that number among the day's few requests (`waitlist_shop_day_idx`, then each one's profile by id): 0.11 ms across 200 shops. The load test's "My bookings" scenario now asks for the waiting list too, "Barber's day" its list, and "Join and leave a waiting list" is new. Each of those two screens now sends one more request a visit, which is why the table shows fewer visits a second for them than in round 11 (635 and 263); the database time each adds is under a millisecond, so most of the difference is the extra round trip through PostgREST.
 
 That is far more than a pre-Raya peak needs: if all 100,000 customers booked within the same hour, it would be under 30 bookings a second. What it changes is the bill, not the code:
 
