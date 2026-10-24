@@ -86,6 +86,9 @@ create table public.shops (
   -- Owners can't write them (see the grants below).
   rating_count int not null default 0,
   rating_sum int not null default 0,
+  -- Customers can join a queue for walk-ins from the shop's page while it
+  -- is open (see the walk-in queue below). The owner's choice; off at first.
+  queue_enabled boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -350,6 +353,42 @@ create table public.waitlist (
 -- news card's count, one index lookup however long the shop's history.
 create index waitlist_shop_day_idx on public.waitlist (shop_id, day, created_at);
 
+-- The walk-in queue: at a shop that takes walk-ins in turn, customers join
+-- today's queue from its page and the shop adds people who walk in, by
+-- name. day is the shop's own date, and days gone by are left out wherever
+-- the queue is read, so nothing clears it on a timer. An entry waits in the
+-- order it joined until the shop calls it (called_at, so the customer sees
+-- it is their turn), then goes: served (its cut is booking_id), left, taken
+-- off, or not here when called. Read and written only through the functions
+-- below.
+create table public.queue_entries (
+  id uuid primary key default gen_random_uuid(),
+  shop_id uuid not null references public.shops (id) on delete cascade,
+  day date not null,
+  -- Customers who joined online have an account; walk-ins a name instead.
+  customer_id uuid references public.profiles (id) on delete cascade,
+  guest_name text check (length(guest_name) <= 80),
+  guest_phone text check (length(guest_phone) <= 20),
+  -- Null: not said yet (the shop picks one when the cut starts).
+  service_id uuid references public.services (id) on delete set null,
+  -- Null: any barber.
+  barber_id uuid references public.barbers (id) on delete set null,
+  state text not null default 'waiting' check (state in ('waiting', 'called', 'gone')),
+  gone_reason text check (gone_reason in ('left', 'removed', 'not_here', 'served')),
+  called_at timestamptz,
+  booking_id uuid references public.bookings (id) on delete set null,
+  created_at timestamptz not null default now(),
+  check (customer_id is not null or guest_name is not null),
+  constraint queue_entries_gone_reason check ((state = 'gone') = (gone_reason is not null)),
+  constraint queue_entries_called_at check (state <> 'called' or called_at is not null)
+);
+-- A shop's queue today in order: its page's count, the barber's day and
+-- Find a barber's count, one index lookup however long the shop's history.
+create index queue_entries_shop_day_idx on public.queue_entries (shop_id, day, created_at);
+-- A customer's own place, today or yesterday, without reading their history.
+create index queue_entries_customer_day_idx on public.queue_entries (customer_id, day)
+  where customer_id is not null;
+
 -- Keeps shops.rating_count and rating_sum in step with the shop's reviews,
 -- and each barber's with the reviews of their cuts, also when a review
 -- moves to another barber. Runs as the tables' owner, since nobody else may
@@ -421,6 +460,7 @@ alter table public.bookings enable row level security;
 alter table public.shop_closures enable row level security;
 alter table public.reviews enable row level security;
 alter table public.waitlist enable row level security;
+alter table public.queue_entries enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -491,7 +531,8 @@ revoke insert, update on public.shops from anon, authenticated;
 -- something to book (shops_ready_to_go_live).
 grant insert (owner_id, name, slug, about, address, area, latitude, longitude, phone, instagram)
   on public.shops to authenticated;
-grant update (name, slug, about, address, area, latitude, longitude, phone, instagram, is_published)
+grant update (name, slug, about, address, area, latitude, longitude, phone, instagram, is_published,
+              queue_enabled)
   on public.shops to authenticated;
 -- The review counts on barbers are the database's too.
 revoke insert, update on public.barbers from anon, authenticated;
@@ -502,6 +543,9 @@ revoke insert, update, delete on public.shop_closures from anon, authenticated;
 -- Who is waiting is between the customer and the shop: only the waiting
 -- list functions read or write it.
 revoke all on public.waitlist from anon, authenticated;
+-- The same for the walk-in queue: customers see counts and their own place,
+-- and only the shop sees names.
+revoke all on public.queue_entries from anon, authenticated;
 -- Reviews are written through rate_booking and reply_to_review, and read
 -- without who wrote them: an account id would tie one person's reviews
 -- together across shops.
@@ -708,7 +752,9 @@ returns table (
   distance_km double precision,
   -- Where the shop is, so Directions from its page go there before the rest of the page loads.
   latitude double precision,
-  longitude double precision
+  longitude double precision,
+  -- How many are waiting in its walk-in queue today; null when it has none.
+  queue_waiting int
 )
 language sql
 stable
@@ -722,10 +768,11 @@ as $$
   select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
          h.opens_today, h.closes_today, public.shop_next_free(p.id),
          p.rating_count, round(p.rating_sum::numeric / nullif(p.rating_count, 0), 1),
-         p.distance_km, p.latitude, p.longitude
+         p.distance_km, p.latitude, p.longitude,
+         case when p.queue_enabled then q.waiting end
   from (
     select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone, s.rating_count, s.rating_sum,
-           s.latitude, s.longitude,
+           s.latitude, s.longitude, s.queue_enabled,
            (select min(v.price) from services v where v.shop_id = s.id and v.is_active) as from_price,
            (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active) as barber_count,
            case when p_lat between -90 and 90 and p_lng between -180 and 180
@@ -742,6 +789,13 @@ as $$
     offset greatest(coalesce(p_offset, 0), 0)
   ) p
   left join lateral public.shop_hours_today(p.id) h on true
+  -- One lookup of queue_entries_shop_day_idx per shop, only for queue shops.
+  left join lateral (
+    select count(*)::int as waiting
+    from queue_entries e
+    where p.queue_enabled and e.shop_id = p.id and e.state = 'waiting'
+      and e.day = (now() at time zone p.time_zone)::date
+  ) q on true
   order by p.distance_km nulls last, lower(p.name), p.id;
 $$;
 
@@ -2291,6 +2345,456 @@ as $$
     and w.day >= (now() at time zone s.time_zone)::date;
 $$;
 
+-- Walk-in queue ---------------------------------------------------------------
+
+-- How many can wait in one shop's queue at once, so its page can't be
+-- flooded with sign-ups.
+create function public.max_queue_waiting() returns int language sql immutable as $$ select 30 $$;
+
+-- The shop's barbers in right now by its own clock: active, inside one of
+-- today's working ranges, and without the whole day off, while the shop
+-- isn't closed today. The queue is open while anyone is. A break between
+-- ranges counts as out; blocked time inside a range doesn't, as the barber
+-- is coming back. plpgsql for the same reason as shop_hours_today.
+create function public.barbers_in_now(p_shop_id uuid, p_tz text)
+returns setof public.barbers
+language plpgsql
+stable
+set search_path = public
+as $$
+declare
+  v_local timestamp := now() at time zone p_tz;
+  v_day date := (now() at time zone p_tz)::date;
+begin
+  if exists (select 1 from shop_closures c where c.shop_id = p_shop_id and c.day = v_day) then
+    return;
+  end if;
+  return query
+  select b.* from barbers b
+  where b.shop_id = p_shop_id and b.is_active
+    and exists (
+      select 1 from working_hours wh
+      where wh.barber_id = b.id and wh.weekday = extract(dow from v_day)::int
+        and wh.opens_at <= v_local::time and v_local::time < wh.closes_at
+    )
+    and b.id not in (
+      select bk.barber_id from bookings bk
+      where bk.shop_id = p_shop_id
+        and bk.starts_at >= v_day::timestamp at time zone p_tz
+        and bk.starts_at < (v_day + 1)::timestamp at time zone p_tz
+        and bk.is_block
+        and bk.status = 'confirmed'
+        and bk.ends_at - bk.starts_at >= interval '24 hours'
+    )
+  order by b.sort_order, b.created_at, b.id;
+end;
+$$;
+
+-- About how long until someone joining now gets a chair: the cuts waiting
+-- ahead added up and shared among the barbers in, rounded up to 5 minutes.
+-- src/lib/queue.ts (queueEstimate) works it out the same way.
+create function public.queue_estimate(p_minutes bigint, p_barbers int)
+returns int
+language sql
+immutable
+as $$
+  select case when coalesce(p_minutes, 0) <= 0 then 0
+              else (ceil(p_minutes::numeric / greatest(coalesce(p_barbers, 0), 1) / 5) * 5)::int end;
+$$;
+
+-- What a shop's page needs about its queue, in one call: whether it is open
+-- now (the shop live, its queue on and someone in), how many are waiting,
+-- about how long someone joining now would wait, and the caller's own
+-- place in it today, if any, with the wait ahead of them. Customers see
+-- counts, never who. A waiting entry with no service counts as the shop's
+-- shortest one. The page asks every 30 seconds while its customer waits:
+-- one lookup of queue_entries_shop_day_idx for today, and one of theirs.
+create function public.queue_status(p_shop_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_shop shops;
+  v_day date;
+  v_in int;
+  v_default int;
+  v_mine queue_entries;
+  v_waiting int;
+  v_minutes bigint;
+  v_ahead int;
+  v_ahead_minutes bigint;
+begin
+  select * into v_shop from shops where id = p_shop_id;
+  if not found then
+    return jsonb_build_object('open', false, 'waiting', 0, 'estimate_min', 0, 'barbers_in', 0, 'mine', null);
+  end if;
+  v_day := (now() at time zone v_shop.time_zone)::date;
+  select count(*) into v_in from public.barbers_in_now(v_shop.id, v_shop.time_zone);
+  select min(duration_min) into v_default from services where shop_id = v_shop.id and is_active;
+
+  if v_uid is not null then
+    select * into v_mine from queue_entries e
+    where e.customer_id = v_uid and e.day = v_day and e.shop_id = v_shop.id and e.state <> 'gone'
+    order by e.created_at desc
+    limit 1;
+  end if;
+
+  select count(*), sum(coalesce(v.duration_min, v_default, 30)),
+         count(*) filter (where (e.created_at, e.id) < (v_mine.created_at, v_mine.id)),
+         sum(coalesce(v.duration_min, v_default, 30)) filter (where (e.created_at, e.id) < (v_mine.created_at, v_mine.id))
+    into v_waiting, v_minutes, v_ahead, v_ahead_minutes
+  from queue_entries e
+  left join services v on v.id = e.service_id
+  where e.shop_id = v_shop.id and e.day = v_day and e.state = 'waiting';
+
+  return jsonb_build_object(
+    'open', public.shop_is_live(v_shop) and v_shop.queue_enabled and v_in > 0,
+    'waiting', v_waiting,
+    'estimate_min', public.queue_estimate(v_minutes, v_in),
+    'barbers_in', v_in,
+    'mine', case when v_mine.id is not null then jsonb_build_object(
+      'id', v_mine.id, 'state', v_mine.state, 'called_at', v_mine.called_at,
+      'service_id', v_mine.service_id, 'barber_id', v_mine.barber_id, 'created_at', v_mine.created_at,
+      'place', case when v_mine.state = 'waiting' then v_ahead + 1 end,
+      'estimate_min', case when v_mine.state = 'waiting' then public.queue_estimate(v_ahead_minutes, v_in) end
+    ) end
+  );
+end;
+$$;
+
+-- A signed-in customer joins a shop's queue for today, for a service with a
+-- barber (null: any), while the queue is open (see queue_status) and the
+-- barber asked for is in. One place at a time across every shop, as
+-- someone can only sit in one chair; none at a shop where they have a
+-- booking still to come today, as they have a time; and no more than
+-- max_queue_waiting waiting.
+create function public.join_queue(p_service_id uuid, p_barber_id uuid default null)
+returns public.queue_entries
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_service services;
+  v_shop shops;
+  v_day date;
+  v_in int;
+  v_barber_in boolean;
+  v_other uuid;
+  v_row queue_entries;
+begin
+  if v_uid is null then
+    raise exception 'Please sign in to join the queue.' using errcode = '28000';
+  end if;
+
+  select * into v_service from services where id = p_service_id and is_active;
+  select * into v_shop from shops where id = v_service.shop_id;
+  if v_shop.id is null or not public.shop_is_live(v_shop) then
+    raise exception 'This service is no longer available.' using errcode = 'P0002';
+  end if;
+  if p_barber_id is not null and not exists (
+    select 1 from barbers where id = p_barber_id and shop_id = v_shop.id and is_active
+  ) then
+    raise exception 'Barber not found.' using errcode = 'P0002';
+  end if;
+
+  select count(*), coalesce(bool_or(b.id = p_barber_id), false) into v_in, v_barber_in
+  from public.barbers_in_now(v_shop.id, v_shop.time_zone) b;
+  if not v_shop.queue_enabled or v_in = 0 then
+    raise exception 'The queue isn''t open right now.' using errcode = 'P0001';
+  end if;
+  if p_barber_id is not null and not v_barber_in then
+    raise exception 'That barber isn''t in right now. Try any barber.' using errcode = 'P0001';
+  end if;
+
+  v_day := (now() at time zone v_shop.time_zone)::date;
+
+  -- One at a time per customer, so two at once can't both get in. Then the
+  -- shop's diary, so a booking of theirs being saved now is seen below, and
+  -- the queue's order and count are those of the moment each one is saved.
+  perform pg_advisory_xact_lock(hashtextextended('queue:' || v_uid, 0));
+  perform public.lock_shop_diary(v_shop.id);
+
+  if exists (
+    select 1 from bookings
+    where customer_id = v_uid and shop_id = v_shop.id and status = 'confirmed'
+      and starts_at >= v_day::timestamp at time zone v_shop.time_zone
+      and starts_at < (v_day + 1)::timestamp at time zone v_shop.time_zone
+      and ends_at > now()
+  ) then
+    raise exception 'You already have a booking here today.' using errcode = 'P0001';
+  end if;
+
+  -- Their place in any shop's queue today by that shop's clock, which is
+  -- never more than a day from this one's.
+  select e.shop_id into v_other
+  from queue_entries e
+  join shops s on s.id = e.shop_id
+  where e.customer_id = v_uid and e.day between v_day - 1 and v_day + 1
+    and e.state <> 'gone' and e.day = (now() at time zone s.time_zone)::date
+  limit 1;
+  if v_other = v_shop.id then
+    raise exception 'You''re already in this queue.' using errcode = 'P0001';
+  elsif v_other is not null then
+    raise exception 'You''re already in another shop''s queue. Leave it to join this one.' using errcode = 'P0001';
+  end if;
+
+  if (select count(*) from queue_entries where shop_id = v_shop.id and day = v_day and state = 'waiting')
+     >= public.max_queue_waiting() then
+    raise exception 'The queue is full for now. Try booking a time instead.' using errcode = 'P0001';
+  end if;
+
+  insert into queue_entries (shop_id, day, customer_id, service_id, barber_id, created_at)
+  values (v_shop.id, v_day, v_uid, v_service.id, p_barber_id, clock_timestamp())
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+-- The customer leaves the queue, or says they no longer need their turn.
+-- Already gone is fine: the shop may have just taken them off.
+create function public.leave_queue(p_id uuid)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update queue_entries set state = 'gone', gone_reason = 'left'
+  where id = p_id and customer_id = (select auth.uid()) and state <> 'gone';
+$$;
+
+-- The shop adds someone who walked in: a name, their number if they give
+-- one, and the service and barber if they said. Barbers use the owner's
+-- account, so it is the owner's shop. Whenever its queue is on, as a shop
+-- may take names before it opens; the same limit as online.
+create function public.add_to_queue(
+  p_name text,
+  p_phone text default null,
+  p_service_id uuid default null,
+  p_barber_id uuid default null
+)
+returns public.queue_entries
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_day date;
+  v_row queue_entries;
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    raise exception 'Set up your shop first.' using errcode = 'P0002';
+  end if;
+  if not v_shop.queue_enabled then
+    raise exception 'Turn on the walk-in queue in My shop first.' using errcode = 'P0001';
+  end if;
+  if nullif(trim(p_name), '') is null then
+    raise exception 'Add the customer''s name.' using errcode = '22023';
+  end if;
+  if p_service_id is not null and not exists (select 1 from services where id = p_service_id and shop_id = v_shop.id) then
+    raise exception 'Service not found.' using errcode = 'P0002';
+  end if;
+  if p_barber_id is not null and not exists (select 1 from barbers where id = p_barber_id and shop_id = v_shop.id) then
+    raise exception 'Barber not found.' using errcode = 'P0002';
+  end if;
+
+  v_day := (now() at time zone v_shop.time_zone)::date;
+  perform public.lock_shop_diary(v_shop.id);
+  if (select count(*) from queue_entries where shop_id = v_shop.id and day = v_day and state = 'waiting')
+     >= public.max_queue_waiting() then
+    raise exception 'The queue is full for now. Try booking a time instead.' using errcode = 'P0001';
+  end if;
+
+  insert into queue_entries (shop_id, day, guest_name, guest_phone, service_id, barber_id, created_at)
+  values (v_shop.id, v_day, trim(p_name), nullif(trim(p_phone), ''), p_service_id, p_barber_id, clock_timestamp())
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+-- The shop calls someone: their page and My bookings say it is their turn.
+-- Calling again (they didn't hear) notes the new time.
+create function public.call_from_queue(p_id uuid)
+returns public.queue_entries
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row queue_entries;
+begin
+  update queue_entries e set state = 'called', called_at = now()
+  from shops s
+  where e.id = p_id and s.id = e.shop_id and s.owner_id = auth.uid()
+    and e.day = (now() at time zone s.time_zone)::date and e.state <> 'gone'
+  returning e.* into v_row;
+  if not found then
+    raise exception 'They''re no longer in the queue.' using errcode = 'P0002';
+  end if;
+  return v_row;
+end;
+$$;
+
+-- The shop takes someone off: not here when called, or taken off while
+-- waiting. Already gone is fine.
+create function public.remove_from_queue(p_id uuid)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update queue_entries e
+  set state = 'gone', gone_reason = case when e.state = 'called' then 'not_here' else 'removed' end
+  from shops s
+  where e.id = p_id and s.id = e.shop_id and s.owner_id = (select auth.uid()) and e.state <> 'gone';
+$$;
+
+-- Starting someone's cut makes it an ordinary booking with the barber who
+-- takes them, from now (to the minute) for the service's length, so it
+-- counts in takings, the customer list, reviews and the chairs like any
+-- other. The service is theirs unless the shop picks another, and the
+-- barber must be in now and free until the cut would end: a booking in the
+-- way is named, so the shop can pick someone else. Its start time is the
+-- error's detail, for the app to say in the customer's own clock.
+create function public.start_from_queue(p_id uuid, p_barber_id uuid, p_service_id uuid default null)
+returns public.bookings
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_entry queue_entries;
+  v_service services;
+  v_barber barbers;
+  v_starts timestamptz := date_trunc('minute', now());
+  v_ends timestamptz;
+  v_clash bookings;
+  v_booking bookings;
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    raise exception 'Set up your shop first.' using errcode = 'P0002';
+  end if;
+
+  perform public.lock_shop_diary(v_shop.id);
+  select * into v_entry from queue_entries
+  where id = p_id and shop_id = v_shop.id and state <> 'gone'
+    and day = (now() at time zone v_shop.time_zone)::date;
+  if not found then
+    raise exception 'They''re no longer in the queue.' using errcode = 'P0002';
+  end if;
+
+  select * into v_service from services
+  where id = coalesce(p_service_id, v_entry.service_id) and shop_id = v_shop.id;
+  if not found then
+    raise exception 'Pick a service for their cut.' using errcode = '22023';
+  end if;
+
+  if not exists (select 1 from barbers where id = p_barber_id and shop_id = v_shop.id) then
+    raise exception 'Barber not found.' using errcode = 'P0002';
+  end if;
+  select * into v_barber from public.barbers_in_now(v_shop.id, v_shop.time_zone) b where b.id = p_barber_id;
+  if not found then
+    raise exception 'That barber isn''t working now. Pick another barber.' using errcode = 'P0001';
+  end if;
+
+  v_ends := v_starts + make_interval(mins => v_service.duration_min);
+  select * into v_clash from bookings
+  where barber_id = v_barber.id and status <> 'cancelled'
+    and tstzrange(starts_at, ends_at) && tstzrange(v_starts, v_ends)
+  order by starts_at
+  limit 1;
+  if found and v_clash.starts_at <= v_starts then
+    raise exception '% is busy until %. Pick another barber.', v_barber.name,
+      lower(to_char(v_clash.ends_at at time zone v_shop.time_zone, 'FMHH12:MI AM'))
+      using errcode = 'P0001', detail = to_jsonb(v_clash.ends_at) #>> '{}';
+  elsif found then
+    raise exception '% has a % booking before this cut would finish. Pick another barber.', v_barber.name,
+      lower(to_char(v_clash.starts_at at time zone v_shop.time_zone, 'FMHH12:MI AM'))
+      using errcode = 'P0001', detail = to_jsonb(v_clash.starts_at) #>> '{}';
+  end if;
+
+  insert into bookings (
+    shop_id, barber_id, service_id, customer_id, guest_name, guest_phone,
+    service_name, price, starts_at, ends_at
+  ) values (
+    v_shop.id, v_barber.id, v_service.id, v_entry.customer_id,
+    case when v_entry.customer_id is null then v_entry.guest_name end,
+    case when v_entry.customer_id is null then v_entry.guest_phone end,
+    v_service.name, v_service.price, v_starts, v_ends
+  )
+  returning * into v_booking;
+
+  update queue_entries set state = 'gone', gone_reason = 'served', booking_id = v_booking.id
+  where id = v_entry.id;
+  return v_booking;
+end;
+$$;
+
+-- The shop's queue today, in order: who is waiting or has been called, with
+-- each one's name and number as the customer list shows them (an online
+-- customer's account, or what the shop wrote down), and what they asked
+-- for. The barber's day asks for it with its bookings every minute while
+-- the queue is on: one lookup of queue_entries_shop_day_idx.
+create function public.shop_queue()
+returns table (
+  id uuid, name text, phone text, online boolean, service_id uuid, service_name text, duration_min int,
+  barber_id uuid, barber_name text, state text, called_at timestamptz, created_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select e.id, coalesce(nullif(trim(p.full_name), ''), e.guest_name),
+         case when e.customer_id is null then e.guest_phone else p.phone end,
+         e.customer_id is not null, e.service_id, v.name, v.duration_min,
+         e.barber_id, b.name, e.state, e.called_at, e.created_at
+  from shops sh
+  join queue_entries e
+    on e.shop_id = sh.id and e.day = (now() at time zone sh.time_zone)::date and e.state <> 'gone'
+  left join profiles p on p.id = e.customer_id
+  left join services v on v.id = e.service_id
+  left join barbers b on b.id = e.barber_id
+  where sh.owner_id = (select auth.uid())
+  order by e.created_at, e.id;
+$$;
+
+-- The customer's place in a queue today, if they are in one (at most one,
+-- see join_queue), with its shop, what they asked for, and their place and
+-- wait as queue_status works them out. My bookings asks every 30 seconds
+-- while they wait: one lookup of their own entries for today.
+create function public.my_queue()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(jsonb_agg(
+           (public.queue_status(e.shop_id) -> 'mine') || jsonb_build_object(
+             'shop_id', s.id, 'service_name', v.name, 'barber_name', b.name,
+             'shop', jsonb_build_object('name', s.name, 'slug', s.slug, 'time_zone', s.time_zone,
+                                        'phone', s.phone, 'address', s.address))
+           order by e.created_at, e.id), '[]'::jsonb)
+  from queue_entries e
+  join shops s on s.id = e.shop_id
+  left join services v on v.id = e.service_id
+  left join barbers b on b.id = e.barber_id
+  where e.customer_id = (select auth.uid())
+    and e.day between current_date - 1 and current_date + 1
+    and e.day = (now() at time zone s.time_zone)::date
+    and e.state <> 'gone';
+$$;
+
 -- Reviews ----------------------------------------------------------------------
 
 -- The name a review shows unless the customer picks another: the name they
@@ -2620,5 +3124,26 @@ revoke execute on function public.shop_waitlist(date) from public, anon;
 grant execute on function public.shop_waitlist(date) to authenticated;
 revoke execute on function public.my_waitlist() from public, anon;
 grant execute on function public.my_waitlist() to authenticated;
--- Booking links are opened by guests too.
+revoke execute on function public.max_queue_waiting() from public, anon, authenticated;
+revoke execute on function public.barbers_in_now(uuid, text) from public, anon, authenticated;
+revoke execute on function public.queue_estimate(bigint, int) from public, anon, authenticated;
+revoke execute on function public.join_queue(uuid, uuid) from public, anon;
+grant execute on function public.join_queue(uuid, uuid) to authenticated;
+revoke execute on function public.leave_queue(uuid) from public, anon;
+grant execute on function public.leave_queue(uuid) to authenticated;
+revoke execute on function public.add_to_queue(text, text, uuid, uuid) from public, anon;
+grant execute on function public.add_to_queue(text, text, uuid, uuid) to authenticated;
+revoke execute on function public.call_from_queue(uuid) from public, anon;
+grant execute on function public.call_from_queue(uuid) to authenticated;
+revoke execute on function public.remove_from_queue(uuid) from public, anon;
+grant execute on function public.remove_from_queue(uuid) to authenticated;
+revoke execute on function public.start_from_queue(uuid, uuid, uuid) from public, anon;
+grant execute on function public.start_from_queue(uuid, uuid, uuid) to authenticated;
+revoke execute on function public.shop_queue() from public, anon;
+grant execute on function public.shop_queue() to authenticated;
+revoke execute on function public.my_queue() from public, anon;
+grant execute on function public.my_queue() to authenticated;
+-- Booking links are opened by guests too, and so is a shop's queue count.
 grant execute on function public.shop_public_status(text) to anon, authenticated;
+revoke execute on function public.queue_status(uuid) from public;
+grant execute on function public.queue_status(uuid) to anon, authenticated;

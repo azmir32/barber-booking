@@ -3409,6 +3409,535 @@ do $$ begin
 end $$;
 rollback;
 
+-- Walk-in queue ------------------------------------------------------------------
+-- Customers join a shop's queue for today from its page; the shop adds
+-- walk-ins, calls them in turn and starts each cut as a booking. Ali and
+-- Danial work all day every day here, so the shop is open whatever the hour,
+-- and bookings in the way are put next to now. Hakim and Siti are
+-- customers, and Rahman another shop's owner, for this part only.
+begin;
+reset role;
+delete from bookings;
+delete from shop_closures;
+delete from working_hours
+where barber_id in ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2');
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select b, d, '00:00', '24:00'
+from unnest(array['00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2']::uuid[]) b,
+     generate_series(0, 6) d;
+update barbers set is_active = true where shop_id = '00000000-0000-0000-0000-00000000005a';
+update shops set is_published = true, subscription_status = 'active', queue_enabled = false
+where id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000c6', 'hakim.q@test', '{"role":"customer","full_name":"Hakim","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000000c7', 'siti.q@test', '{"role":"customer","full_name":"Siti","phone":"019-555 1234"}'),
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000005b', 'Rahman');
+insert into services (id, shop_id, name, duration_min, price) values
+  ('00000000-0000-0000-0000-0000000000e3', '00000000-0000-0000-0000-00000000005b', 'Fade', 45, 30),
+  ('00000000-0000-0000-0000-0000000000e5', '00000000-0000-0000-0000-00000000005a', 'Skin fade', 45, 35);
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a3', d, '00:00', '24:00' from generate_series(0, 6) d;
+update shops set is_published = true, queue_enabled = true where id = '00000000-0000-0000-0000-00000000005b';
+-- Hakim's place yesterday, written straight in and never ended: nothing
+-- clears it on a timer, so everything has to leave it out.
+insert into queue_entries (shop_id, day, customer_id, service_id, created_at) values
+  ('00000000-0000-0000-0000-00000000005a', (now() at time zone 'Asia/Kuala_Lumpur')::date - 1,
+   '00000000-0000-0000-0000-0000000000c6', '00000000-0000-0000-0000-0000000000e1', now() - interval '1 day');
+do $$ begin perform set_config('test.yesterday', (select id::text from queue_entries), false); end $$;
+
+do $$ begin
+  assert queue_estimate(0, 2) = 0 and queue_estimate(null, 2) = 0, 'nobody waiting is no wait';
+  assert queue_estimate(75, 2) = 40, '75 minutes over two chairs is about 40';
+  assert queue_estimate(30, 1) = 30 and queue_estimate(31, 1) = 35, 'rounded up to 5 minutes';
+  assert queue_estimate(45, 0) = 45, 'nobody in counts as one chair';
+end $$;
+
+-- Guests see how many wait and how long, but can't join, and nobody reads
+-- or writes the table itself.
+set role anon;
+do $$
+declare
+  s jsonb := queue_status('00000000-0000-0000-0000-00000000005a');
+begin
+  assert s = jsonb_build_object('open', false, 'waiting', 0, 'estimate_min', 0, 'barbers_in', 2, 'mine', null),
+    'the queue is off, so it isn''t open: ' || s::text;
+  assert (select queue_waiting from find_shops() where id = '00000000-0000-0000-0000-00000000005a') is null,
+    'Find a barber has no count for a shop without a queue';
+  assert (select queue_waiting from find_shops() where id = '00000000-0000-0000-0000-00000000005b') = 0,
+    'and nobody waiting at one with a queue';
+end $$;
+do $$ begin
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+  raise exception 'guests must not join a queue';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform my_queue();
+  raise exception 'guests must not call my_queue';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform shop_queue();
+  raise exception 'guests must not call shop_queue';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform add_to_queue('Pak Long');
+  raise exception 'guests must not call add_to_queue';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform start_from_queue(gen_random_uuid(), '00000000-0000-0000-0000-0000000000a1');
+  raise exception 'guests must not call start_from_queue';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform barbers_in_now('00000000-0000-0000-0000-00000000005a', 'Asia/Kuala_Lumpur');
+  raise exception 'barbers_in_now is only for the functions';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform 1 from queue_entries;
+  raise exception 'guests must not read the queue';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c6';
+do $$ begin
+  perform 1 from queue_entries;
+  raise exception 'customers must not read the queue directly';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  insert into queue_entries (shop_id, day, customer_id)
+  values ('00000000-0000-0000-0000-00000000005a', (now() at time zone 'Asia/Kuala_Lumpur')::date, auth.uid());
+  raise exception 'customers must not write the queue directly';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+  raise exception 'a shop without a queue should refuse';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'The queue isn''t open right now.', sqlerrm;
+end $$;
+-- Only the owner turns it on.
+do $$ begin
+  update shops set queue_enabled = true where id = '00000000-0000-0000-0000-00000000005a';
+  assert not (select queue_enabled from shops where id = '00000000-0000-0000-0000-00000000005a'),
+    'a customer can''t turn on a shop''s queue';
+end $$;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  perform add_to_queue('Pak Long');
+  raise exception 'adding to a queue that is off should be refused';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'Turn on the walk-in queue in My shop first.', sqlerrm;
+end $$;
+update shops set queue_enabled = true where id = '00000000-0000-0000-0000-00000000005a';
+
+-- Pak Long walks in first, with no service said yet.
+do $$
+declare
+  e queue_entries;
+begin
+  begin
+    perform add_to_queue('  ');
+    raise exception 'a walk-in needs a name';
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'Add the customer''s name.', sqlerrm;
+  end;
+  begin
+    perform add_to_queue('Pak Long', null, '00000000-0000-0000-0000-0000000000e3');
+    raise exception 'another shop''s service should be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'Service not found.', sqlerrm;
+  end;
+  begin
+    perform add_to_queue('Pak Long', null, null, '00000000-0000-0000-0000-0000000000a3');
+    raise exception 'another shop''s barber should be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'Barber not found.', sqlerrm;
+  end;
+  e := add_to_queue(' Pak Long ', ' 012-111 2222 ');
+  assert e.guest_name = 'Pak Long' and e.guest_phone = '012-111 2222' and e.customer_id is null
+     and e.service_id is null and e.barber_id is null and e.state = 'waiting'
+     and e.shop_id = '00000000-0000-0000-0000-00000000005a'
+     and e.day = (now() at time zone 'Asia/Kuala_Lumpur')::date, 'Pak Long waits: ' || e::text;
+  perform set_config('test.pak_long', e.id::text, false);
+end $$;
+
+-- Hakim joins online for a skin fade with any barber: second in line.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c6';
+do $$
+declare
+  e queue_entries;
+  s jsonb;
+begin
+  begin
+    perform join_queue('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000a3');
+    raise exception 'another shop''s barber should be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'Barber not found.', sqlerrm;
+  end;
+  begin
+    perform join_queue(gen_random_uuid());
+    raise exception 'an unknown service should be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'This service is no longer available.', sqlerrm;
+  end;
+  e := join_queue('00000000-0000-0000-0000-0000000000e5');
+  assert e.customer_id = auth.uid() and e.guest_name is null and e.barber_id is null and e.state = 'waiting'
+     and e.service_id = '00000000-0000-0000-0000-0000000000e5', 'Hakim waits: ' || e::text;
+  perform set_config('test.hakim', e.id::text, false);
+
+  -- One place at a time, here or anywhere.
+  begin
+    perform join_queue('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000a1');
+    raise exception 'joining twice should be refused';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'You''re already in this queue.', sqlerrm;
+  end;
+  begin
+    perform join_queue('00000000-0000-0000-0000-0000000000e3');
+    raise exception 'joining a second shop''s queue should be refused';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'You''re already in another shop''s queue. Leave it to join this one.', sqlerrm;
+  end;
+
+  -- Pak Long counts as the shop's shortest service, a 30-minute haircut:
+  -- 75 minutes over two chairs is about 40, and Hakim has 30 ahead of him.
+  s := queue_status('00000000-0000-0000-0000-00000000005a');
+  assert s->>'open' = 'true' and (s->>'waiting')::int = 2 and (s->>'estimate_min')::int = 40
+     and (s->>'barbers_in')::int = 2, 'the shop''s queue: ' || s::text;
+  assert s->'mine'->>'id' = e.id::text and s->'mine'->>'state' = 'waiting'
+     and (s->'mine'->>'place')::int = 2 and (s->'mine'->>'estimate_min')::int = 15,
+    'Hakim is second, about 15 minutes away: ' || s::text;
+  s := my_queue();
+  assert jsonb_array_length(s) = 1 and s->0->>'id' = e.id::text and (s->0->>'place')::int = 2
+     and s->0->>'service_name' = 'Skin fade' and s->0->>'barber_name' is null
+     and s->0->'shop'->>'name' = 'Ali Cuts' and s->0->'shop'->>'slug' = 'ali-cuts',
+    'My bookings shows his place: ' || s::text;
+  assert (select queue_waiting from find_shops() where id = '00000000-0000-0000-0000-00000000005a') = 2,
+    'Find a barber shows 2 waiting';
+end $$;
+-- Others see the count, never who.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$
+declare
+  s jsonb := queue_status('00000000-0000-0000-0000-00000000005a');
+begin
+  assert (s->>'waiting')::int = 2 and s->'mine' = 'null', 'Chong sees two waiting: ' || s::text;
+  assert my_queue() = '[]', 'and isn''t in it';
+  assert not exists (select 1 from shop_queue()), 'nor sees the shop''s list';
+end $$;
+
+-- Siti has a booking here today, so she has a time: no queue for her until
+-- it is cancelled. A day of Danial's off, and he can't be asked for.
+reset role;
+insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at)
+values ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2',
+        '00000000-0000-0000-0000-0000000000c7', 'Haircut', 25,
+        (now() at time zone 'Asia/Kuala_Lumpur')::date::timestamp at time zone 'Asia/Kuala_Lumpur',
+        ((now() at time zone 'Asia/Kuala_Lumpur')::date + 1)::timestamp at time zone 'Asia/Kuala_Lumpur');
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c7';
+do $$ begin
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+  raise exception 'someone with a booking today should be refused';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'You already have a booking here today.', sqlerrm;
+end $$;
+reset role;
+update bookings set status = 'cancelled' where customer_id = '00000000-0000-0000-0000-0000000000c7';
+insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+values ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2', true, 'Cuti', 0,
+        (now() at time zone 'Asia/Kuala_Lumpur')::date::timestamp at time zone 'Asia/Kuala_Lumpur',
+        ((now() at time zone 'Asia/Kuala_Lumpur')::date + 1)::timestamp at time zone 'Asia/Kuala_Lumpur');
+set role authenticated;
+do $$
+declare
+  e queue_entries;
+begin
+  begin
+    perform join_queue('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000a2');
+    raise exception 'a barber with the day off should be refused';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'That barber isn''t in right now. Try any barber.', sqlerrm;
+  end;
+  assert (queue_status('00000000-0000-0000-0000-00000000005a')->>'barbers_in')::int = 1, 'only Ali is in';
+  e := join_queue('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000a1');
+  assert e.barber_id = '00000000-0000-0000-0000-0000000000a1', 'Siti asks for Ali';
+  perform set_config('test.siti', e.id::text, false);
+end $$;
+reset role;
+delete from bookings where is_block;
+
+-- Closed today: no queue, though everyone is on the list.
+insert into shop_closures (shop_id, day)
+values ('00000000-0000-0000-0000-00000000005a', (now() at time zone 'Asia/Kuala_Lumpur')::date);
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$
+declare
+  s jsonb := queue_status('00000000-0000-0000-0000-00000000005a');
+begin
+  assert s->>'open' = 'false' and (s->>'barbers_in')::int = 0, 'a closed shop''s queue isn''t open: ' || s::text;
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+  raise exception 'joining on a closed day should be refused';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'The queue isn''t open right now.', sqlerrm;
+end $$;
+reset role;
+delete from shop_closures;
+
+-- Thirty waiting at most, online or added by the shop.
+insert into queue_entries (shop_id, day, guest_name, created_at)
+select '00000000-0000-0000-0000-00000000005a', (now() at time zone 'Asia/Kuala_Lumpur')::date, 'Extra ' || n, now()
+from generate_series(1, 27) n;
+set role authenticated;
+do $$ begin
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+  raise exception 'a full queue should refuse';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'The queue is full for now. Try booking a time instead.', sqlerrm;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  perform add_to_queue('One more');
+  raise exception 'a full queue should refuse the shop too';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'The queue is full for now. Try booking a time instead.', sqlerrm;
+end $$;
+reset role;
+delete from queue_entries where guest_name like 'Extra %';
+set role authenticated;
+
+-- The shop's list: today's, in order, with names and numbers.
+do $$ begin
+  assert (select array_agg(row(name, phone, online, service_name, barber_name, state)::text order by created_at)
+          from shop_queue())
+         = array[row('Pak Long', '012-111 2222', false, null, null, 'waiting')::text,
+                 row('Hakim', '011-2233 4455', true, 'Skin fade', null, 'waiting')::text,
+                 row('Siti', '019-555 1234', true, 'Haircut', 'Ali', 'waiting')::text],
+    'the shop''s queue: ' || (select array_agg(row(name, phone, online, service_name, barber_name, state)::text) from shop_queue())::text;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert not exists (select 1 from shop_queue()), 'another shop sees none of it';
+  perform call_from_queue(current_setting('test.hakim')::uuid);
+  raise exception 'another shop can''t call Hakim';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'They''re no longer in the queue.', sqlerrm;
+end $$;
+do $$ begin
+  perform remove_from_queue(current_setting('test.hakim')::uuid);
+  perform start_from_queue(current_setting('test.hakim')::uuid, '00000000-0000-0000-0000-0000000000a3');
+  raise exception 'another shop can''t start Hakim''s cut';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'Set up your shop first.' or sqlerrm = 'They''re no longer in the queue.', sqlerrm;
+end $$;
+
+-- Ali calls Hakim: it's his turn, and Siti moves up to second.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  e queue_entries;
+begin
+  e := call_from_queue(current_setting('test.hakim')::uuid);
+  assert e.state = 'called' and e.called_at = now(), 'Hakim is called: ' || e::text;
+  begin
+    perform call_from_queue(current_setting('test.yesterday')::uuid);
+    raise exception 'yesterday''s place can''t be called';
+  exception when sqlstate 'P0002' then null;
+  end;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c6';
+do $$
+declare
+  s jsonb := queue_status('00000000-0000-0000-0000-00000000005a');
+begin
+  assert s->'mine'->>'state' = 'called' and s->'mine'->'place' = 'null' and s->'mine'->>'called_at' is not null,
+    'Hakim sees it is his turn: ' || s::text;
+  assert (s->>'waiting')::int = 2, 'two still waiting';
+  assert my_queue()->0->>'state' = 'called', 'My bookings says so too';
+  -- Called still holds his place, so no other queue.
+  perform join_queue('00000000-0000-0000-0000-0000000000e3');
+  raise exception 'someone called should not join another queue';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'You''re already in another shop''s queue. Leave it to join this one.', sqlerrm;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c7';
+do $$ begin
+  assert (queue_status('00000000-0000-0000-0000-00000000005a')->'mine'->>'place')::int = 2, 'Siti is second now';
+end $$;
+
+-- Starting Hakim's cut: Danial has a booking before a skin fade would end,
+-- and Ali is still on a cut, so both say so; once Ali is free it is a
+-- booking from now.
+reset role;
+insert into bookings (shop_id, barber_id, guest_name, service_name, price, starts_at, ends_at) values
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2', 'Later', 'Haircut', 25,
+   now() + interval '20 minutes', now() + interval '50 minutes'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', 'Before', 'Haircut', 25,
+   now() - interval '25 minutes', now() + interval '5 minutes');
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  detail text;
+begin
+  begin
+    perform start_from_queue(current_setting('test.hakim')::uuid, '00000000-0000-0000-0000-0000000000a3');
+    raise exception 'another shop''s barber should be refused';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'Barber not found.', sqlerrm;
+  end;
+  begin
+    perform start_from_queue(current_setting('test.hakim')::uuid, '00000000-0000-0000-0000-0000000000a2');
+    raise exception 'a booking in the way should be refused';
+  exception when sqlstate 'P0001' then
+    get stacked diagnostics detail = pg_exception_detail;
+    assert sqlerrm = format('Danial has a %s booking before this cut would finish. Pick another barber.',
+                            lower(to_char((now() + interval '20 minutes') at time zone 'Asia/Kuala_Lumpur', 'FMHH12:MI AM'))),
+      sqlerrm;
+    assert detail::timestamptz = now() + interval '20 minutes', 'the detail is when: ' || detail;
+  end;
+  begin
+    perform start_from_queue(current_setting('test.hakim')::uuid, '00000000-0000-0000-0000-0000000000a1');
+    raise exception 'a barber on a cut should be refused';
+  exception when sqlstate 'P0001' then
+    get stacked diagnostics detail = pg_exception_detail;
+    assert sqlerrm = format('Ali is busy until %s. Pick another barber.',
+                            lower(to_char((now() + interval '5 minutes') at time zone 'Asia/Kuala_Lumpur', 'FMHH12:MI AM'))),
+      sqlerrm;
+    assert detail::timestamptz = now() + interval '5 minutes', 'the detail is until when: ' || detail;
+  end;
+end $$;
+reset role;
+update bookings set status = 'cancelled' where guest_name = 'Before';
+set role authenticated;
+do $$
+declare
+  b bookings;
+  e queue_entries;
+begin
+  b := start_from_queue(current_setting('test.hakim')::uuid, '00000000-0000-0000-0000-0000000000a1');
+  assert b.starts_at = date_trunc('minute', now()) and b.ends_at = b.starts_at + interval '45 minutes'
+     and b.barber_id = '00000000-0000-0000-0000-0000000000a1' and b.customer_id = '00000000-0000-0000-0000-0000000000c6'
+     and b.guest_name is null and b.service_name = 'Skin fade' and b.price = 35 and b.status = 'confirmed'
+     and not b.is_block and b.customer_changed_at is null, 'Hakim''s cut is a booking: ' || b::text;
+  reset role;
+  select * into e from queue_entries where id = current_setting('test.hakim')::uuid;
+  assert e.state = 'gone' and e.gone_reason = 'served' and e.booking_id = b.id, 'and he left the queue served';
+  set role authenticated;
+  begin
+    perform start_from_queue(current_setting('test.hakim')::uuid, '00000000-0000-0000-0000-0000000000a2');
+    raise exception 'a cut can''t start twice';
+  exception when sqlstate 'P0002' then
+    assert sqlerrm = 'They''re no longer in the queue.', sqlerrm;
+  end;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c6';
+do $$ begin
+  assert my_queue() = '[]', 'Hakim is no longer waiting';
+  assert queue_status('00000000-0000-0000-0000-00000000005a')->'mine' = 'null', 'nor on the shop''s page';
+  assert (select count(*) from jsonb_array_elements(my_bookings()) x
+          where x->>'service_name' = 'Skin fade' and (x->>'starts_at')::timestamptz = date_trunc('minute', now())) = 1,
+    'his cut is in his bookings';
+end $$;
+
+-- Pak Long said no service: the shop picks one when his cut starts.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+reset role;
+delete from bookings where guest_name = 'Later';
+set role authenticated;
+do $$
+declare
+  b bookings;
+begin
+  begin
+    perform start_from_queue(current_setting('test.pak_long')::uuid, '00000000-0000-0000-0000-0000000000a2');
+    raise exception 'a cut needs a service';
+  exception when sqlstate '22023' then
+    assert sqlerrm = 'Pick a service for their cut.', sqlerrm;
+  end;
+  b := start_from_queue(current_setting('test.pak_long')::uuid, '00000000-0000-0000-0000-0000000000a2',
+                        '00000000-0000-0000-0000-0000000000e1');
+  assert b.guest_name = 'Pak Long' and b.guest_phone = '012-111 2222' and b.customer_id is null
+     and b.service_name = 'Haircut' and b.ends_at = b.starts_at + interval '30 minutes', 'Pak Long''s cut: ' || b::text;
+  -- Siti didn't answer when called.
+  perform call_from_queue(current_setting('test.siti')::uuid);
+  perform remove_from_queue(current_setting('test.siti')::uuid);
+  perform remove_from_queue(current_setting('test.siti')::uuid);
+  assert not exists (select 1 from shop_queue()), 'nobody left';
+end $$;
+reset role;
+do $$ begin
+  assert (select gone_reason from queue_entries where id = current_setting('test.siti')::uuid) = 'not_here',
+    'Siti wasn''t here';
+end $$;
+set role authenticated;
+
+-- Siti comes back and joins again, then leaves; Chong can't take her off.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c7';
+do $$
+declare
+  e queue_entries := join_queue('00000000-0000-0000-0000-0000000000e1');
+begin
+  perform set_config('test.siti', e.id::text, false);
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  perform leave_queue(current_setting('test.siti')::uuid);
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c7';
+do $$ begin
+  assert (queue_status('00000000-0000-0000-0000-00000000005a')->'mine'->>'place')::int = 1, 'still waiting, first now';
+  perform leave_queue(current_setting('test.siti')::uuid);
+  perform leave_queue(current_setting('test.siti')::uuid);
+  assert my_queue() = '[]', 'Siti left';
+end $$;
+reset role;
+do $$ begin
+  assert (select gone_reason from queue_entries where id = current_setting('test.siti')::uuid) = 'left', 'she left';
+end $$;
+
+-- Taken off while waiting; and with the queue off, the shop still sees who
+-- is left, but customers can't join and Find a barber shows no count.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  e queue_entries := add_to_queue('Uncle Lim');
+begin
+  perform remove_from_queue(e.id);
+  reset role;
+  assert (select gone_reason from queue_entries where id = e.id) = 'removed', 'taken off: ' || e::text;
+  set role authenticated;
+  perform add_to_queue('Ah Kow');
+  update shops set queue_enabled = false where id = '00000000-0000-0000-0000-00000000005a';
+  assert (select array_agg(name) from shop_queue()) = array['Ah Kow'], 'Ah Kow is still on the list';
+  assert (select queue_waiting from find_shops() where id = '00000000-0000-0000-0000-00000000005a') is null,
+    'no count with the queue off';
+  assert queue_status('00000000-0000-0000-0000-00000000005a')->>'open' = 'false', 'not open';
+end $$;
+
+-- Deleting an account takes its places with it.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c6';
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert not exists (select 1 from queue_entries where customer_id = '00000000-0000-0000-0000-0000000000c6'),
+    'a deleted account waits for nothing';
+end $$;
+rollback;
+
 -- Deleting an account ------------------------------------------------------
 reset role;
 set role anon;
