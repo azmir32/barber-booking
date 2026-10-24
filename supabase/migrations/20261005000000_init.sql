@@ -2677,6 +2677,7 @@ declare
   v_starts timestamptz := date_trunc('minute', now());
   v_ends timestamptz;
   v_clash bookings;
+  v_clock text;
   v_booking bookings;
 begin
   select * into v_shop from shops where owner_id = auth.uid();
@@ -2717,8 +2718,10 @@ begin
       lower(to_char(v_clash.ends_at at time zone v_shop.time_zone, 'FMHH12:MI AM'))
       using errcode = 'P0001', detail = to_jsonb(v_clash.ends_at) #>> '{}';
   elsif found then
-    raise exception '% has a % booking before this cut would finish. Pick another barber.', v_barber.name,
-      lower(to_char(v_clash.starts_at at time zone v_shop.time_zone, 'FMHH12:MI AM'))
+    v_clock := lower(to_char(v_clash.starts_at at time zone v_shop.time_zone, 'FMHH12:MI AM'));
+    -- "an 8:00 am", "an 11:30 am": said with a vowel.
+    raise exception '% has % % booking before this cut would finish. Pick another barber.', v_barber.name,
+      case when v_clock ~ '^(8|11):' then 'an' else 'a' end, v_clock
       using errcode = 'P0001', detail = to_jsonb(v_clash.starts_at) #>> '{}';
   end if;
 

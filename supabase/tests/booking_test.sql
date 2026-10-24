@@ -3803,8 +3803,8 @@ begin
     raise exception 'a booking in the way should be refused';
   exception when sqlstate 'P0001' then
     get stacked diagnostics detail = pg_exception_detail;
-    assert sqlerrm = format('Danial has a %s booking before this cut would finish. Pick another barber.',
-                            lower(to_char((now() + interval '20 minutes') at time zone 'Asia/Kuala_Lumpur', 'FMHH12:MI AM'))),
+    assert sqlerrm ~ ('^Danial has an? ' || lower(to_char((now() + interval '20 minutes') at time zone 'Asia/Kuala_Lumpur', 'FMHH12:MI AM'))
+                      || ' booking before this cut would finish\. Pick another barber\.$'),
       sqlerrm;
     assert detail::timestamptz = now() + interval '20 minutes', 'the detail is when: ' || detail;
   end;

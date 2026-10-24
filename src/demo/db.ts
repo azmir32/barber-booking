@@ -16,7 +16,8 @@ export type TableName =
   | 'bookings'
   | 'shop_closures'
   | 'reviews'
-  | 'waitlist';
+  | 'waitlist'
+  | 'queue_entries';
 export type Tables = Record<TableName, Row[]>;
 type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'float' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = {
@@ -112,6 +113,8 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     // Kept by the reviews_count trigger (countReview below).
     rating_count: req('int', () => 0),
     rating_sum: req('int', () => 0),
+    // A demo saved before the walk-in queue gets the sample shops' own setting.
+    queue_enabled: { ...req('bool', () => false), backfill: (r) => sampleValue('shops', r.id, 'queue_enabled') === true },
     created_at: createdAt,
   },
   barbers: {
@@ -193,6 +196,22 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     offered_at: opt('timestamptz'),
     created_at: createdAt,
   },
+  queue_entries: {
+    id,
+    shop_id: req('uuid'),
+    day: req('date'),
+    customer_id: opt('uuid'),
+    guest_name: opt('text'),
+    guest_phone: opt('text'),
+    service_id: opt('uuid'),
+    // Null: any barber.
+    barber_id: opt('uuid'),
+    state: req('text', () => 'waiting', ['waiting', 'called', 'gone']),
+    gone_reason: opt('text'),
+    called_at: opt('timestamptz'),
+    booking_id: opt('uuid'),
+    created_at: createdAt,
+  },
 };
 
 /** Tables keyed by something other than id. */
@@ -268,6 +287,17 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['reviews_first_name_check', (r) => atMost(r.first_name, 40)],
     ['reviews_reply_check', (r) => atMost(r.reply, 280)],
     ['reviews_check', (r) => (r.reply == null) === (r.replied_at == null)],
+  ],
+  queue_entries: [
+    ['queue_entries_guest_name_check', (r) => atMost(r.guest_name, 80)],
+    ['queue_entries_guest_phone_check', (r) => atMost(r.guest_phone, 20)],
+    [
+      'queue_entries_gone_reason_check',
+      (r) => r.gone_reason == null || ['left', 'removed', 'not_here', 'served'].includes(String(r.gone_reason)),
+    ],
+    ['queue_entries_check', (r) => r.customer_id != null || r.guest_name != null],
+    ['queue_entries_gone_reason', (r) => (r.state === 'gone') === (r.gone_reason != null)],
+    ['queue_entries_called_at', (r) => r.state !== 'called' || r.called_at != null],
   ],
 };
 
@@ -376,6 +406,41 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     onDelete: 'cascade',
   },
   { name: 'waitlist_barber_id_fkey', table: 'waitlist', column: 'barber_id', references: 'barbers', onDelete: 'cascade' },
+  {
+    name: 'queue_entries_shop_id_fkey',
+    table: 'queue_entries',
+    column: 'shop_id',
+    references: 'shops',
+    onDelete: 'cascade',
+  },
+  {
+    name: 'queue_entries_customer_id_fkey',
+    table: 'queue_entries',
+    column: 'customer_id',
+    references: 'profiles',
+    onDelete: 'cascade',
+  },
+  {
+    name: 'queue_entries_service_id_fkey',
+    table: 'queue_entries',
+    column: 'service_id',
+    references: 'services',
+    onDelete: 'set null',
+  },
+  {
+    name: 'queue_entries_barber_id_fkey',
+    table: 'queue_entries',
+    column: 'barber_id',
+    references: 'barbers',
+    onDelete: 'set null',
+  },
+  {
+    name: 'queue_entries_booking_id_fkey',
+    table: 'queue_entries',
+    column: 'booking_id',
+    references: 'bookings',
+    onDelete: 'set null',
+  },
 ];
 
 // Values ---------------------------------------------------------------------
@@ -526,7 +591,10 @@ function moveToToday(saved: Tables, savedOn: string, version: number) {
   const days = Math.round((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${savedOn}T00:00:00Z`)) / 86_400_000);
   const has = new Set((saved.users ?? []).map((u) => u.email));
   const newcomers = Object.keys(CAME_IN).filter((email) => CAME_IN[email] > version && !has.has(email));
-  if (!Number.isFinite(days) || (days === 0 && Array.isArray(saved.reviews) && newcomers.length === 0)) return;
+  const hadQueue = Array.isArray(saved.queue_entries);
+  if (!Number.isFinite(days) || (days === 0 && Array.isArray(saved.reviews) && hadQueue && newcomers.length === 0)) {
+    return;
+  }
   for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
     const moved = Object.keys(columns).filter((c) => columns[c].type === 'timestamptz');
     const dates = Object.keys(columns).filter((c) => columns[c].type === 'date');
@@ -605,6 +673,33 @@ function moveToToday(saved: Tables, savedOn: string, version: number) {
           byId.get(r.booking_id)!.status === 'completed',
       ),
   ].map((r) => ({ ...r, barber_id: byId.get(r.booking_id)!.barber_id }));
+
+  // The walk-in queue is today's. One from a day gone by is over, as the
+  // shop's page leaves it out, so today's sample queue takes its place at
+  // the shops that still take walk-ins in turn; a demo saved before the
+  // queue came in gets it too. People in it are found again by their email,
+  // and a deleted customer, barber or service is gone from it.
+  if (days !== 0 || !hadQueue) {
+    const queueShops = new Set(
+      saved.shops
+        .filter((s) => (s.queue_enabled ?? sampleValue('shops', s.id, 'queue_enabled')) === true)
+        .map((s) => s.id),
+    );
+    const services = new Set((saved.services ?? []).map((v) => v.id));
+    const emails = new Map(sample.users.map((u) => [u.id, u.email]));
+    saved.queue_entries = sample.queue_entries.flatMap((e) => {
+      const customer = e.customer_id == null ? null : savedIds.get(emails.get(e.customer_id));
+      if (!queueShops.has(e.shop_id) || (e.customer_id != null && customer == null)) return [];
+      return [
+        {
+          ...e,
+          customer_id: customer,
+          barber_id: barbers.has(e.barber_id) ? e.barber_id : null,
+          service_id: services.has(e.service_id) ? e.service_id : null,
+        },
+      ];
+    });
+  }
 }
 
 /** The sample data as the seed lays it out for today, worked out at most once while a saved demo loads. */
@@ -640,6 +735,7 @@ export function tables(): Tables {
     const parsed = saved ? (JSON.parse(saved) as { tables?: Tables; seededOn?: string; version?: number }) : null;
     if (parsed?.tables && Array.isArray(parsed.tables.bookings)) {
       const hadReviews = Array.isArray(parsed.tables.reviews);
+      const hadQueue = Array.isArray(parsed.tables.queue_entries);
       const version = Number(parsed.version) || 0;
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn, version);
       // A demo saved before a table was added has no list for it yet,
@@ -654,7 +750,7 @@ export function tables(): Tables {
       }
       recountReviews(current);
       seededOn = today();
-      if (parsed.seededOn !== seededOn || !hadReviews || version < VERSION) save();
+      if (parsed.seededOn !== seededOn || !hadReviews || !hadQueue || version < VERSION) save();
     }
   } catch {
     // Unreadable or blocked storage: start fresh.

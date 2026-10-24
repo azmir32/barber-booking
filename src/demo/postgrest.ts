@@ -81,6 +81,8 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
   },
   // No policies, and no grants either: only the waiting list functions read and write it.
   waitlist: { select: () => false },
+  // The same for the walk-in queue: customers see counts and their own place, and only the shop sees names.
+  queue_entries: { select: () => false },
 };
 
 /** Column grants: who may write which columns (everything else is open). */
@@ -89,7 +91,19 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
   shops: {
     // A new shop starts hidden: going live is an update, which checks it has something to book.
     insert: ['owner_id', 'name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram'],
-    update: ['name', 'slug', 'about', 'address', 'area', 'latitude', 'longitude', 'phone', 'instagram', 'is_published'],
+    update: [
+      'name',
+      'slug',
+      'about',
+      'address',
+      'area',
+      'latitude',
+      'longitude',
+      'phone',
+      'instagram',
+      'is_published',
+      'queue_enabled',
+    ],
   },
   // Each barber's review count and total are the database's.
   barbers: {
@@ -100,6 +114,7 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
   shop_closures: { insert: [], update: [], delete: [] },
   reviews: { insert: [], update: [], delete: [] },
   waitlist: { insert: [], update: [], delete: [] },
+  queue_entries: { insert: [], update: [], delete: [] },
 };
 
 /**
@@ -109,6 +124,7 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
 const READABLE: Partial<Record<TableName, string[]>> = {
   reviews: Object.keys(COLUMNS.reviews).filter((c) => c !== 'customer_id'),
   waitlist: [],
+  queue_entries: [],
 };
 
 /** Postgres refuses a query that names a column the caller may not read, select * included. */

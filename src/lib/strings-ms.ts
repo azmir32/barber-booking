@@ -1132,4 +1132,39 @@ export const ms: Record<string, string> = {
   Largest: 'Paling besar',
   'Your phone’s own text size makes it bigger still.': 'Saiz teks telefon anda menjadikannya lebih besar lagi.',
   'Go back': 'Kembali',
+
+  // Round 13, the walk-in queue (lib/queue.ts, the shop page, Find a
+  // barber, My bookings, the barber's Bookings tab and My shop)
+  'You’re {place} in the queue': 'Anda orang {place} dalam barisan',
+  'You’re next in the queue': 'Anda yang seterusnya dalam barisan',
+  'about {time}': 'lebih kurang {time}',
+  'no wait': 'tak perlu tunggu',
+  '{count} waiting, {about}': '{count} menunggu, {about}',
+  'No one waiting': 'Tiada sesiapa menunggu',
+  '{count} waiting': '{count} menunggu',
+  'No queue': 'Tiada barisan',
+  'Hi {who}, it’s your turn at {shop}. See you in a few minutes!':
+    'Hai {who}, sekarang giliran anda di {shop}. Jumpa dalam beberapa minit lagi!',
+  'Called {time}': 'Dipanggil {time}',
+  'Just joined': 'Baru sertai',
+  'Waiting {time}': 'Menunggu {time}',
+  'With {barber}': 'Bersama {barber}',
+  '{barber} is busy until {time}. Pick another barber.': '{barber} sibuk hingga {time}. Pilih barber lain.',
+  '{barber} has a {time} booking before this cut would finish. Pick another barber.':
+    '{barber} ada tempahan jam {time} sebelum potongan ini siap. Pilih barber lain.',
+  '{barber} has an {time} booking before this cut would finish. Pick another barber.':
+    '{barber} ada tempahan jam {time} sebelum potongan ini siap. Pilih barber lain.',
+  // The database's own words.
+  'Please sign in to join the queue.': 'Sila log masuk untuk menyertai barisan.',
+  "The queue isn't open right now.": 'Barisan tidak dibuka sekarang.',
+  "That barber isn't in right now. Try any barber.": 'Barber itu tiada sekarang. Cuba mana-mana barber.',
+  'You already have a booking here today.': 'Anda sudah ada tempahan di sini hari ini.',
+  "You're already in this queue.": 'Anda sudah berada dalam barisan ini.',
+  "You're already in another shop's queue. Leave it to join this one.":
+    'Anda sudah berada dalam barisan kedai lain. Tarik diri daripadanya untuk menyertai barisan ini.',
+  'The queue is full for now. Try booking a time instead.': 'Barisan penuh buat masa ini. Cuba tempah masa sahaja.',
+  'Turn on the walk-in queue in My shop first.': 'Hidupkan barisan walk-in di Kedai saya dahulu.',
+  "They're no longer in the queue.": 'Mereka sudah tiada dalam barisan.',
+  'Pick a service for their cut.': 'Pilih servis untuk potongan mereka.',
+  "That barber isn't working now. Pick another barber.": 'Barber itu tidak bekerja sekarang. Pilih barber lain.',
 };
