@@ -129,17 +129,24 @@ create trigger shops_first_published
   before insert or update on public.shops
   for each row execute function public.shops_first_published();
 
+-- Find a barber's first page, in name order, straight off an index rather
+-- than sorting every live shop (find_shops).
+create index shops_name_idx on public.shops (lower(name), id);
+
 -- The signed-in barber's shop (an owner has at most one), or null. Policies
 -- call it as (select public.my_shop_id()) so Postgres works it out once per
--- query instead of once per row, and can use the shop_id indexes.
+-- query instead of once per row, and can use the shop_id indexes. plpgsql,
+-- so a connection plans its query once rather than on every owner's request.
 create function public.my_shop_id()
 returns uuid
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
-  select id from shops where owner_id = auth.uid();
+begin
+  return (select id from shops where owner_id = auth.uid());
+end;
 $$;
 
 -- Barbers (one per chair) ---------------------------------------------------
@@ -284,6 +291,11 @@ create index bookings_customer_idx on public.bookings (customer_id, shop_id, sta
 -- every barber's phone. Only online bookings have one.
 create index bookings_shop_changes_idx on public.bookings (shop_id, customer_changed_at)
   where customer_changed_at is not null;
+-- A shop's blocked time (breaks, errands, days off), which the shop list's
+-- hours today, the booking page's closed days and the waiting list look for
+-- among a day's bookings. Blocks are few, so this finds them without
+-- reading every booking of the days asked about.
+create index bookings_shop_blocks_idx on public.bookings (shop_id, starts_at) where is_block;
 
 -- Days the whole shop is shut, like Hari Raya. Kept apart from the barbers'
 -- own blocks so reopening never touches them, and so a barber who joins
@@ -511,12 +523,55 @@ grant select (booking_id, shop_id, barber_id, rating, comment, first_name, reply
 
 -- Finding a barber ----------------------------------------------------------
 
--- A shop's hours today by its own clock: the first barber in to the last one
--- out, leaving out barbers with the whole day off. Nulls when nobody is in,
--- or the shop is closed for the day. Breaks are ignored. plpgsql, so today's
--- bounds are known before the bookings lookup: as one SQL query the planner
--- read every booking the barbers ever had, and the shop list took 23 ms
--- instead of 2.5 ms (e2e/load).
+-- Each shop's hours today by its own clock, for a list of shops: the first
+-- barber in to the last one out, leaving out barbers with the whole day off.
+-- Nulls when nobody is in, or the shop is closed for the day. Breaks are
+-- ignored. One row per shop the caller can see (live, or their own).
+-- find_shops and my_shops ask once for their whole page: one call per shop
+-- took a fifth of the shop list's time (see README, "How many users it
+-- handles"). plpgsql with a generic plan, so a connection plans it once, and
+-- each day's bounds are worked out before the bookings lookup: as one SQL
+-- query the planner read every booking the barbers ever had.
+create function public.shops_hours_today(p_shop_ids uuid[])
+returns table (shop_id uuid, opens_today time, closes_today time)
+language plpgsql
+stable
+security definer
+set search_path = public
+set plan_cache_mode = force_generic_plan
+as $$
+#variable_conflict use_column
+begin
+  return query
+  select sh.id, h.opens_today, h.closes_today
+  from (
+    select s.id, s.time_zone as tz, (now() at time zone s.time_zone)::date as day
+    from shops s
+    where s.id = any(p_shop_ids) and (public.shop_is_live(s) or s.owner_id = (select auth.uid()))
+  ) sh
+  cross join lateral (
+    select min(wh.opens_at) as opens_today, max(wh.closes_at) as closes_today
+    from barbers b
+    join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from sh.day)::int
+    where b.shop_id = sh.id
+      and b.is_active
+      and not exists (select 1 from shop_closures c where c.shop_id = sh.id and c.day = sh.day)
+      and b.id not in (
+        select bk.barber_id from bookings bk
+        where bk.shop_id = sh.id
+          and bk.starts_at >= sh.day::timestamp at time zone sh.tz
+          and bk.starts_at < (sh.day + 1)::timestamp at time zone sh.tz
+          and bk.is_block
+          and bk.status = 'confirmed'
+          and bk.ends_at - bk.starts_at >= interval '24 hours'
+      )
+  ) h;
+end;
+$$;
+-- Only shop_hours_today, find_shops and my_shops use it.
+revoke execute on function public.shops_hours_today(uuid[]) from public, anon, authenticated;
+
+-- One shop's hours today, for its page: nulls when the caller can't see it.
 create function public.shop_hours_today(p_shop_id uuid)
 returns table (opens_today time, closes_today time)
 language plpgsql
@@ -524,128 +579,119 @@ stable
 security definer
 set search_path = public
 as $$
-declare
-  v_tz text;
-  v_day date;
+#variable_conflict use_column
 begin
-  select s.time_zone into v_tz
-  from shops s
-  where s.id = p_shop_id and (public.shop_is_live(s) or s.owner_id = (select auth.uid()));
-  if not found then
-    return query select null::time, null::time;
-    return;
-  end if;
-  v_day := (now() at time zone v_tz)::date;
   return query
-  select min(wh.opens_at), max(wh.closes_at)
-  from barbers b
-  join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from v_day)::int
-  where b.shop_id = p_shop_id
-    and b.is_active
-    and not exists (select 1 from shop_closures c where c.shop_id = p_shop_id and c.day = v_day)
-    and b.id not in (
-      select bk.barber_id from bookings bk
-      where bk.shop_id = p_shop_id
-        and bk.starts_at >= v_day::timestamp at time zone v_tz
-        and bk.starts_at < (v_day + 1)::timestamp at time zone v_tz
-        and bk.is_block
-        and bk.status = 'confirmed'
-        and bk.ends_at - bk.starts_at >= interval '24 hours'
-    );
+  select h.opens_today, h.closes_today
+  from (values (1)) one (x)
+  left join public.shops_hours_today(array[p_shop_id]) h on true;
 end;
 $$;
 
--- When someone wanting a cut soon could get one: the earliest free start for
--- the shop's shortest service with any barber, today by the shop's clock or
--- else tomorrow. Null when neither day has a free time. It gives the same
+-- When someone wanting a cut soon could get one, for each of a list of
+-- shops: the earliest free start for the shop's shortest service with any
+-- barber, today by the shop's clock or else tomorrow. No row when neither
+-- day has a free time, or the caller can't see the shop. It gives the same
 -- answer as the earliest of available_slots (booking_test.sql checks), but
--- find_shops runs it for every shop on a page, so rather than trying every
--- start time it only tries the few that can be first: free times sit on a
--- 15-minute grid from opening, so the first one is the first grid time after
--- now, or the first after one of the barber's bookings ends. That halves the
--- shop list's time (e2e/load).
-create function public.shop_next_free(p_shop_id uuid)
-returns timestamptz
+-- rather than trying every start time it only tries the few that can be
+-- first: free times sit on a 15-minute grid from opening, so the first one
+-- is the first grid time after now, or the first after one of the barber's
+-- bookings ends. find_shops and my_shops ask once for their whole page, and
+-- tomorrow is only worked out for the shops with nothing left today: one
+-- call per shop took half the shop list's time (see README, "How many users
+-- it handles"). A generic plan, so a connection plans the query once.
+create function public.shops_next_free(p_shop_ids uuid[])
+returns table (shop_id uuid, next_free_at timestamptz)
 language plpgsql
 stable
 security definer
 set search_path = public
+set plan_cache_mode = force_generic_plan
 as $$
+#variable_conflict use_column
 declare
-  v_tz text;
-  v_minutes int;
-  v_day date;
-  v_at timestamptz;
+  v_left uuid[] := p_shop_ids;
+  v_found record;
 begin
-  select s.time_zone into v_tz
-  from shops s
-  where s.id = p_shop_id and (public.shop_is_live(s) or s.owner_id = (select auth.uid()));
-  select v.duration_min into v_minutes
-  from services v
-  where v.shop_id = p_shop_id and v.is_active
-  order by v.duration_min, v.sort_order, v.id
-  limit 1;
-  if v_tz is null or v_minutes is null then
-    return null;
-  end if;
-
-  v_day := (now() at time zone v_tz)::date;
-  -- Tomorrow is only worked out when today has nothing left. Both are well
-  -- inside the booking horizon.
+  -- Today, then tomorrow for the rest. Both are well inside the booking horizon.
   for i in 0..1 loop
-    if not exists (select 1 from shop_closures c where c.shop_id = p_shop_id and c.day = v_day) then
-      with hours as (
-        select b.id as barber_id,
-               (v_day + wh.opens_at) at time zone v_tz as opens,
-               (v_day + wh.closes_at) at time zone v_tz as closes
-        from barbers b
-        join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from v_day)::int
-        where b.shop_id = p_shop_id and b.is_active
+    exit when cardinality(v_left) = 0;
+    for v_found in
+      with shop as (
+        select s.id, s.time_zone as tz, (now() at time zone s.time_zone)::date + i as day,
+               (select v.duration_min from services v where v.shop_id = s.id and v.is_active
+                order by v.duration_min, v.sort_order, v.id limit 1) as minutes
+        from shops s
+        where s.id = any(v_left) and (public.shop_is_live(s) or s.owner_id = (select auth.uid()))
+      ),
+      hours as (
+        select sh.id as shop_id, sh.minutes, w.barber_id,
+               (sh.day + w.opens_at) at time zone sh.tz as opens,
+               (sh.day + w.closes_at) at time zone sh.tz as closes
+        from shop sh
+        -- Offset 0 keeps this a lookup of each shop's own barbers, where the
+        -- planner would otherwise read every barber on the platform.
+        cross join lateral (
+          select b.id as barber_id, wh.opens_at, wh.closes_at
+          from barbers b
+          join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from sh.day)::int
+          where b.shop_id = sh.id and b.is_active
+          offset 0
+        ) w
+        where sh.minutes is not null
+          and not exists (select 1 from shop_closures c where c.shop_id = sh.id and c.day = sh.day)
       ),
       taken as materialized (
         -- Bookings and blocks are at most a day long, so anything in the way
-        -- started after the day before began.
-        select bk.barber_id, bk.starts_at, bk.ends_at
-        from bookings bk
-        where bk.shop_id = p_shop_id
+        -- started after the day before began; and only one that hasn't ended
+        -- yet can be in the way of a time from now on.
+        select bk.shop_id, bk.barber_id, bk.starts_at, bk.ends_at
+        from shop sh
+        join bookings bk on bk.shop_id = sh.id
           and bk.status <> 'cancelled'
-          and bk.starts_at > (v_day - 1)::timestamp at time zone v_tz
-          and bk.starts_at < (v_day + 1)::timestamp at time zone v_tz
+          and bk.starts_at > (sh.day - 1)::timestamp at time zone sh.tz
+          and bk.starts_at < (sh.day + 1)::timestamp at time zone sh.tz
+          and bk.ends_at > now()
       ),
       tries as materialized (
         -- Each point rounded up to the grid; the microsecond keeps a grid time
         -- that is exactly now out, as available_slots does.
-        select h.barber_id, h.closes,
-               date_bin('15 minutes', p.at + interval '15 minutes' - interval '1 microsecond', h.opens) as at
-        from hours h
-        cross join lateral (
-          select greatest(h.opens, now() + interval '1 microsecond') as at
+        select p.shop_id, p.barber_id, p.closes, g.at, g.at + make_interval(mins => p.minutes) as done
+        from (
+          select h.shop_id, h.barber_id, h.opens, h.closes, h.minutes,
+                 greatest(h.opens, now() + interval '1 microsecond') as at
+          from hours h
           union all
-          select greatest(t.ends_at, h.opens, now() + interval '1 microsecond')
-          from taken t
-          where t.barber_id = h.barber_id and t.ends_at > h.opens and t.ends_at < h.closes
+          select h.shop_id, h.barber_id, h.opens, h.closes, h.minutes,
+                 greatest(t.ends_at, h.opens, now() + interval '1 microsecond')
+          from hours h
+          join taken t on t.shop_id = h.shop_id and t.barber_id = h.barber_id
+          where t.ends_at > h.opens and t.ends_at < h.closes
         ) p
+        cross join lateral (
+          select date_bin('15 minutes', p.at + interval '15 minutes' - interval '1 microsecond', p.opens) as at
+        ) g
       )
-      select min(tr.at) into v_at
+      select tr.shop_id, min(tr.at) as at
       from tries tr
-      where tr.at + make_interval(mins => v_minutes) <= tr.closes
+      where tr.done <= tr.closes
         and not exists (
           select 1 from taken t
-          where t.barber_id = tr.barber_id
-            and t.starts_at < tr.at + make_interval(mins => v_minutes)
-            and t.ends_at > tr.at
-        );
-      if v_at is not null then
-        return v_at;
-      end if;
-    end if;
-    v_day := v_day + 1;
+          where t.shop_id = tr.shop_id and t.barber_id = tr.barber_id
+            and t.starts_at < tr.done and t.ends_at > tr.at
+        )
+      group by tr.shop_id
+    loop
+      shop_id := v_found.shop_id;
+      next_free_at := v_found.at;
+      return next;
+      v_left := array_remove(v_left, v_found.shop_id);
+    end loop;
   end loop;
-  return null;
 end;
 $$;
 -- Only find_shops and my_shops use it.
-revoke execute on function public.shop_next_free(uuid) from public, anon, authenticated;
+revoke execute on function public.shops_next_free(uuid[]) from public, anon, authenticated;
 
 -- How far apart two points are in km, over the earth's surface (the
 -- haversine formula on a round earth: well within the 100 m the app shows).
@@ -683,6 +729,12 @@ revoke execute on function public.km_between(double precision, double precision,
 -- is left out. The position is only used here: nothing stores it. This
 -- measures every live shop, which takes about a millisecond for a thousand;
 -- the README says what to switch to for tens of thousands.
+-- The page is picked first, then today's hours and the next free time are
+-- worked out for the whole page in one call each. plpgsql with generic
+-- plans, so a connection plans each query once: as one SQL query it was
+-- planned on every call, which took longer than finding the page. To add a
+-- column, add it to the returns table and to the last select, in the same
+-- place in both.
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
@@ -710,39 +762,64 @@ returns table (
   latitude double precision,
   longitude double precision
 )
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
+set plan_cache_mode = force_generic_plan
 as $$
-  -- The page is picked first, so today's hours and the next free time are
-  -- only worked out for the shops sent back. Without a position every
-  -- distance is null, so the order is by name as before; the id last keeps
-  -- the pages from overlapping either way.
-  select p.id, p.name, p.slug, p.area, p.address, p.about, p.from_price, p.barber_count,
-         h.opens_today, h.closes_today, public.shop_next_free(p.id),
-         p.rating_count, round(p.rating_sum::numeric / nullif(p.rating_count, 0), 1),
-         p.distance_km, p.latitude, p.longitude
-  from (
-    select s.id, s.name, s.slug, s.area, s.address, s.about, s.time_zone, s.rating_count, s.rating_sum,
-           s.latitude, s.longitude,
-           (select min(v.price) from services v where v.shop_id = s.id and v.is_active) as from_price,
-           (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active) as barber_count,
-           case when p_lat between -90 and 90 and p_lng between -180 and 180
-                then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end as distance_km
-    from shops s
-    where public.shop_is_live(s)
-      and (coalesce(trim(p_area), '') = '' or lower(s.area) = lower(trim(p_area)))
-      and (
-        coalesce(trim(p_search), '') = ''
-        or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), lower(trim(p_search))) > 0
-      )
-    order by distance_km nulls last, lower(s.name), s.id
-    limit least(greatest(coalesce(p_limit, 20), 1), 50)
-    offset greatest(coalesce(p_offset, 0), 0)
-  ) p
-  left join lateral public.shop_hours_today(p.id) h on true
-  order by p.distance_km nulls last, lower(p.name), p.id;
+#variable_conflict use_column
+declare
+  v_search text := lower(trim(p_search));
+  v_area text := lower(trim(p_area));
+  v_near boolean := coalesce(p_lat between -90 and 90 and p_lng between -180 and 180, false);
+  v_limit int := least(greatest(coalesce(p_limit, 20), 1), 50);
+  v_offset int := greatest(coalesce(p_offset, 0), 0);
+  v_page uuid[];
+begin
+  -- With nothing to narrow or measure by, the page comes straight off
+  -- shops_name_idx in name order. Otherwise every live shop is looked at:
+  -- nearest first given a position (without one every distance is null, so
+  -- the order is by name either way). The id last keeps the pages from
+  -- overlapping.
+  if coalesce(v_search, '') = '' and coalesce(v_area, '') = '' and not v_near then
+    v_page := array(
+      select s.id
+      from shops s
+      where public.shop_is_live(s)
+      order by lower(s.name), s.id
+      limit v_limit offset v_offset
+    );
+  else
+    v_page := array(
+      select s.id
+      from shops s
+      where public.shop_is_live(s)
+        and (coalesce(v_area, '') = '' or lower(s.area) = v_area)
+        and (
+          coalesce(v_search, '') = ''
+          or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), v_search) > 0
+        )
+      order by case when v_near then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end nulls last,
+               lower(s.name), s.id
+      limit v_limit offset v_offset
+    );
+  end if;
+
+  return query
+  select s.id, s.name, s.slug, s.area, s.address, s.about,
+         (select min(v.price) from services v where v.shop_id = s.id and v.is_active),
+         (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active),
+         h.opens_today, h.closes_today, f.next_free_at,
+         s.rating_count, round(s.rating_sum::numeric / nullif(s.rating_count, 0), 1),
+         case when v_near then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end,
+         s.latitude, s.longitude
+  from unnest(v_page) with ordinality as page (id, n)
+  join shops s on s.id = page.id
+  left join public.shops_hours_today(v_page) h on h.shop_id = s.id
+  left join public.shops_next_free(v_page) f on f.shop_id = s.id
+  order by page.n;
+end;
 $$;
 
 -- What a booking link should say when the shop is hidden (paused, or its
@@ -761,19 +838,33 @@ as $$
 $$;
 
 -- Areas that have live shops, most shops first, for the area filter. Areas
--- are typed by barbers, so spellings that differ only in case count as one.
+-- are typed by barbers, so spellings that differ only in case count as one,
+-- under the spelling most of them use (the first in order on a tie, as
+-- mode() would pick). Each spelling is counted once by hashing rather than
+-- sorting every shop; plpgsql, so a connection plans it once.
 create function public.shop_areas()
 returns table (area text, shops int)
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
-  select mode() within group (order by s.area), count(*)::int
-  from shops s
-  where public.shop_is_live(s)
-  group by lower(s.area)
-  order by count(*) desc, lower(s.area);
+#variable_conflict use_column
+begin
+  return query
+  select a.area, a.shops
+  from (
+    select distinct on (g.key) g.key, g.area, (sum(g.n) over (partition by g.key))::int as shops
+    from (
+      select lower(s.area) as key, s.area, count(*) as n
+      from shops s
+      where public.shop_is_live(s)
+      group by lower(s.area), s.area
+    ) g
+    order by g.key, g.n desc, g.area
+  ) a
+  order by a.shops desc, a.key;
+end;
 $$;
 
 -- Booking rules ------------------------------------------------------------
@@ -1967,12 +2058,14 @@ grant execute on function public.shop_cards(date, date) to authenticated;
 -- waiting list for its day, who may want it. Every barber's phone asks once
 -- a minute, so it is one walk of bookings_shop_changes_idx over the shop's
 -- last few days, and a lookup of waitlist_shop_day_idx per cancellation.
+-- A generic plan, so a connection plans it once rather than every minute.
 create function public.shop_changes(p_since timestamptz default null, p_limit int default 5)
 returns jsonb
 language plpgsql
 stable
 security definer
 set search_path = public
+set plan_cache_mode = force_generic_plan
 as $$
 declare
   v_shop shops;
@@ -2070,14 +2163,20 @@ $$;
 -- where to go or how to reach the shop. is_live says whether it still takes
 -- online bookings, so the app can hide Change time and say why. review is
 -- the customer's rating of that cut, the name it shows and the shop's reply,
--- or null.
+-- or null. The days they are waiting on (my_waitlist) come alongside, so My
+-- bookings is one request: as two, the second round trip cost a third of
+-- the screen's visits a second under load. plpgsql with a generic plan, so
+-- a connection plans it once.
 create function public.my_bookings(p_limit int default 100)
 returns jsonb
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
+set plan_cache_mode = force_generic_plan
 as $$
+begin
+  return jsonb_build_object('bookings', (
   select coalesce(jsonb_agg(x.item order by x.starts_at desc, x.id), '[]'::jsonb)
   from (
     select b.id, b.starts_at,
@@ -2097,7 +2196,9 @@ as $$
     where b.customer_id = auth.uid()
     order by b.starts_at desc, b.id
     limit least(greatest(coalesce(p_limit, 100), 1), 200)
-  ) x;
+  ) x
+  ), 'waitlist', public.my_waitlist());
+end;
 $$;
 
 -- Waiting list -----------------------------------------------------------------
@@ -2245,16 +2346,22 @@ $$;
 -- customer's name and number as the shop's customer list shows them, and
 -- what they asked for. Empty for a day gone by. The barber's day asks for
 -- it alongside its bookings, so it is one lookup of waitlist_shop_day_idx.
+-- plpgsql with a generic plan, so a connection plans it once: as plain SQL
+-- planning it took ten times as long as running it.
 create function public.shop_waitlist(p_day date)
 returns table (
   id uuid, name text, phone text, service_id uuid, service_name text, duration_min int,
   barber_id uuid, barber_name text, created_at timestamptz, offered_at timestamptz
 )
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
+set plan_cache_mode = force_generic_plan
 as $$
+#variable_conflict use_column
+begin
+  return query
   select w.id, nullif(trim(p.full_name), ''), p.phone, w.service_id, v.name, v.duration_min,
          w.barber_id, b.name, w.created_at, w.offered_at
   from shops sh
@@ -2265,19 +2372,22 @@ as $$
   where sh.owner_id = (select auth.uid())
     and p_day >= (now() at time zone sh.time_zone)::date
   order by w.created_at, w.id;
+end;
 $$;
 
 -- A customer's own requests still to come, soonest day first, each with
 -- its shop (by id too, so the shop's page can tell without asking again),
 -- service and barber. Read through the customer's end of waitlist_one_a_day.
+-- plpgsql, so a connection plans it once.
 create function public.my_waitlist()
 returns jsonb
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
-  select coalesce(jsonb_agg(jsonb_build_object(
+begin
+  return (select coalesce(jsonb_agg(jsonb_build_object(
            'id', w.id, 'shop_id', w.shop_id, 'day', w.day,
            'service_id', w.service_id, 'service_name', v.name,
            'barber_id', w.barber_id, 'barber_name', b.name, 'created_at', w.created_at,
@@ -2288,7 +2398,8 @@ as $$
   join services v on v.id = w.service_id
   left join barbers b on b.id = w.barber_id
   where w.customer_id = (select auth.uid())
-    and w.day >= (now() at time zone s.time_zone)::date;
+    and w.day >= (now() at time zone s.time_zone)::date);
+end;
 $$;
 
 -- Reviews ----------------------------------------------------------------------
@@ -2425,14 +2536,18 @@ $$;
 -- bookings_customer_idx: walk-ins the shop added under their number are the
 -- shop's to see. Their shops and barbers are then looked up by id (offset
 -- 0 stops the planner reading every shop and barber on the platform
--- instead), and only the three shops get their hours and next free time.
+-- instead), and only the three shops get their hours and next free time,
+-- in one call each. plpgsql, so a connection plans it once: as plain SQL
+-- planning it took a third of its time.
 create function public.my_shops()
 returns jsonb
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
+begin
+  return (
   with mine as materialized (
     select b.id, b.shop_id, b.barber_id, b.service_id, b.service_name, b.starts_at, b.status
     from bookings b
@@ -2459,6 +2574,9 @@ as $$
       select x.name, x.slug, x.time_zone, public.shop_is_live(x) as is_live from shops x where x.id = l.shop_id offset 0
     ) s
     cross join lateral (select x.name from barbers x where x.id = l.barber_id offset 0) br
+  ),
+  page as (
+    select array_agg(r.shop_id) as ids from recent r
   ),
   habits as (
     -- Two cuts on one day (the shop's) are one visit. Exact halves round
@@ -2492,7 +2610,7 @@ as $$
                'shop_id', r.shop_id, 'name', r.name, 'slug', r.slug, 'time_zone', r.time_zone,
                'is_live', r.is_live,
                'opens_today', h.opens_today, 'closes_today', h.closes_today,
-               'next_free_at', public.shop_next_free(r.shop_id),
+               'next_free_at', f.next_free_at,
                'last_visit_at', r.starts_at, 'service_id', r.service_id, 'service_name', r.service_name,
                'barber_id', r.barber_id, 'barber_name', r.barber_name,
                'visits', hb.visits,
@@ -2500,9 +2618,11 @@ as $$
              ) order by r.starts_at desc, r.shop_id)
       from recent r
       join habits hb on hb.shop_id = r.shop_id
-      left join lateral public.shop_hours_today(r.shop_id) h on true
+      left join public.shops_hours_today((select ids from page)) h on h.shop_id = r.shop_id
+      left join public.shops_next_free((select ids from page)) f on f.shop_id = r.shop_id
     ), '[]'::jsonb)
-  );
+  ));
+end;
 $$;
 
 -- People can delete their own account (the app stores require it).

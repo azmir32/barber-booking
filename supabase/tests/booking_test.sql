@@ -244,7 +244,7 @@ begin
   assert (select next_free_at = (today + time '17:45') at time zone tz from find_shops()),
     'the shortest service counts';
   update shops set is_published = false;
-  assert shop_next_free(shop) is null, 'a hidden shop has no free time';
+  assert not exists (select 1 from shops_next_free(array[shop])), 'a hidden shop has no free time';
   update shops set is_published = true;
 
   insert into shop_closures (shop_id, day) values (shop, today);
@@ -264,14 +264,14 @@ begin
   set role anon;
   assert (select count(*) from find_shops()) = 1, 'guests still get the list';
   begin
-    perform shop_next_free(shop);
-    raise exception 'only find_shops should call shop_next_free';
+    perform * from shops_next_free(array[shop]);
+    raise exception 'only find_shops and my_shops should call shops_next_free';
   exception when insufficient_privilege then null;
   end;
 end $$;
 rollback;
 
--- shop_next_free takes a shortcut, so check it against available_slots on a
+-- shops_next_free takes a shortcut, so check it against available_slots on a
 -- messy diary at different times of day: bookings of odd lengths, a break,
 -- blocks running past closing and over midnight.
 begin;
@@ -314,8 +314,9 @@ begin
     where (i + hour + n::int) % 4 <> 0;
     want := coalesce((select min(starts_at) from available_slots(svc, today)),
                      (select min(starts_at) from available_slots(svc, today + 1)));
-    assert shop_next_free(shop) is not distinct from want,
-      format('at %s:00 next free should be %s, got %s', hour, want, shop_next_free(shop));
+    assert (select next_free_at from shops_next_free(array[shop])) is not distinct from want,
+      format('at %s:00 next free should be %s, got %s', hour, want,
+             (select next_free_at from shops_next_free(array[shop])));
     k := k + (want is not null)::int;
   end loop;
   assert k > 12, 'most hours should have a free time to compare';
@@ -377,6 +378,8 @@ do $$
 declare v jsonb;
 begin
   v := my_bookings();
+  assert v -> 'waitlist' = my_waitlist(), 'the waiting lists come alongside: ' || (v -> 'waitlist')::text;
+  v := v -> 'bookings';
   assert jsonb_array_length(v) = 2, 'my_bookings should list the customer''s two bookings';
   assert (select bool_and(e ->> 'customer_id' = '00000000-0000-0000-0000-0000000000c1') from jsonb_array_elements(v) e),
     'my_bookings should only list the caller''s own';
@@ -385,14 +388,14 @@ begin
      and v -> 0 -> 'shops' ->> 'phone' = '012-345 6789' and v -> 0 -> 'shops' ->> 'slug' = 'ali-cuts'
      and v -> 0 -> 'barbers' ->> 'name' in ('Ali', 'Danial'),
     'each booking should come with its shop and barber';
-  assert jsonb_array_length(my_bookings(1)) = 1, 'p_limit caps the list';
+  assert jsonb_array_length(my_bookings(1) -> 'bookings') = 1, 'p_limit caps the list';
 
   reset role;
   update shops set is_published = false where id = '00000000-0000-0000-0000-00000000005a';
   set role authenticated;
   assert (select count(*) from bookings b join shops s on s.id = b.shop_id) = 0,
     'a paused shop is hidden from its customers';
-  v := my_bookings();
+  v := my_bookings() -> 'bookings';
   assert jsonb_array_length(v) = 2
      and v -> 0 -> 'shops' ->> 'name' = 'Ali Cuts' and not (v -> 0 -> 'shops' ->> 'is_live')::boolean
      and v -> 0 -> 'shops' ->> 'phone' = '012-345 6789' and v -> 0 -> 'barbers' ->> 'name' is not null,
@@ -402,7 +405,7 @@ rollback;
 
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
 do $$ begin
-  assert jsonb_array_length(my_bookings()) = 0, 'other customers see none of them';
+  assert my_bookings() = '{"bookings": [], "waitlist": []}', 'other customers see none of them';
 end $$;
 set role anon;
 do $$ begin
@@ -2072,10 +2075,10 @@ begin
 
   -- My bookings has each cut's review, or none.
   assert (select e #>> '{review,rating}' = '3' and e #> '{review,comment}' = 'null'::jsonb
-          from jsonb_array_elements(my_bookings()) e where e ->> 'id' = '00000000-0000-0000-0000-0000000000f1'),
+          from jsonb_array_elements(my_bookings() -> 'bookings') e where e ->> 'id' = '00000000-0000-0000-0000-0000000000f1'),
     'my_bookings should carry the review';
   assert (select e -> 'review' = 'null'::jsonb
-          from jsonb_array_elements(my_bookings()) e where e ->> 'id' = '00000000-0000-0000-0000-0000000000f4'),
+          from jsonb_array_elements(my_bookings() -> 'bookings') e where e ->> 'id' = '00000000-0000-0000-0000-0000000000f4'),
     'a cut without a review has none';
 end $$;
 
@@ -2547,7 +2550,7 @@ begin
     'a shop that isn''t live is never listed, however near';
 
   -- My bookings has the location too, for Directions.
-  b := (select e from jsonb_array_elements(my_bookings()) e where e ->> 'shop_id' = '00000000-0000-0000-0000-00000000005a' limit 1);
+  b := (select e from jsonb_array_elements(my_bookings() -> 'bookings') e where e ->> 'shop_id' = '00000000-0000-0000-0000-00000000005a' limit 1);
   assert (b -> 'shops' ->> 'latitude')::float8 = 2.9846 and (b -> 'shops' ->> 'longitude')::float8 = 101.7712,
     'my_bookings says where the shop is: ' || coalesce(b::text, 'no booking');
 end $$;
@@ -3213,6 +3216,7 @@ begin
   -- His own, soonest first, with each shop, service and barber.
   r := my_waitlist();
   assert jsonb_array_length(r) = 3, 'Ben''s three: ' || r::text;
+  assert my_bookings() -> 'waitlist' = r, 'My bookings has them too, in the same request';
   assert r -> 0 ->> 'id' = current_setting('test.ben_any') and r -> 0 ->> 'day' = d::text
      and r -> 0 ->> 'shop_id' = '00000000-0000-0000-0000-00000000005a'
      and r -> 0 ->> 'service_id' = '00000000-0000-0000-0000-0000000000e1'
