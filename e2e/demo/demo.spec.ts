@@ -1507,8 +1507,11 @@ test('customers pick a barber by their intro and stars and read one barber’s r
   expect(Number(count)).toBeGreaterThan(3);
   await whose.nth(2).click();
   await expect(whose.nth(2)).toBeChecked();
-  // His stars over his reviews, as on his card in the barber step above.
-  await expect(app.getByRole('img', { name: `Rated ${average} out of 5 from ${count} reviews`, exact: true })).toHaveCount(2);
+  // His stars over his reviews, as on his card in the barber step above (and on Ali's, on a day they match).
+  const sameAsAli = (await whose.nth(1).getAttribute('aria-label'))?.endsWith(`rated ${average} out of 5 from ${count} reviews`);
+  await expect(app.getByRole('img', { name: `Rated ${average} out of 5 from ${count} reviews`, exact: true })).toHaveCount(
+    sameAsAli ? 3 : 2,
+  );
   await expect(app.getByText(/ · with Ali$/)).toHaveCount(0);
   const danials = app.getByText(/ · with Danial$/);
   await expect(danials).toHaveCount(3);
