@@ -1167,4 +1167,62 @@ export const ms: Record<string, string> = {
   "They're no longer in the queue.": 'Mereka sudah tiada dalam barisan.',
   'Pick a service for their cut.': 'Pilih servis untuk potongan mereka.',
   "That barber isn't working now. Pick another barber.": 'Barber itu tidak bekerja sekarang. Pilih barber lain.',
+  // The shop's page, signing up or in to join, and My bookings.
+  'Walk-in queue': 'Barisan walk-in',
+  'Loading the queue': 'Memuatkan barisan',
+  'Join the queue': 'Sertai barisan',
+  'Continue to join': 'Teruskan untuk sertai',
+  'No time needed. Join now and come in when it’s your turn.':
+    'Tak perlu pilih masa. Sertai sekarang dan datang apabila tiba giliran anda.',
+  'Stay close by. This page and My bookings say when it’s your turn.':
+    'Tunggu berdekatan. Halaman ini dan Tempahan saya akan beritahu apabila tiba giliran anda.',
+  'It’s your turn. Head to the shop now.': 'Sekarang giliran anda. Pergi ke kedai sekarang.',
+  'Leave the queue': 'Tarik diri daripada barisan',
+  'Leave the queue?': 'Tarik diri daripada barisan?',
+  'Leave the queue at {shop}': 'Tarik diri daripada barisan di {shop}',
+  'See the shop': 'Lihat kedai',
+  'See {shop}': 'Lihat {shop}',
+  'Walk-in queue: {count}': 'Barisan walk-in: {count}',
+  'Create an account to join the queue.': 'Daftar akaun untuk menyertai barisan.',
+  'Sign in to join the queue.': 'Log masuk untuk menyertai barisan.',
+  'Not in the queue yet. Once your email is confirmed, sign in to join it.':
+    'Belum dalam barisan. Selepas e-mel anda disahkan, log masuk untuk menyertainya.',
+  // The barber's Bookings tab.
+  'Queue ({count})': 'Barisan ({count})',
+  'The queue is off, so nobody new can join. Turn it on in My shop.':
+    'Barisan ditutup, jadi tiada orang baru boleh sertai. Hidupkan di Kedai saya.',
+  'Nobody waiting for this barber.': 'Tiada sesiapa menunggu barber ini.',
+  'Nobody waiting. Customers join from your shop’s page while you’re open.':
+    'Tiada sesiapa menunggu. Pelanggan sertai dari halaman kedai anda semasa anda buka.',
+  'Joined online': 'Sertai dalam talian',
+  'Call in': 'Panggil masuk',
+  'Call again': 'Panggil lagi',
+  'Call {name} in': 'Panggil {name} masuk',
+  'Call {name} again': 'Panggil {name} lagi',
+  'Called {name}.': '{name} dipanggil.',
+  'Called {name}. Their phone now says it’s their turn.': '{name} dipanggil. Telefon mereka kini tunjuk giliran mereka.',
+  Start: 'Mulakan',
+  'Start {name}’s cut': 'Mulakan potongan {name}',
+  'Start the cut': 'Mulakan potongan',
+  'Busy until {time}': 'Sibuk hingga {time}',
+  'Booked {time}': 'Ada tempahan jam {time}',
+  'Nobody is working now.': 'Tiada sesiapa bekerja sekarang.',
+  '{name} is in {barber}’s chair.': '{name} di kerusi {barber}.',
+  'Not here': 'Tiada di sini',
+  'Take {name} off the queue': 'Keluarkan {name} daripada barisan',
+  'Take {name} off the queue?': 'Keluarkan {name} daripada barisan?',
+  'If they come back, they join at the end.': 'Jika mereka kembali, mereka masuk di hujung barisan.',
+  '+ Add walk-in': '+ Tambah walk-in',
+  // Adding a walk-in.
+  'Add walk-in': 'Tambah walk-in',
+  'They go to the end of today’s queue. Call them from Bookings when it’s their turn.':
+    'Mereka masuk di hujung barisan hari ini. Panggil mereka dari Tempahan apabila tiba giliran mereka.',
+  'Add the customer’s name.': 'Masukkan nama pelanggan.',
+  'For a WhatsApp when it’s their turn.': 'Untuk WhatsApp apabila tiba giliran mereka.',
+  'Not sure yet': 'Belum pasti',
+  'Add to the queue': 'Tambah ke barisan',
+  // My shop.
+  'Let customers join a queue': 'Benarkan pelanggan sertai barisan',
+  'While you’re open, customers join from your page and you call them in order from Bookings.':
+    'Semasa anda buka, pelanggan sertai dari halaman anda dan anda panggil mereka ikut giliran dari Tempahan.',
 };

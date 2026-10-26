@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Animated, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { BarberQueueCard } from '@/components/barber-queue-card';
 import { BookingStatusBadge } from '@/components/booking-status';
 import { bookingLabel, ChairNames, Chairs, ChairsPanel, ChairsSkeleton, type ChairsFrame } from '@/components/chairs';
 import { DayPicker } from '@/components/day-picker';
@@ -40,6 +41,7 @@ import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { ago, changeLine, changeTag, moreText, seenMark, type ShopChange, type ShopChanges } from '@/lib/news';
 import { whatsappUrl } from '@/lib/phone';
+import type { Queued } from '@/lib/queue';
 import { canRemind, needsReminder, reminderMessage } from '@/lib/reminders';
 import { useShopNews } from '@/lib/shop-news';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -88,6 +90,8 @@ type DayAnswer = {
   tomorrow: ToRemind[] | null;
   /** Who asked to hear if a time frees up, oldest first; missing from a day kept by an older version. */
   waiting?: ShopWaiting[] | null;
+  /** Today's walk-in queue in order; empty on other days and while the queue is off. */
+  queue?: Queued[] | null;
 };
 
 /** A request on the day's waiting list, with the earliest free time that fits it, if any. */
@@ -179,6 +183,9 @@ export default function BarberBookings() {
   const [allOff, setAllOff] = useState<Set<string>>(() => new Set());
   // The day's waiting list, for the day it belongs to.
   const [waiting, setWaiting] = useState<{ day: string; list: ShopWaiting[] } | null>(null);
+  const [queue, setQueue] = useState<{ day: string; list: Queued[] } | null>(null);
+  // Someone was in the queue last time, so it is asked for even with the queue since turned off, until they are seen to.
+  const queueSeen = useRef(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const latest = useRef(0);
   const shopId = shop?.id;
@@ -239,7 +246,13 @@ export default function BarberBookings() {
     // A request that failed keeps the list already shown for this day, never another day's.
     if (a.waiting) setWaiting({ day: forDay, list: a.waiting });
     else setWaiting((w) => (w?.day === forDay ? w : null));
+    if (a.queue) setQueue({ day: forDay, list: a.queue });
+    else setQueue((q) => (q?.day === forDay ? q : null));
   }, []);
+  // Including a day kept from last visit, so its people are asked about even with the queue turned off since.
+  useEffect(() => {
+    if (queue?.list.length) queueSeen.current = true;
+  }, [queue]);
 
   // A day kept from before (last visit, or earlier on this one) shows at once while it is asked for again.
   const dayKey = uid && shopId ? cacheKey(uid, 'day', shopId, day) : null;
@@ -264,7 +277,9 @@ export default function BarberBookings() {
     const next = day === today ? dayBounds(addDays(today, 1), tz) : null;
     const first = days[0].date;
     const last = days[days.length - 1].date;
-    const [list, active, team, closed, unreminded, waitlist] = await Promise.all([
+    // Today's queue, only while the shop runs one (or still has people in it).
+    const askQueue = day === today && (shop.queue_enabled || queueSeen.current);
+    const [list, active, team, closed, unreminded, waitlist, queued] = await Promise.all([
       supabase
         .from('bookings')
         .select('*, barbers(name), customer:profiles!bookings_customer_id_fkey(full_name, phone)')
@@ -295,6 +310,7 @@ export default function BarberBookings() {
         : null,
       // Who is waiting for a time this day; nobody is, for a day gone by.
       day >= today ? supabase.rpc('shop_waitlist', { p_day: day }) : null,
+      askQueue ? supabase.rpc('shop_queue') : null,
     ]);
     if (request !== latest.current) return;
     setAsking(false);
@@ -310,7 +326,9 @@ export default function BarberBookings() {
       // The client can't tell that the customer is one profile rather than a list.
       tomorrow: !unreminded ? [] : unreminded.error ? null : ((unreminded.data ?? []) as unknown as ToRemind[]),
       waiting: !waitlist ? [] : waitlist.error ? null : ((waitlist.data ?? []) as ShopWaiting[]),
+      queue: !queued ? [] : queued.error ? null : ((queued.data ?? []) as Queued[]),
     };
+    if (askQueue && answer.queue) queueSeen.current = answer.queue.length > 0;
     setRefreshError(null);
     setError(null);
     showDay(answer, day);
@@ -658,6 +676,11 @@ export default function BarberBookings() {
           .map((w) => ({ request: w, free: freshDay ? freeTimeFor(w, day, barbers, bookings, now, tz) : null }))
       : [];
 
+  // Today's queue, for the barber shown (or anyone): those who asked for them, or for any barber.
+  const queueList = isToday && loaded && queue?.day === day ? queue.list : null;
+  const queueShown = queueList ? queueList.filter((q) => !filterId || q.barber_id == null || q.barber_id === filterId) : [];
+  const showQueue = queueList !== null && (queueList.length > 0 || (shop.queue_enabled && !closure));
+
   // Nothing can be added to a day the shop is closed; reopening it comes first.
   const canAdd = !closure;
   // On the barber's own phone, the barber they show; with no services yet, only time can be blocked.
@@ -935,6 +958,23 @@ export default function BarberBookings() {
         <View onLayout={(e) => setAddButtonBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}>
           <Button title={t('+ Add booking or block time')} variant="secondary" onPress={addBooking} />
         </View>
+      ) : null}
+
+      {/* Above the list or the chairs: who is next in, as the day's work. */}
+      {showQueue && queueList ? (
+        <BarberQueueCard
+          shop={shop}
+          list={queueList}
+          shown={queueShown}
+          barbers={barbers}
+          bookings={bookings}
+          closed={Boolean(closure)}
+          tz={tz}
+          now={now}
+          held={held}
+          reload={load}
+          onNotice={(message) => showNotice({ message, actionLabel: t('OK'), onAction: () => {} })}
+        />
       ) : null}
 
       {/* Above the list or the chairs, so a time that frees up can go to someone waiting. */}

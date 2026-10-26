@@ -87,6 +87,12 @@ export function placeText(place: number): string {
   return place <= 1 ? t('You’re next in the queue') : t('You’re {place} in the queue', { place: placeWords(place) });
 }
 
+/** "You're 2nd in the queue · about 15 min", or next. */
+export function placeLine(place: Pick<MyPlace, 'place' | 'estimate_min'>): string {
+  const n = place.place ?? 1;
+  return n > 1 && place.estimate_min ? `${placeText(n)} · ${aboutText(place.estimate_min)}` : placeText(n);
+}
+
 /** "about 40 min", or "no wait". */
 export function aboutText(minutes: number): string {
   return minutes > 0 ? t('about {time}', { time: noBreak(formatDuration(minutes)) }) : t('no wait');
@@ -185,19 +191,32 @@ export function firstFree<B extends Pick<Barber, 'id'>>(
 ): B | null {
   const asked = inNow.find((b) => b.id === askedFor);
   if (asked) return asked;
+  return inNow.find((b) => !clashFor(b.id, minutes, bookings, now)) ?? inNow[0] ?? null;
+}
+
+/**
+ * The first of a barber's bookings (or blocks) in the way of a cut started
+ * now, the minute as start_from_queue takes it; null when they are free.
+ */
+export function clashFor<X extends InBooking>(barberId: string, minutes: number, bookings: X[], now: number): X | null {
   const start = Math.floor(now / 60_000) * 60_000;
   const end = start + minutes * 60_000;
-  const free = inNow.find(
-    (b) =>
-      !bookings.some(
-        (x) =>
-          x.barber_id === b.id &&
-          x.status !== 'cancelled' &&
-          Date.parse(x.starts_at) < end &&
-          start < Date.parse(x.ends_at),
-      ),
+  const clashes = bookings.filter(
+    (x) =>
+      x.barber_id === barberId &&
+      x.status !== 'cancelled' &&
+      Date.parse(x.starts_at) < end &&
+      start < Date.parse(x.ends_at),
   );
-  return free ?? inNow[0] ?? null;
+  return clashes.sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))[0] ?? null;
+}
+
+/** Beside a barber Start can pick: "Free", "Busy until 3:45 pm" or "Booked 4:00 pm". */
+export function freeText(clash: InBooking | null, now: number, timeZone: string): string {
+  if (!clash) return t('Free');
+  return Date.parse(clash.starts_at) <= Math.floor(now / 60_000) * 60_000
+    ? t('Busy until {time}', { time: noBreak(formatTime(clash.ends_at, timeZone)) })
+    : t('Booked {time}', { time: noBreak(formatTime(clash.starts_at, timeZone)) });
 }
 
 /**

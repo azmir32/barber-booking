@@ -32,6 +32,8 @@ export type Shop = {
   /** How many reviews the shop has and their stars added up; kept by the database. */
   rating_count: number;
   rating_sum: number;
+  /** Customers can join a walk-in queue from the shop's page while it is open. */
+  queue_enabled: boolean;
   created_at: string;
 };
 

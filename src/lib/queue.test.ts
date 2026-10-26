@@ -7,7 +7,9 @@ import {
   aboutText,
   barbersInNow,
   callMessage,
+  clashFor,
   firstFree,
+  freeText,
   placeText,
   placeWords,
   queueCount,
@@ -134,6 +136,16 @@ test('Start offers the barber asked for, else the first one free until the cut w
   assert.equal(firstFree(team, null, 30, [...aliBusy, booked('danial', '15:00', '16:00')], later)?.id, 'ali');
   assert.equal(firstFree(team, 'away', 30, [], later)?.id, 'ali', 'asked for someone who isn’t in');
   assert.equal(firstFree([], null, 30, [], later), null);
+});
+
+test('beside each barber Start can pick: free, busy until, or booked later', () => {
+  const later = Date.parse('2026-10-06T15:30:00+08:00');
+  const list = [booked('ali', '15:00', '15:45'), booked('danial', '16:00', '16:30'), booked('ali', '16:00', '16:30')];
+  assert.equal(freeText(clashFor('ali', 30, list, later), later, TZ), 'Busy until 3:45\u00a0pm');
+  assert.equal(freeText(clashFor('danial', 45, list, later), later, TZ), 'Booked 4:00\u00a0pm');
+  assert.equal(freeText(clashFor('danial', 30, list, later), later, TZ), 'Free', 'done at 4:00, as the next one starts');
+  assert.equal(clashFor('ali', 30, [booked('ali', '15:00', '15:45', { status: 'cancelled' })], later), null);
+  inMalay(() => assert.equal(freeText(clashFor('ali', 30, list, later), later, TZ), 'Sibuk hingga 3.45\u00a0petang'));
 });
 
 test('Start’s refusals are said in the customer’s language and clock', () => {
