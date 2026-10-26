@@ -92,17 +92,16 @@ function MyBookings() {
   const load = useCallback(async () => {
     if (!session) return setLoading(false);
     setLoading(true);
-    const [{ data, error }, waitlist] = await Promise.all([supabase.rpc('my_bookings'), supabase.rpc('my_waitlist')]);
+    // One request: the bookings and the days they're waiting on come together.
+    const { data, error } = await supabase.rpc('my_bookings');
     setLoading(false);
-    // The waiting list on its own: if only it fails, the bookings still come and last visit's requests stay.
-    if (!waitlist.error) {
-      const waiting = (waitlist.data ?? []) as MyWaiting[];
-      setWaits(waiting);
-      appCache.write(cacheKey(session.user.id, 'my-waitlist'), waiting);
-    }
-    // A refresh that fails keeps the bookings already on screen.
+    // A refresh that fails keeps the bookings and requests already on screen.
     if (error) return setRefreshError(errorMessage(error));
-    const list = (data ?? []) as MyBooking[];
+    const mine = (data ?? {}) as { bookings?: MyBooking[]; waitlist?: MyWaiting[] };
+    const waiting = mine.waitlist ?? [];
+    setWaits(waiting);
+    appCache.write(cacheKey(session.user.id, 'my-waitlist'), waiting);
+    const list = mine.bookings ?? [];
     setRefreshError(null);
     setError(null);
     setBookings(list);

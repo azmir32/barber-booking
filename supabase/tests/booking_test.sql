@@ -323,6 +323,142 @@ begin
 end $$;
 rollback;
 
+-- The next free time at the edges of a day, each checked three ways: on its
+-- own, on the shop list, and against the earliest of available_slots. A
+-- haircut that just fits before closing and one that doesn't, a break, a
+-- barber away or off, the whole day blocked, and tomorrow's first time once
+-- today is over.
+begin;
+reset role;
+create function pg_temp.next_free_is(p_want timestamptz, p_what text) returns void
+language plpgsql as $f$
+declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  svc uuid := '00000000-0000-0000-0000-0000000000e1';
+  today date := (now() at time zone (select time_zone from shops where id = shop))::date;
+  got timestamptz := (select next_free_at from shops_next_free(array[shop]));
+  listed timestamptz := (select next_free_at from find_shops() where id = shop);
+  slots timestamptz := coalesce((select min(starts_at) from available_slots(svc, today)),
+                                (select min(starts_at) from available_slots(svc, today + 1)));
+begin
+  assert got is not distinct from p_want and listed is not distinct from p_want and slots is not distinct from p_want,
+    format('%s: want %s, got %s, listed %s, available_slots %s', p_what, p_want, got, listed, slots);
+end $f$;
+do $$
+declare
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  ali uuid := '00000000-0000-0000-0000-0000000000a1';
+  danial uuid := '00000000-0000-0000-0000-0000000000a2';
+  both_ uuid[] := array[ali, danial];
+  tz text;
+  today date;
+  -- The next quarter hour by the shop's clock, on the grid from a 09:00 opening.
+  nq timestamp;
+begin
+  -- A zone where it is now between noon and one.
+  select z into tz
+  from generate_series(-12, 14) o,
+       lateral (select 'Etc/GMT' || case when o > 0 then '-' || o when o < 0 then '+' || -o else '' end as z) n
+  where extract(hour from now() at time zone z) = 12
+  order by o
+  limit 1;
+  update shops set time_zone = tz where id = shop;
+  today := (now() at time zone tz)::date;
+  nq := date_bin('15 minutes', now() at time zone tz, timestamp '2000-01-01') + interval '15 minutes';
+  delete from bookings;
+  delete from shop_closures;
+  update barbers set is_active = true where id = any(both_);
+  -- The 30-minute haircut is the only service.
+  update services set is_active = false where shop_id = shop and id <> '00000000-0000-0000-0000-0000000000e1';
+  delete from working_hours where barber_id = any(both_);
+
+  -- Closing half an hour after the next quarter: a haircut then just fits.
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  select b, d, '09:00', (nq + interval '30 minutes')::time from unnest(both_) b, generate_series(0, 6) d;
+  perform pg_temp.next_free_is(nq at time zone tz, 'a haircut that ends at closing time fits');
+  -- A minute earlier and today is over: tomorrow at opening.
+  update working_hours set closes_at = (nq + interval '29 minutes')::time where barber_id = any(both_);
+  perform pg_temp.next_free_is((today + 1 + time '09:00') at time zone tz, 'a minute short of closing: tomorrow');
+
+  -- A break: in until a quarter after the next quarter, too short for a
+  -- haircut, and back two hours later at five past, on a grid of their own.
+  delete from working_hours where barber_id = any(both_);
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  select b, d, '09:00', (nq + interval '15 minutes')::time from unnest(both_) b, generate_series(0, 6) d
+  union all
+  select b, d, (nq + interval '2 hours 5 minutes')::time, '18:00' from unnest(both_) b, generate_series(0, 6) d;
+  perform pg_temp.next_free_is((nq + interval '2 hours 5 minutes') at time zone tz, 'over a break: when they are back');
+  -- Both booked from then until an end off the grid: the next time on it.
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  select shop, b, true, 'Busy', 0, (nq + interval '2 hours 5 minutes') at time zone tz,
+         (nq + interval '2 hours 47 minutes') at time zone tz
+  from unnest(both_) b;
+  perform pg_temp.next_free_is((nq + interval '2 hours 50 minutes') at time zone tz,
+    'after bookings that end off the grid');
+  delete from bookings;
+
+  -- A barber off. Ali is in 09:00-18:00 and booked for the next hour;
+  -- Danial is in 08:00-20:00 and free.
+  delete from working_hours where barber_id = any(both_);
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  select ali, d, '09:00'::time, '18:00'::time from generate_series(0, 6) d
+  union all
+  select danial, d, '08:00', '20:00' from generate_series(0, 6) d;
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  values (shop, ali, true, 'Busy', 0, nq at time zone tz, (nq + interval '1 hour') at time zone tz);
+  perform pg_temp.next_free_is(nq at time zone tz, 'one barber busy, the other free');
+  assert (select opens_today = '08:00' and closes_today = '20:00' from shops_hours_today(array[shop])),
+    'today''s hours run from the first in to the last out';
+  update barbers set is_active = false where id = danial;
+  perform pg_temp.next_free_is((nq + interval '1 hour') at time zone tz, 'a barber who is away doesn''t count');
+  assert (select opens_today = '09:00' and closes_today = '18:00' from shops_hours_today(array[shop])),
+    'a barber who is away is left out of today''s hours';
+  update barbers set is_active = true where id = danial;
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  values (shop, danial, true, 'Day off', 0, today::timestamp at time zone tz, (today + 1)::timestamp at time zone tz);
+  perform pg_temp.next_free_is((nq + interval '1 hour') at time zone tz, 'a barber with the whole day off doesn''t count');
+  assert (select opens_today = '09:00' and closes_today = '18:00' from shops_hours_today(array[shop])),
+    'a barber with the whole day off is left out of today''s hours';
+  delete from bookings where barber_id = danial;
+  delete from working_hours where barber_id = danial and weekday = extract(dow from today)::int;
+  perform pg_temp.next_free_is((nq + interval '1 hour') at time zone tz, 'a barber who doesn''t work today doesn''t count');
+
+  -- The whole day blocked for everyone: tomorrow at the first barber in, and
+  -- no hours today.
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  values (danial, extract(dow from today)::int, '08:00', '20:00');
+  delete from bookings;
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  select shop, b, true, 'Kenduri', 0, today::timestamp at time zone tz, (today + 1)::timestamp at time zone tz
+  from unnest(both_) b;
+  perform pg_temp.next_free_is((today + 1 + time '08:00') at time zone tz, 'the whole day blocked: tomorrow');
+  assert (select opens_today is null and closes_today is null from shops_hours_today(array[shop])),
+    'the whole day blocked: no hours today';
+  assert (select opens_today is null from find_shops() where id = shop), 'the shop list shows it closed today';
+
+  -- Today over: a zone where it is now nine at night, everyone gone home at
+  -- six, and in again tomorrow at 09:10.
+  select z into tz
+  from generate_series(-12, 14) o,
+       lateral (select 'Etc/GMT' || case when o > 0 then '-' || o when o < 0 then '+' || -o else '' end as z) n
+  where extract(hour from now() at time zone z) = 21
+  order by o
+  limit 1;
+  update shops set time_zone = tz where id = shop;
+  today := (now() at time zone tz)::date;
+  delete from bookings;
+  delete from working_hours where barber_id = any(both_);
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  select b, d, '09:10', '18:00' from unnest(both_) b, generate_series(0, 6) d;
+  perform pg_temp.next_free_is((today + 1 + time '09:10') at time zone tz, 'today over: tomorrow''s first time');
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  select shop, b, true, 'Busy', 0, (today + 1 + time '09:10') at time zone tz, (today + 1 + time '09:50') at time zone tz
+  from unnest(both_) b;
+  perform pg_temp.next_free_is((today + 1 + time '09:55') at time zone tz,
+    'today over and tomorrow''s first bookings taken: the next time on the grid');
+end $$;
+rollback;
+
 -- Customers can't write bookings directly or see other people's -----------
 do $$ begin
   insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at)

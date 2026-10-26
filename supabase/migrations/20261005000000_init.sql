@@ -528,7 +528,7 @@ grant select (booking_id, shop_id, barber_id, rating, comment, first_name, reply
 -- Nulls when nobody is in, or the shop is closed for the day. Breaks are
 -- ignored. One row per shop the caller can see (live, or their own).
 -- find_shops and my_shops ask once for their whole page: one call per shop
--- took a fifth of the shop list's time (see README, "How many users it
+-- took about a tenth of the shop list's time (see README, "How many users it
 -- handles"). plpgsql with a generic plan, so a connection plans it once, and
 -- each day's bounds are worked out before the bookings lookup: as one SQL
 -- query the planner read every booking the barbers ever had.
@@ -598,8 +598,9 @@ $$;
 -- is the first grid time after now, or the first after one of the barber's
 -- bookings ends. find_shops and my_shops ask once for their whole page, and
 -- tomorrow is only worked out for the shops with nothing left today: one
--- call per shop took half the shop list's time (see README, "How many users
--- it handles"). A generic plan, so a connection plans the query once.
+-- call per shop took nearly half the shop list's time (see README, "How
+-- many users it handles"). A generic plan, so a connection plans the query
+-- once.
 create function public.shops_next_free(p_shop_ids uuid[])
 returns table (shop_id uuid, next_free_at timestamptz)
 language plpgsql
@@ -732,7 +733,7 @@ revoke execute on function public.km_between(double precision, double precision,
 -- The page is picked first, then today's hours and the next free time are
 -- worked out for the whole page in one call each. plpgsql with generic
 -- plans, so a connection plans each query once: as one SQL query it was
--- planned on every call, which took longer than finding the page. To add a
+-- planned on every call, about half a millisecond each time. To add a
 -- column, add it to the returns table and to the last select, in the same
 -- place in both.
 create function public.find_shops(
@@ -2163,10 +2164,10 @@ $$;
 -- where to go or how to reach the shop. is_live says whether it still takes
 -- online bookings, so the app can hide Change time and say why. review is
 -- the customer's rating of that cut, the name it shows and the shop's reply,
--- or null. The days they are waiting on (my_waitlist) come alongside, so My
--- bookings is one request: as two, the second round trip cost a third of
--- the screen's visits a second under load. plpgsql with a generic plan, so
--- a connection plans it once.
+-- or null. Sent as {bookings, waitlist}: the days they are waiting on
+-- (my_waitlist) come in the same answer, so My bookings is one request
+-- rather than two. plpgsql with a generic plan, so a connection plans it
+-- once rather than on every visit.
 create function public.my_bookings(p_limit int default 100)
 returns jsonb
 language plpgsql
@@ -2176,28 +2177,30 @@ set search_path = public
 set plan_cache_mode = force_generic_plan
 as $$
 begin
-  return jsonb_build_object('bookings', (
-  select coalesce(jsonb_agg(x.item order by x.starts_at desc, x.id), '[]'::jsonb)
-  from (
-    select b.id, b.starts_at,
-           to_jsonb(b) || jsonb_build_object(
-             'shops', jsonb_build_object(
-               'name', s.name, 'slug', s.slug, 'address', s.address, 'area', s.area,
-               'latitude', s.latitude, 'longitude', s.longitude,
-               'phone', s.phone, 'time_zone', s.time_zone, 'is_live', public.shop_is_live(s)),
-             'barbers', jsonb_build_object('name', br.name),
-             'review', case when r.booking_id is not null then jsonb_build_object(
-               'rating', r.rating, 'comment', r.comment, 'first_name', r.first_name, 'reply', r.reply,
-               'replied_at', r.replied_at, 'created_at', r.created_at, 'updated_at', r.updated_at) end) as item
-    from bookings b
-    join shops s on s.id = b.shop_id
-    join barbers br on br.id = b.barber_id
-    left join reviews r on r.booking_id = b.id
-    where b.customer_id = auth.uid()
-    order by b.starts_at desc, b.id
-    limit least(greatest(coalesce(p_limit, 100), 1), 200)
-  ) x
-  ), 'waitlist', public.my_waitlist());
+  return jsonb_build_object(
+    'bookings', (
+      select coalesce(jsonb_agg(x.item order by x.starts_at desc, x.id), '[]'::jsonb)
+      from (
+        select b.id, b.starts_at,
+               to_jsonb(b) || jsonb_build_object(
+                 'shops', jsonb_build_object(
+                   'name', s.name, 'slug', s.slug, 'address', s.address, 'area', s.area,
+                   'latitude', s.latitude, 'longitude', s.longitude,
+                   'phone', s.phone, 'time_zone', s.time_zone, 'is_live', public.shop_is_live(s)),
+                 'barbers', jsonb_build_object('name', br.name),
+                 'review', case when r.booking_id is not null then jsonb_build_object(
+                   'rating', r.rating, 'comment', r.comment, 'first_name', r.first_name, 'reply', r.reply,
+                   'replied_at', r.replied_at, 'created_at', r.created_at, 'updated_at', r.updated_at) end) as item
+        from bookings b
+        join shops s on s.id = b.shop_id
+        join barbers br on br.id = b.barber_id
+        left join reviews r on r.booking_id = b.id
+        where b.customer_id = auth.uid()
+        order by b.starts_at desc, b.id
+        limit least(greatest(coalesce(p_limit, 100), 1), 200)
+      ) x
+    ),
+    'waitlist', public.my_waitlist());
 end;
 $$;
 
@@ -2347,7 +2350,7 @@ $$;
 -- what they asked for. Empty for a day gone by. The barber's day asks for
 -- it alongside its bookings, so it is one lookup of waitlist_shop_day_idx.
 -- plpgsql with a generic plan, so a connection plans it once: as plain SQL
--- planning it took ten times as long as running it.
+-- planning it took over ten times as long as running it.
 create function public.shop_waitlist(p_day date)
 returns table (
   id uuid, name text, phone text, service_id uuid, service_name text, duration_min int,
@@ -2538,7 +2541,7 @@ $$;
 -- 0 stops the planner reading every shop and barber on the platform
 -- instead), and only the three shops get their hours and next free time,
 -- in one call each. plpgsql, so a connection plans it once: as plain SQL
--- planning it took a third of its time.
+-- planning it took a quarter of its time.
 create function public.my_shops()
 returns jsonb
 language plpgsql

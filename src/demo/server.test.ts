@@ -333,7 +333,7 @@ test('My bookings keeps the shop and barber when the shop pauses, and shows only
   const mine = async () => {
     const { data, error } = await hakim.rpc('my_bookings');
     assert.equal(error, null);
-    return data as (Row & { shops: Row & { is_live: boolean }; barbers: Row })[];
+    return data.bookings as (Row & { shops: Row & { is_live: boolean }; barbers: Row })[];
   };
   const before = await mine();
   const own = tables().bookings.filter((b) => b.customer_id === hakimId);
@@ -370,10 +370,10 @@ test('My bookings keeps the shop and barber when the shop pauses, and shows only
   // Nobody else's bookings, and guests can't ask.
   const ravi = await signedIn('ravi@demo.potongku.my');
   const raviId = (await ravi.auth.getUser()).data.user!.id;
-  const theirs = (await ravi.rpc('my_bookings')).data as Row[];
+  const theirs = (await ravi.rpc('my_bookings')).data.bookings as Row[];
   assert.ok(theirs.every((b) => b.customer_id === raviId));
   assert.equal((await client().rpc('my_bookings')).error?.code, '42501');
-  assert.equal(((await hakim.rpc('my_bookings', { p_limit: 1 })).data as Row[]).length, 1);
+  assert.equal(((await hakim.rpc('my_bookings', { p_limit: 1 })).data.bookings as Row[]).length, 1);
 });
 
 test('a name can’t be cleared, and an account made without one is named after its email', async () => {
@@ -2123,7 +2123,7 @@ type MyBooking = Row & {
 async function myBookings(c: ReturnType<typeof client>) {
   const { data, error } = await c.rpc('my_bookings');
   assert.equal(error, null);
-  return data as MyBooking[];
+  return data.bookings as MyBooking[];
 }
 
 const doneAt = (list: MyBooking[], slug: string) =>
@@ -3076,6 +3076,9 @@ test('customers wait for a time on a day they could book, and only the shop sees
   assert.equal(await refused(hakim, haircut.id, day(2), danial.id, barberOff), '22023');
   const notTaking = 'The shop isn\'t taking bookings that day.';
   assert.equal((await mine(hakim)).length, 2, 'nothing refused was kept');
+  // My bookings gets the same list with the bookings, in one request.
+  assert.deepEqual((await hakim.rpc('my_bookings')).data.waitlist, await mine(hakim));
+  assert.deepEqual((await jason.rpc('my_bookings')).data.waitlist, await mine(jason));
 
   // Closed days and a whole day off; half a day off still leaves the evening.
   assert.equal((await ali.rpc('close_shop_days', { p_from: day(3), p_days: 1, p_reason: 'Kenduri' })).error, null);

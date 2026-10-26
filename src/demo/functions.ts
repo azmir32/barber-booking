@@ -429,11 +429,17 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
 }
 
 /**
- * The caller's own bookings, newest first, each with its shop and barber even
- * when the shop is hidden (paused, or its trial ended), whether it is live,
- * and the caller's rating of the cut with the shop's reply, or null.
+ * my_bookings, as {bookings, waitlist}: the caller's own bookings, newest
+ * first, each with its shop and barber even when the shop is hidden (paused,
+ * or its trial ended), whether it is live, and the caller's rating of the cut
+ * with the shop's reply, or null; and the days they are waiting on, as
+ * my_waitlist has them, so My bookings is one request.
  */
 export function myBookings(c: Caller, limitArg: unknown = 100) {
+  return { bookings: myBookingList(c, limitArg), waitlist: myWaitlist(c) };
+}
+
+function myBookingList(c: Caller, limitArg: unknown) {
   const limit = Math.min(Math.max(Number(limitArg ?? 100), 1), 200);
   return tables()
     .bookings.filter((b) => c.uid != null && b.customer_id === c.uid)

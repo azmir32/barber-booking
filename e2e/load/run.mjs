@@ -133,12 +133,8 @@ const SCENARIOS = {
         p_barber_id: null,
       }),
     ),
-  // With the days they are waiting on, shown above their bookings.
-  'My bookings': async () => {
-    const c = customer();
-    const [bookings] = await Promise.all([must(c.rpc('my_bookings')), must(c.rpc('my_waitlist'))]);
-    return bookings;
-  },
+  // One request: the bookings come with the days they are waiting on.
+  'My bookings': async () => must(customer().rpc('my_bookings')),
   // Not something the app sends, but anyone with an account can: the
   // bookings policy has to stay fast without the app's filter.
   'Every booking I may see': async () =>
