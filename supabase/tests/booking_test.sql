@@ -2704,6 +2704,104 @@ do $$ begin
   raise exception 'only find_shops should call km_between';
 exception when insufficient_privilege then null;
 end $$;
+
+-- find_shops and my_shops ask for a whole page's hours and next free times
+-- at once: that comes out as asking for each shop on its own. A shop that
+-- isn't live is left out, except for its owner.
+reset role;
+do $$
+declare
+  kemas constant uuid := '00000000-0000-0000-0000-00000000005b';
+  hidden uuid := (select id from shops where slug = 'hidden-cuts');
+  ids uuid[] := array(select id from shops order by id);
+  each_hours text[];
+  each_free text[];
+begin
+  -- Kemas Cuts and Hidden Cuts get a barber, hours and a service, on other clocks.
+  insert into barbers (id, shop_id, name) values
+    ('00000000-0000-0000-0000-00000000009a', kemas, 'Rahman'),
+    ('00000000-0000-0000-0000-00000000009b', hidden, 'Mat');
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  select b, d, '10:00', '22:00'
+  from unnest(array['00000000-0000-0000-0000-00000000009a', '00000000-0000-0000-0000-00000000009b']::uuid[]) b,
+       generate_series(0, 6) d;
+  insert into services (shop_id, name, duration_min, price) values (kemas, 'Haircut', 45, 20), (hidden, 'Haircut', 30, 15);
+  update shops set time_zone = 'Pacific/Kiritimati' where id = kemas;
+  update shops set time_zone = 'America/Los_Angeles' where id = hidden;
+
+  -- As a customer.
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000c1', true);
+  each_hours := array(select row(i, h.opens_today, h.closes_today)::text
+                      from unnest(ids) i, lateral shop_hours_today(i) h where i <> hidden order by i);
+  each_free := array(select f::text from unnest(ids) i, lateral shops_next_free(array[i]) f order by i);
+  assert array(select h::text from shops_hours_today(ids) h order by h.shop_id) = each_hours,
+    'hours today for several shops at once, as for each on its own';
+  assert array(select f::text from shops_next_free(ids) f order by f.shop_id) = each_free,
+    'next free times for several shops at once, as for each on its own';
+  assert (select count(*) from shops_next_free(ids) where shop_id in ('00000000-0000-0000-0000-00000000005a', kemas)) = 2,
+    'both shops with someone in have a next free time';
+  assert not exists (select 1 from shops_hours_today(ids) where shop_id = hidden)
+         and not exists (select 1 from shops_next_free(ids) where shop_id = hidden),
+    'a shop that isn''t live is left out';
+  assert (select opens_today is null from shop_hours_today(hidden)), 'one that isn''t live has no hours';
+
+  -- As Hidden Cuts' owner, it's there.
+  perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b7', true);
+  each_hours := array(select row(i, h.opens_today, h.closes_today)::text
+                      from unnest(ids) i, lateral shop_hours_today(i) h order by i);
+  each_free := array(select f::text from unnest(ids) i, lateral shops_next_free(array[i]) f order by i);
+  assert array(select h::text from shops_hours_today(ids) h order by h.shop_id) = each_hours,
+    'the owner''s hours today, several at once as each on its own';
+  assert array(select f::text from shops_next_free(ids) f order by f.shop_id) = each_free,
+    'the owner''s next free times, several at once as each on its own';
+  assert (select opens_today = '10:00' from shops_hours_today(array[hidden]))
+         and exists (select 1 from shops_next_free(array[hidden])),
+    'the owner sees their own shop''s hours and next free time before it is live';
+end $$;
+
+-- The shop list picks a page straight off the name index when there is
+-- nothing to filter by, and looks at every shop when there is: both come out
+-- the same. Names that differ only in case sort together, and the id
+-- settles a tie, so pages never overlap.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  by_name constant text[] := array['Ali Cuts', 'Alpha Cuts', 'bangi cuts', 'Fade Cuts', 'Kemas Cuts', 'KEMAS CUTS'];
+  plain text[] := '{}';
+  filtered text[] := '{}';
+begin
+  update shops set name = 'bangi cuts' where id = '00000000-0000-0000-0000-00000000005e';
+  update shops set name = 'KEMAS CUTS' where id = '00000000-0000-0000-0000-00000000005d';
+  assert (select array_agg(f::text order by f.ordinality) from find_shops() with ordinality f)
+         = (select array_agg(f::text order by f.ordinality) from find_shops('cuts') with ordinality f),
+    'with and without a filter that keeps every shop, the same rows';
+  assert (select array_agg(f.name order by f.ordinality) from find_shops() with ordinality f) = by_name,
+    'by name, whatever the case, then by id';
+  for i in 0..5 loop
+    plain := plain || (select array_agg(name) from find_shops(null, null, 1, i));
+    filtered := filtered || (select array_agg(name) from find_shops('CUTS', null, 1, i));
+  end loop;
+  assert plain = by_name and filtered = by_name, 'one at a time, every shop once: ' || plain::text || filtered::text;
+  assert (select array_agg(f.name order by f.ordinality) from find_shops(null, null, 4, 4) with ordinality f)
+         = array['Kemas Cuts', 'KEMAS CUTS'], 'the second page of four';
+
+  -- Areas: spellings that differ only in case are one area, under the
+  -- spelling most of its shops use, or on a tie the first in order, as
+  -- mode() picks it.
+  update shops set area = 'Kajang' where id in ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-00000000005b');
+  update shops set area = 'KAJANG' where id = '00000000-0000-0000-0000-00000000005d';
+  update shops set area = 'kajang' where id = '00000000-0000-0000-0000-00000000005f';
+  assert (select array_agg(row(a.area, a.shops)::text order by a.ordinality) from shop_areas() with ordinality a)
+         = array['(Kajang,4)', '(Bangi,1)', '("Saujana Impian",1)'], 'areas: the most used spelling';
+  update shops set area = 'KAJANG' where id = '00000000-0000-0000-0000-00000000005f';
+  assert (select area from shop_areas() where lower(area) = 'kajang') = (select min(x) from unnest(array['Kajang', 'KAJANG']) x),
+    'areas: on a tie, the first spelling in order';
+  assert (select array_agg(row(a.area, a.shops)::text order by a.ordinality) from shop_areas() with ordinality a)
+         = (select array_agg(row(x.area, x.n)::text order by x.n desc, x.k)
+            from (select lower(s.area) as k, mode() within group (order by s.area) as area, count(*)::int as n
+                  from shops s where shop_is_live(s) group by lower(s.area)) x),
+    'areas as mode() would have them';
+end $$;
 rollback;
 
 -- Signed up as a barber by mistake --------------------------------------------
