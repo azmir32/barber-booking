@@ -112,6 +112,8 @@ const SCENARIOS = {
       // Closed days for the day picker and today's hours for "Open now".
       must(anon.rpc('shop_closed_days', { p_shop_id: shop.data.id, p_from: localDate(0), p_to: localDate(13) })),
       must(anon.rpc('shop_hours_today', { p_shop_id: shop.data.id })),
+      // How long the walk-in queue is, at the one shop in three that runs one.
+      shop.data.queue_enabled ? must(anon.rpc('queue_status', { p_shop_id: shop.data.id })) : null,
       // The newest reviews, and one more to know whether there are others.
       must(
         anon
@@ -133,10 +135,14 @@ const SCENARIOS = {
         p_barber_id: null,
       }),
     ),
-  // With the days they are waiting on, shown above their bookings.
+  // With the days they are waiting on and their place in a walk-in queue, shown above their bookings.
   'My bookings': async () => {
     const c = customer();
-    const [bookings] = await Promise.all([must(c.rpc('my_bookings')), must(c.rpc('my_waitlist'))]);
+    const [bookings] = await Promise.all([
+      must(c.rpc('my_bookings')),
+      must(c.rpc('my_waitlist')),
+      must(c.rpc('my_queue')),
+    ]);
     return bookings;
   },
   // Not something the app sends, but anyone with an account can: the
@@ -172,6 +178,9 @@ const SCENARIOS = {
       must(c.rpc('shop_waitlist', { p_day: day })),
       // The Bookings tab's number, asked every minute: as a phone that has never looked, the most to count.
       must(c.rpc('shop_changes', { p_since: null, p_limit: 5 })),
+      // Today's walk-in queue, which the app asks for on today while the shop runs one: sent each time
+      // here to measure it at its most.
+      must(c.rpc('shop_queue')),
     ]);
   },
   // The owner opening the app on My shop: their shop, then every card's
@@ -215,6 +224,22 @@ const SCENARIOS = {
       throw new Error(`${res.error.code}: ${res.error.message}`);
     }
     if (!res.error) await must(c.rpc('leave_waitlist', { p_id: res.data.id }));
+    return res;
+  },
+  // A customer joins a shop's walk-in queue, their page asks for their place every 30 seconds (three
+  // times here, back to back), My bookings once, then they leave, so the queue stays the size seeded.
+  // Outside the seeded hours (10 am to 8 pm, Monday to Saturday) the queue is shut and only the
+  // asking is measured.
+  'Wait in a queue': async () => {
+    const i = 3 * pick(Math.floor(SHOPS / 3));
+    const shopId = idOf(`shop${i}`);
+    const c = customer();
+    const res = await c.rpc('join_queue', { p_service_id: idOf(`service${i}-${pick(5)}`), p_barber_id: null });
+    // Shut, full, already in a queue or booked there today (P0001): normal answers.
+    if (res.error && res.error.code !== 'P0001') throw new Error(`${res.error.code}: ${res.error.message}`);
+    for (let n = 0; n < 3; n++) await must(c.rpc('queue_status', { p_shop_id: shopId }));
+    await must(c.rpc('my_queue'));
+    if (!res.error) await must(c.rpc('leave_queue', { p_id: res.data.id }));
     return res;
   },
 };

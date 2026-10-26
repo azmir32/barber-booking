@@ -168,27 +168,47 @@ export function BarberQueueCard({
         const service = q.service_id ? null : (menu?.find((s) => s.id === open?.serviceId) ?? null);
         const minutes = q.duration_min ?? service?.duration_min ?? 30;
         const called = q.state === 'called';
+        // The next thing to do stands out: calling the first in line, or starting someone called.
+        const callFirst = !called && place === 1;
         const rowError = error && error.id === q.id ? error.message : null;
+        const notHere = (
+          <Button
+            title={t('Not here')}
+            accessibilityLabel={t('Take {name} off the queue', { name })}
+            variant="ghost"
+            tone="danger"
+            style={big ? styles.action : undefined}
+            onPress={() => remove(q)}
+          />
+        );
         return (
           <View key={q.id} style={[styles.row, { borderTopColor: theme.border }]}>
-            <View style={styles.nameLine}>
-              {/* One line keeps a row short; with big text the whole name comes first. */}
-              <T variant="label" numberOfLines={big ? undefined : 1} style={styles.name}>
-                {`${place}. ${name}`}
-              </T>
-              {q.online ? <Badge label={t('Joined online')} /> : null}
+            <View style={styles.head}>
+              <View style={styles.info}>
+                <View style={styles.nameLine}>
+                  {/* One line keeps a row short; with big text the whole name comes first. */}
+                  <T variant="label" numberOfLines={big ? undefined : 1} style={styles.name}>
+                    {`${place}. ${name}`}
+                  </T>
+                  {q.online ? <Badge label={t('Joined online')} /> : null}
+                </View>
+                <T variant="small">{queuedFor(q)}</T>
+                <T variant="small" style={called ? { color: theme.success } : undefined}>
+                  {queuedStatus(q, now, tz)}
+                </T>
+              </View>
+              {/* Beside the name, so Call in and Start keep a line of their own; with big text it goes under them. */}
+              {big ? null : notHere}
             </View>
-            <T variant="small">{queuedFor(q)}</T>
-            <T variant="small" style={called ? { color: theme.success } : undefined}>
-              {queuedStatus(q, now, tz)}
-            </T>
-            <Row style={styles.actions}>
+            <Row>
               <Button
                 title={called ? t('Call again') : t('Call in')}
                 accessibilityLabel={called ? t('Call {name} again', { name }) : t('Call {name} in', { name })}
+                // Their number is there, so it opens WhatsApp too.
                 icon={q.phone ? 'logo-whatsapp' : undefined}
-                iconColor={theme.success}
-                variant={called ? 'secondary' : 'primary'}
+                iconColor={callFirst ? undefined : theme.success}
+                variant={callFirst ? 'primary' : 'secondary'}
+                style={styles.action}
                 loading={busy === q.id && !open}
                 {...held}
                 onPress={() => call(q)}
@@ -197,17 +217,11 @@ export function BarberQueueCard({
                 title={t('Start')}
                 accessibilityLabel={t('Start {name}’s cut', { name })}
                 variant={called ? 'primary' : 'secondary'}
+                style={styles.action}
                 {...held}
                 onPress={() => openStart(q)}
               />
-              <Button
-                title={t('Not here')}
-                accessibilityLabel={t('Take {name} off the queue', { name })}
-                variant="ghost"
-                tone="danger"
-                {...held}
-                onPress={() => remove(q)}
-              />
+              {big ? notHere : null}
             </Row>
 
             {open ? (
@@ -261,10 +275,11 @@ export function BarberQueueCard({
                     title={t('Start the cut')}
                     disabled={!open.barberId || (!q.service_id && !open.serviceId)}
                     loading={busy === q.id}
+                    style={styles.action}
                     {...held}
                     onPress={() => start(q, open)}
                   />
-                  <Button title={t('Not now')} variant="ghost" onPress={() => setPicking(null)} />
+                  <Button title={t('Not now')} variant="ghost" style={styles.action} onPress={() => setPicking(null)} />
                 </Row>
               </View>
             ) : (
@@ -284,11 +299,14 @@ export function BarberQueueCard({
 const styles = StyleSheet.create({
   card: { gap: Spacing.sm },
   heading: { paddingTop: Spacing.xs },
-  row: { gap: 2, paddingTop: Spacing.sm, borderTopWidth: StyleSheet.hairlineWidth },
+  row: { gap: Spacing.sm, paddingTop: Spacing.sm, borderTopWidth: StyleSheet.hairlineWidth },
+  head: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm },
+  info: { flex: 1, gap: 2 },
   // Wrapping, so with big text the badge goes under a long name rather than squeezing it.
-  nameLine: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.sm },
+  nameLine: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: Spacing.sm, rowGap: 2 },
   name: { flexShrink: 1 },
-  actions: { marginTop: Spacing.xs },
+  // Call in and Start share the line evenly, and each takes the whole line once they wrap.
+  action: { flexGrow: 1 },
   picker: { gap: Spacing.md, paddingTop: Spacing.sm },
   pickGroup: { gap: Spacing.sm },
 });

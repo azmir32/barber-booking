@@ -123,5 +123,37 @@ from generate_series(1, :shops) i,
      generate_series(-60, 30) d
 where extract(dow from current_date + d) = 6;
 
+\echo › walk-in queues
+-- One shop in three takes walk-ins in turn. Each saw about 30 people
+-- through its queue every working day of the last two months, and has six
+-- in it today: four who walked in (two left a number) and two who joined
+-- online, with the first in line called.
+update public.shops set queue_enabled = true
+where id in (select md5('shop' || i)::uuid from generate_series(3, :shops, 3) i);
+
+insert into public.queue_entries (shop_id, day, customer_id, guest_name, service_id, state, gone_reason, created_at)
+select md5('shop' || i)::uuid, current_date + d,
+       case when n % 3 = 0 then md5('customer' || (1 + (i * 31 + n * 7 + (d + 60) * 13) % :customers))::uuid end,
+       case when n % 3 <> 0 then 'Walk-in ' || n end,
+       md5('service' || i || '-' || (1 + n % 5))::uuid,
+       'gone',
+       (array['served', 'served', 'served', 'served', 'served', 'served', 'left', 'removed', 'not_here'])[1 + n % 9],
+       ((current_date + d) + time '10:00' + n * interval '18 minutes') at time zone 'Asia/Kuala_Lumpur'
+from generate_series(3, :shops, 3) i, generate_series(-60, -1) d, generate_series(0, 29) n
+where extract(dow from current_date + d) <> 0;
+
+insert into public.queue_entries (shop_id, day, customer_id, guest_name, guest_phone, service_id, barber_id,
+                                  state, called_at, created_at)
+select md5('shop' || i)::uuid, (now() at time zone 'Asia/Kuala_Lumpur')::date,
+       case when n >= 4 then md5('customer' || (1 + (i * 53 + n) % :customers))::uuid end,
+       case when n < 4 then 'Walk-in ' || n end,
+       case when n < 4 and n % 2 = 0 then '012-' || lpad((i * 10 + n)::text, 7, '0') end,
+       md5('service' || i || '-' || (1 + n % 5))::uuid,
+       case when n % 3 = 1 then md5('barber' || i || '-' || (1 + n % 3))::uuid end,
+       case when n = 0 then 'called' else 'waiting' end,
+       case when n = 0 then now() - interval '2 minutes' end,
+       now() - (6 - n) * interval '7 minutes'
+from generate_series(3, :shops, 3) i, generate_series(0, 5) n;
+
 analyze;
 \echo › done

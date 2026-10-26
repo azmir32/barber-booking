@@ -2746,17 +2746,21 @@ $$;
 -- each one's name and number as the customer list shows them (an online
 -- customer's account, or what the shop wrote down), and what they asked
 -- for. The barber's day asks for it with its bookings every minute while
--- the queue is on: one lookup of queue_entries_shop_day_idx.
+-- the queue is on: one lookup of queue_entries_shop_day_idx. plpgsql, so
+-- each connection plans it once: as plain SQL, planning it on every call
+-- took ten times as long as running it.
 create function public.shop_queue()
 returns table (
   id uuid, name text, phone text, online boolean, service_id uuid, service_name text, duration_min int,
   barber_id uuid, barber_name text, state text, called_at timestamptz, created_at timestamptz
 )
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
+begin
+  return query
   select e.id, coalesce(nullif(trim(p.full_name), ''), e.guest_name),
          case when e.customer_id is null then e.guest_phone else p.phone end,
          e.customer_id is not null, e.service_id, v.name, v.duration_min,
@@ -2769,19 +2773,23 @@ as $$
   left join barbers b on b.id = e.barber_id
   where sh.owner_id = (select auth.uid())
   order by e.created_at, e.id;
+end;
 $$;
 
 -- The customer's place in a queue today, if they are in one (at most one,
 -- see join_queue), with its shop, what they asked for, and their place and
 -- wait as queue_status works them out. My bookings asks every 30 seconds
--- while they wait: one lookup of their own entries for today.
+-- while they wait: one lookup of their own entries for today. plpgsql, as
+-- shop_queue is.
 create function public.my_queue()
 returns jsonb
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
+begin
+  return (
   select coalesce(jsonb_agg(
            (public.queue_status(e.shop_id) -> 'mine') || jsonb_build_object(
              'shop_id', s.id, 'service_name', v.name, 'barber_name', b.name,
@@ -2795,7 +2803,8 @@ as $$
   where e.customer_id = (select auth.uid())
     and e.day between current_date - 1 and current_date + 1
     and e.day = (now() at time zone s.time_zone)::date
-    and e.state <> 'gone';
+    and e.state <> 'gone');
+end;
 $$;
 
 -- Reviews ----------------------------------------------------------------------

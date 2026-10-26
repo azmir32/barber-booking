@@ -1863,6 +1863,57 @@ test('Hakim joins Ali’s walk-in queue and watches his place, then Ali calls hi
   await expect(app.getByRole('heading', { name: 'Walk-in queue', exact: true })).toHaveCount(0);
 });
 
+test('with the largest text on a small phone, the walk-in queue fits on both sides and says what changes', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const app = await open(page);
+  await app.getByRole('radiogroup', { name: 'Text size' }).getByRole('radio', { name: 'Largest', exact: true }).click();
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Ali Barber Sungai Chua').last()).toBeVisible();
+  await queueOpenNow(page);
+  await page.reload();
+
+  await expectWhole(app.getByLabel('Walk-in queue: 3 waiting', { exact: true }));
+  await listed(app, 'Ali Barber Sungai Chua').last().click();
+  // The count and wait are read out as they change, and so is the place once in.
+  const line = app.getByRole('status').filter({ hasText: /^3 waiting, about \d+\smin$/ });
+  await expect(line).toHaveAttribute('aria-live', 'polite');
+  await expectWhole(line);
+  await button(app, 'Join the queue').click();
+  await expectWhole(app.getByRole('radiogroup', { name: 'Service' }).first());
+  await expectWhole(app.getByRole('radiogroup', { name: 'Barber' }).first());
+  await app.getByRole('radiogroup', { name: 'Service' }).first().getByRole('radio', { name: /^Haircut 30/ }).click();
+  await expectWhole(button(app, 'Join the queue'));
+  await button(app, 'Join the queue').click();
+  const place = app.getByRole('status').filter({ hasText: /^You’re 4th in the queue/ });
+  await expect(place).toHaveAttribute('aria-live', 'polite');
+  await expectWhole(place);
+  await expectWhole(button(app, 'Leave the queue'));
+  await snap(page, 'demo-largest-11-queue-place');
+
+  // The barber's rows: each name, what they asked for and how long, and the three things to do.
+  await app.getByLabel('Go back').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await expect(app.getByRole('heading', { name: 'Queue (4)', exact: true })).toBeVisible();
+  await expectWhole(app.getByText('4. Hakim', { exact: true }));
+  await expectWhole(app.getByText('Haircut, any barber', { exact: true }).last());
+  await expectWhole(button(app, 'Call Hakim in'));
+  await expectWhole(button(app, 'Take Hakim off the queue'));
+  await button(app, 'Start Hakim’s cut').click();
+  await expectWhole(app.getByRole('radio', { name: /^Ali\s/ }));
+  await expectWhole(button(app, 'Start the cut'));
+  await snap(page, 'demo-largest-12-queue-barber');
+
+  // My shop's switch says whether it is on.
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  const queueSwitch = app.getByRole('switch', { name: 'Let customers join a queue', exact: true });
+  await expect(queueSwitch).toBeChecked();
+  await expectWhole(queueSwitch);
+  await expectWhole(app.getByText('While you’re open, customers join from your page and you call them in order from Bookings.'));
+});
+
 test.describe('on an iPhone', () => {
   // Chromium, telling the app it is Safari on an iPhone.
   test.use({ userAgent: devices['iPhone 13'].userAgent });
