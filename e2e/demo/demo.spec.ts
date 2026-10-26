@@ -1507,8 +1507,11 @@ test('customers pick a barber by their intro and stars and read one barber’s r
   expect(Number(count)).toBeGreaterThan(3);
   await whose.nth(2).click();
   await expect(whose.nth(2)).toBeChecked();
-  // His stars over his reviews, as on his card in the barber step above.
-  await expect(app.getByRole('img', { name: `Rated ${average} out of 5 from ${count} reviews`, exact: true })).toHaveCount(2);
+  // His stars over his reviews, as on his card in the barber step above. Which barber a regular's
+  // cut fell to depends on the weekday, so on some days Ali's card shows the very same stars.
+  const stars = `Rated ${average} out of 5 from ${count} reviews`;
+  const sameAsAli = (await team.nth(1).getAttribute('aria-label'))?.endsWith(`. ${stars}`);
+  await expect(app.getByRole('img', { name: stars, exact: true })).toHaveCount(sameAsAli ? 3 : 2);
   await expect(app.getByText(/ · with Ali$/)).toHaveCount(0);
   const danials = app.getByText(/ · with Danial$/);
   await expect(danials).toHaveCount(3);
@@ -1748,6 +1751,116 @@ test('a barber’s whole day off shows as Off for them on the shop page, so nobo
   await expect(off).not.toBeChecked();
   await expect(button(app, 'Tell the shop I’d take a cancellation')).toHaveCount(0);
   await snap(page, 'demo-51-barber-day-off');
+});
+
+/**
+ * Ali's shop open around the clock today with both barbers in, and nothing
+ * booked for them from now until two hours on, so its queue is open at any
+ * hour and on Mondays, Danial's day off. The demo has no clock to set, so
+ * the saved tables are changed instead.
+ */
+const queueOpenNow = (page: Page) =>
+  page.evaluate(() => {
+    const key = 'potongku.demo.v1';
+    const saved = JSON.parse(localStorage.getItem(key)!);
+    type Row = Record<string, unknown>;
+    const tables = saved.tables as Record<string, Row[]>;
+    const shop = tables.shops.find((s) => s.slug === 'ali-barber')!;
+    const team = new Set(tables.barbers.filter((b) => b.shop_id === shop.id).map((b) => b.id));
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+    const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
+    tables.working_hours = tables.working_hours.filter((h) => !(team.has(h.barber_id) && h.weekday === weekday));
+    for (const id of team) {
+      tables.working_hours.push({ id: crypto.randomUUID(), barber_id: id, weekday, opens_at: '00:00:00', closes_at: '24:00:00' });
+    }
+    const from = Date.now() - 60_000;
+    const to = Date.now() + 2 * 3_600_000;
+    for (const b of tables.bookings) {
+      const clash = Date.parse(b.starts_at as string) < to && Date.parse(b.ends_at as string) > from;
+      if (team.has(b.barber_id) && b.status !== 'cancelled' && clash) b.status = 'cancelled';
+    }
+    localStorage.setItem(key, JSON.stringify(saved));
+  });
+
+test('Hakim joins Ali’s walk-in queue and watches his place, then Ali calls him in and starts his cut', async ({
+  page,
+  context,
+}) => {
+  await context.route('https://wa.me/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'WhatsApp' }));
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await queueOpenNow(page);
+  await page.reload();
+
+  // Find a barber says how many are in the queue, by the open-now line: two walked in, one joined online.
+  await expect(app.getByLabel('Walk-in queue: 3 waiting', { exact: true })).toBeVisible();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  const queue = app.getByRole('heading', { name: 'Walk-in queue', exact: true });
+  await expect(queue).toBeVisible();
+  await expect(app.getByRole('status').filter({ hasText: /^3 waiting, about \d+\smin$/ })).toBeVisible();
+  await button(app, 'Join the queue').click();
+  await app.getByRole('radiogroup', { name: 'Service' }).first().getByRole('radio', { name: /^Skin fade/ }).click();
+  await app.getByRole('radiogroup', { name: 'Barber' }).first().getByRole('radio', { name: 'Ali', exact: true }).click();
+  await snap(page, 'demo-52-queue-join');
+  await button(app, 'Join the queue').click();
+  await expect(app.getByRole('status').filter({ hasText: /^You’re 4th in the queue · about \d+\smin$/ })).toBeVisible();
+  await expect(app.getByText('Skin fade with Ali', { exact: true })).toBeVisible();
+  await expect(button(app, 'Join the queue')).toHaveCount(0);
+  await snap(page, 'demo-53-queue-place');
+
+  // My bookings has his place at the top, with Leave.
+  await app.getByLabel('Go back').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(app.getByText(/^You’re 4th in the queue · about \d+\smin$/)).toBeVisible();
+  await expect(button(app, 'Leave the queue at Ali Barber Sungai Chua')).toBeVisible();
+
+  // Ali's day: four in order, Hakim last, and calling him in opens WhatsApp with the words to send.
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await expect(app.getByRole('heading', { name: 'Queue (4)', exact: true })).toBeVisible();
+  await expect(app.getByText(/^4\. /)).toHaveText('4. Hakim');
+  await expect(app.getByText(/^1\. /)).toHaveText('1. Encik Hisham');
+  await snap(page, 'demo-54-queue-barber');
+  const opened = context.waitForEvent('page');
+  await button(app, 'Call Hakim in').click();
+  const whatsapp = await opened;
+  await whatsapp.waitForLoadState();
+  const url = new URL(whatsapp.url());
+  expect(url.pathname).toBe('/601122334455');
+  expect(url.searchParams.get('text')).toBe('Hi Hakim, it’s your turn at Ali Barber Sungai Chua. See you in a few minutes!');
+  await whatsapp.close();
+  await expect(button(app, 'Call Hakim again')).toBeVisible();
+  await expect(app.getByText(/^Called \d{1,2}:\d{2}\s(am|pm)$/)).toBeVisible();
+
+  // Hakim's phone says it is his turn, in My bookings and on the shop's page.
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(app.getByText('It’s your turn. Head to the shop now.')).toBeVisible();
+  await snap(page, 'demo-55-queue-turn');
+  await button(app, 'See Ali Barber Sungai Chua').click();
+  await expect(app.getByRole('status').filter({ hasText: 'It’s your turn. Head to the shop now.' })).toBeVisible();
+
+  // Ali starts his cut in his own chair, the one Hakim asked for: it is a booking, now.
+  await app.getByLabel('Go back').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await button(app, 'Start Hakim’s cut').click();
+  await expect(app.getByRole('radio', { name: /^Ali\s/ })).toBeChecked();
+  await button(app, 'Start the cut').click();
+  await expect(app.getByRole('status').filter({ hasText: 'Hakim is in Ali’s chair.' })).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Queue (3)', exact: true })).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Now', exact: true })).toBeVisible();
+  await expect(button(app, 'More actions for Hakim')).toBeVisible();
+  await snap(page, 'demo-56-queue-started');
+
+  // On his side the queue has made way for the cut.
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(app.getByText(/^Skin fade with Ali · RM25$/).first()).toBeVisible();
+  await expect(app.getByRole('heading', { name: 'Walk-in queue', exact: true })).toHaveCount(0);
 });
 
 test.describe('on an iPhone', () => {
