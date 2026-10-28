@@ -17,7 +17,8 @@ export type TableName =
   | 'shop_closures'
   | 'reviews'
   | 'waitlist'
-  | 'queue_entries';
+  | 'queue_entries'
+  | 'shop_photos';
 export type Tables = Record<TableName, Row[]>;
 type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'float' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = {
@@ -214,6 +215,21 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     booking_id: opt('uuid'),
     created_at: createdAt,
   },
+  // The files are in the demo's own Storage (files.ts).
+  shop_photos: {
+    id,
+    shop_id: req('uuid'),
+    // Null: the owner hasn't said who did the cut.
+    barber_id: opt('uuid'),
+    caption: opt('text'),
+    path: req('text'),
+    thumb_path: req('text'),
+    width: req('int'),
+    height: req('int'),
+    // Set by the shop_photos_check trigger on the way in (beforeWrite below).
+    sort_order: req('int', () => 0),
+    created_at: createdAt,
+  },
 };
 
 /** Tables keyed by something other than id. */
@@ -224,6 +240,8 @@ const PRIMARY_KEY: Partial<Record<TableName, string[]>> = {
 
 /** Postgres trim(): spaces only, unlike String.prototype.trim. */
 export const pgTrim = (s: string) => s.replace(/^ +| +$/g, '');
+/** Postgres btrim() with one argument: the same. */
+const btrim = pgTrim;
 const len = (v: unknown) => (v == null ? null : [...String(v)].length);
 const between = (n: number | null, lo: number, hi: number) => n == null || (n >= lo && n <= hi);
 const atMost = (v: unknown, max: number) => v == null || (len(v) as number) <= max;
@@ -301,6 +319,21 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['queue_entries_gone_reason', (r) => (r.state === 'gone') === (r.gone_reason != null)],
     ['queue_entries_called_at', (r) => r.state !== 'called' || r.called_at != null],
   ],
+  shop_photos: [
+    [
+      'shop_photos_caption_check',
+      (r) => r.caption == null || (atMost(r.caption, 60) && btrim(String(r.caption)) !== '' && !CONTROL.test(String(r.caption))),
+    ],
+    ['shop_photos_width_check', (r) => between(r.width as number, 1, 1600)],
+    ['shop_photos_height_check', (r) => between(r.height as number, 1, 1600)],
+    // Both files in the shop's own folder, the only one its owner can write to.
+    [
+      'shop_photos_in_shop_folder',
+      (r) =>
+        [r.path, r.thumb_path].every((p) => String(p).split('/')[0] === r.shop_id && /^[^/]+\/[A-Za-z0-9_.-]+$/.test(String(p))) &&
+        r.thumb_path !== r.path,
+    ],
+  ],
 };
 
 const UNIQUE: Partial<Record<TableName, [string, string | string[]][]>> = {
@@ -310,6 +343,10 @@ const UNIQUE: Partial<Record<TableName, [string, string | string[]][]>> = {
     ['shops_slug_key', 'slug'],
   ],
   waitlist: [['waitlist_one_a_day', ['customer_id', 'day', 'shop_id']]],
+  shop_photos: [
+    ['shop_photos_path_key', 'path'],
+    ['shop_photos_thumb_path_key', 'thumb_path'],
+  ],
 };
 
 const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number) => aStart < bEnd && bStart < aEnd;
@@ -441,6 +478,14 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     table: 'queue_entries',
     column: 'booking_id',
     references: 'bookings',
+    onDelete: 'set null',
+  },
+  { name: 'shop_photos_shop_id_fkey', table: 'shop_photos', column: 'shop_id', references: 'shops', onDelete: 'cascade' },
+  {
+    name: 'shop_photos_barber_id_fkey',
+    table: 'shop_photos',
+    column: 'barber_id',
+    references: 'barbers',
     onDelete: 'set null',
   },
 ];
@@ -725,6 +770,18 @@ function sampleHistory(): { bookings: Row[]; reviews: Row[]; users: Row[] } {
   return { bookings: bookings.filter((b) => String(b.id).startsWith(HISTORY_ID)), reviews, users };
 }
 
+/**
+ * For a demo saved before shops had photos: the sample photos of the shops
+ * it still has, without the barbers it no longer has.
+ */
+function samplePhotos(all: Tables): Row[] {
+  const shops = new Set(all.shops.map((s) => s.id));
+  const barbers = new Set(all.barbers.map((b) => b.id));
+  return sampleTables()
+    .shop_photos.filter((p) => shops.has(p.shop_id))
+    .map((p) => ({ ...p, barber_id: barbers.has(p.barber_id) ? p.barber_id : null }));
+}
+
 /** What the sample data has in a column for a row; null for rows people added. */
 function sampleValue(table: TableName, rowId: unknown, column: string): unknown {
   return sampleTables()[table].find((r) => r.id === rowId)?.[column] ?? null;
@@ -738,6 +795,7 @@ export function tables(): Tables {
     if (parsed?.tables && Array.isArray(parsed.tables.bookings)) {
       const hadReviews = Array.isArray(parsed.tables.reviews);
       const hadQueue = Array.isArray(parsed.tables.queue_entries);
+      const hadPhotos = Array.isArray(parsed.tables.shop_photos);
       const version = Number(parsed.version) || 0;
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn, version);
       // A demo saved before a table was added has no list for it yet,
@@ -751,8 +809,9 @@ export function tables(): Tables {
         }
       }
       recountReviews(current);
+      if (!hadPhotos) current.shop_photos = samplePhotos(current);
       seededOn = today();
-      if (parsed.seededOn !== seededOn || !hadReviews || !hadQueue || version < VERSION) save();
+      if (parsed.seededOn !== seededOn || !hadReviews || !hadQueue || !hadPhotos || version < VERSION) save();
     }
   } catch {
     // Unreadable or blocked storage: start fresh.
@@ -989,9 +1048,30 @@ function recountReviews(all: Tables) {
  * something customers can book.
  */
 function beforeWrite(table: TableName, row: Row, before?: Row) {
+  if (table === 'shop_photos') return shopPhotosCheck(row, before);
   if (table !== 'shops') return;
   if (row.is_published === true && row.published_at == null) row.published_at = nowIso();
   if (before && row.is_published === true && before.is_published !== true) readyToGoLive(row);
+}
+
+/** The most photos a shop keeps (max_shop_photos). */
+export const MAX_SHOP_PHOTOS = 24;
+
+/**
+ * The shop_photos_check trigger: a photo's barber works at its shop, a
+ * shop keeps at most 24 photos, and a new one goes last.
+ */
+function shopPhotosCheck(photo: Row, before?: Row) {
+  const all = tables();
+  if (photo.barber_id != null && !all.barbers.some((b) => b.id === photo.barber_id && b.shop_id === photo.shop_id)) {
+    throw new PgError('P0001', 'Barber not found.', 400);
+  }
+  if (before) return;
+  const theirs = all.shop_photos.filter((p) => p.shop_id === photo.shop_id);
+  if (theirs.length >= MAX_SHOP_PHOTOS) {
+    throw new PgError('P0001', 'Your shop has 24 photos, the most it can have. Remove one to add another.', 400);
+  }
+  photo.sort_order = theirs.length ? Math.max(...theirs.map((p) => p.sort_order as number)) + 1 : 0;
 }
 
 function readyToGoLive(shop: Row) {

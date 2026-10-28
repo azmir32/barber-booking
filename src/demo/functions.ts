@@ -137,8 +137,21 @@ export function findShops(args: Record<string, unknown>) {
         latitude: s.latitude ?? null,
         longitude: s.longitude ?? null,
         queue_waiting: s.queue_enabled === true ? waitingAt(s.id, queueToday(s)).length : null,
+        photo_thumb: firstPhoto(s.id)?.thumb_path ?? null,
       };
     });
+}
+
+/** A shop's first photo, in the order its page shows them. */
+function firstPhoto(shopId: unknown): Row | undefined {
+  return tables()
+    .shop_photos.filter((p) => p.shop_id === shopId)
+    .sort(
+      (a, b) =>
+        Number(a.sort_order) - Number(b.sort_order) ||
+        ms(a.created_at) - ms(b.created_at) ||
+        (String(a.id) < String(b.id) ? -1 : 1),
+    )[0];
 }
 
 /**

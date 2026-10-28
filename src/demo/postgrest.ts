@@ -83,6 +83,13 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
   waitlist: { select: () => false },
   // The same for the walk-in queue: customers see counts and their own place, and only the shop sees names.
   queue_entries: { select: () => false },
+  // Anyone sees a live shop's photos, and its owner all of theirs. Only the owner adds, changes or removes them.
+  shop_photos: {
+    select: (r, c) => shopVisible(r.shop_id, c.uid),
+    insert: (r, c) => ownsShop(r.shop_id, c.uid),
+    update: (r, c) => ownsShop(r.shop_id, c.uid),
+    delete: (r, c) => ownsShop(r.shop_id, c.uid),
+  },
 };
 
 /** Column grants: who may write which columns (everything else is open). */
@@ -115,6 +122,11 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
   reviews: { insert: [], update: [], delete: [] },
   waitlist: { insert: [], update: [], delete: [] },
   queue_entries: { insert: [], update: [], delete: [] },
+  // A photo's files and shop never change, and its place is set on the way in.
+  shop_photos: {
+    insert: ['shop_id', 'barber_id', 'caption', 'path', 'thumb_path', 'width', 'height'],
+    update: ['barber_id', 'caption', 'sort_order'],
+  },
 };
 
 /**
