@@ -4,6 +4,7 @@ import { Linking, View, type LayoutChangeEvent, type ScrollView, type TextInput 
 
 import { DayPicker } from '@/components/day-picker';
 import { Distance } from '@/components/distance';
+import { ShopQueueCard } from '@/components/queue-card';
 import { RatingSummary } from '@/components/reviews';
 import { ShopReviews } from '@/components/shop-reviews';
 import { Bone, Button, Card, Chip, Empty, ErrorText, Field, Row, Screen, Section, Skeleton, T } from '@/components/ui';
@@ -900,17 +901,28 @@ export default function ShopPage() {
               </Card>
             </View>
           ) : (
-            <Section title={t('1. Pick a service')}>
-              {services.map((s) => (
-                <Card key={s.id} role="radio" selected={s.id === serviceId} onPress={() => pickService(s.id)}>
-                  <Row style={{ justifyContent: 'space-between' }}>
-                    <T variant="label">{s.name}</T>
-                    <T variant="label">{formatPrice(s.price)}</T>
-                  </Row>
-                  <T variant="small">{formatDuration(s.duration_min)}</T>
-                </Card>
-              ))}
-            </Section>
+            <>
+              {/* Walking in instead of booking a time: above the steps, only while the queue is open. */}
+              <ShopQueueCard
+                shop={shop}
+                services={services}
+                barbers={barbers}
+                serviceId={serviceId}
+                likelyOpen={openNow?.state === 'open'}
+                now={now}
+              />
+              <Section title={t('1. Pick a service')}>
+                {services.map((s) => (
+                  <Card key={s.id} role="radio" selected={s.id === serviceId} onPress={() => pickService(s.id)}>
+                    <Row style={{ justifyContent: 'space-between' }}>
+                      <T variant="label">{s.name}</T>
+                      <T variant="label">{formatPrice(s.price)}</T>
+                    </Row>
+                    <T variant="small">{formatDuration(s.duration_min)}</T>
+                  </Card>
+                ))}
+              </Section>
+            </>
           )}
 
           {serviceId ? (

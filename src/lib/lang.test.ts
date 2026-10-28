@@ -89,6 +89,17 @@ const DYNAMIC_KEYS = [
   "You're already on the waiting list for that day.",
   'You can be on 3 waiting lists at a time. Leave one to join another.',
   "They're no longer on the waiting list.",
+  'Please sign in to join the queue.',
+  "The queue isn't open right now.",
+  "That barber isn't in right now. Try any barber.",
+  'You already have a booking here today.',
+  "You're already in this queue.",
+  "You're already in another shop's queue. Leave it to join this one.",
+  'The queue is full for now. Try booking a time instead.',
+  'Turn on the walk-in queue in My shop first.',
+  "They're no longer in the queue.",
+  'Pick a service for their cut.',
+  "That barber isn't working now. Pick another barber.",
 ];
 
 test('every piece of UI text has a Malay translation', () => {

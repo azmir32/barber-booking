@@ -12,9 +12,10 @@ import type { Role } from '@/lib/types';
 export default function SignUp() {
   const params = useLocalSearchParams<{ role?: string; next?: string; summary?: string; wait?: string }>();
   // Sent here from a shop page with a time picked, so this is a customer finishing a booking,
-  // or with `wait`, joining a full day's waiting list.
+  // or with `wait`, joining a full day's waiting list (or with wait=queue, today's walk-in queue).
   const booking = params.summary;
   const waiting = Boolean(booking && params.wait);
+  const queue = waiting && params.wait === 'queue';
   const [role, setRole] = useState<Role>(params.role === 'barber' && !booking ? 'barber' : 'customer');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
@@ -33,7 +34,7 @@ export default function SignUp() {
       params: {
         ...(params.next ? { next: params.next } : {}),
         ...(booking ? { summary: booking } : {}),
-        ...(waiting ? { wait: '1' } : {}),
+        ...(waiting ? { wait: queue ? 'queue' : '1' } : {}),
       },
     });
 
@@ -63,10 +64,13 @@ export default function SignUp() {
           <BookingSummary
             summary={booking}
             waiting={waiting}
+            queue={queue}
             note={
-              waiting
-                ? t('Not on the waiting list yet. Once your email is confirmed, sign in to join it.')
-                : t('Not booked yet. Once your email is confirmed, sign in to finish booking.')
+              queue
+                ? t('Not in the queue yet. Once your email is confirmed, sign in to join it.')
+                : waiting
+                  ? t('Not on the waiting list yet. Once your email is confirmed, sign in to join it.')
+                  : t('Not booked yet. Once your email is confirmed, sign in to finish booking.')
             }
           />
         ) : null}
@@ -81,7 +85,14 @@ export default function SignUp() {
         <BookingSummary
           summary={booking}
           waiting={waiting}
-          note={waiting ? t('Create an account to join the waiting list.') : t('Create an account to finish booking.')}
+          queue={queue}
+          note={
+            queue
+              ? t('Create an account to join the queue.')
+              : waiting
+                ? t('Create an account to join the waiting list.')
+                : t('Create an account to finish booking.')
+          }
         >
           <Button title={t('Already have an account? Sign in')} variant="secondary" onPress={goToSignIn} />
         </BookingSummary>
@@ -139,17 +150,19 @@ export default function SignUp() {
 function BookingSummary({
   summary,
   waiting,
+  queue,
   note,
   children,
 }: {
   summary: string;
   waiting: boolean;
+  queue: boolean;
   note: string;
   children?: ReactNode;
 }) {
   return (
     <Card>
-      <T variant="label">{waiting ? t('Waiting list') : t('Your booking')}</T>
+      <T variant="label">{queue ? t('Walk-in queue') : waiting ? t('Waiting list') : t('Your booking')}</T>
       <T variant="heading">{summary}</T>
       <T variant="muted">{note}</T>
       {children}

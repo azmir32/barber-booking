@@ -174,6 +174,8 @@ function seed() {
       // compares every period, and still on a (stretched) free trial to show.
       created_at: new Date(now() - 90 * DAY).toISOString(),
       trial_ends_at: new Date(now() + 23 * DAY).toISOString(),
+      // Takes walk-ins in turn, with a queue customers can join from its page.
+      queue_enabled: true,
     },
     barbers: [
       ['Ali', week([1, 2, 3, 4, 5, 6], '10:00', '20:00'), 'Skin fades and beard trims, cutting since 2015'],
@@ -665,6 +667,30 @@ function seed() {
     });
   waiting(farid, haircut, null, 26);
   waiting(aiman, fade, danial.row, 5);
+
+  // Ali's walk-in queue today: two who walked in and one who joined from the
+  // shop's page, a few minutes apart. Jason has nothing booked here today. A
+  // barber is only asked for on a day they work. Added last, so every id
+  // above stays as it was; a saved demo opened on a later day gets this
+  // day's queue again (moveToToday in db.ts).
+  const weekdayToday = new Date(`${today}T00:00:00Z`).getUTCDay();
+  const queued = (who: Who, service: Row | null, barber: typeof aliChair | null, minutesAgo: number) =>
+    insertRow('queue_entries', {
+      id: sid(),
+      shop_id: sa.id,
+      day: today,
+      ...(typeof who === 'string'
+        ? { guest_name: who }
+        : Array.isArray(who)
+          ? { guest_name: who[0], guest_phone: who[1] }
+          : { customer_id: who.id }),
+      service_id: service?.id ?? null,
+      barber_id: barber && (barber.hours[weekdayToday] ?? []).length > 0 ? barber.row.id : null,
+      created_at: new Date(now() - minutesAgo * 60_000).toISOString(),
+    });
+  queued(['Encik Hisham', '012-667 4410'], haircut, null, 22);
+  queued(jason, fade, aliChair, 14);
+  queued('Adik Faris', kids, danial, 6);
 }
 
 setSeed(seed);

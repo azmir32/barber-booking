@@ -3342,3 +3342,340 @@ test('the shop putting someone waiting in by hand ends their request', async () 
   assert.deepEqual(await waiting(), []);
   assert.deepEqual((await hakim.rpc('my_waitlist')).data, []);
 });
+
+// Walk-in queue ------------------------------------------------------------------
+
+/** The first given weekday (0 is Sunday) from today on, at a Kajang clock time. */
+const thisWeekOn = (weekday: number, clock: string) => {
+  const day = addDays(today(), (weekday - new Date(`${today()}T00:00:00Z`).getUTCDay() + 7) % 7);
+  const [h, m] = clock.split(':').map(Number);
+  return { day, at: dayBounds(day, TZ).start.getTime() + (h * 60 + m) * 60_000 };
+};
+
+test('customers join a shop’s walk-in queue while it is open, and only the shop sees who', async () => {
+  // A Tuesday at 3:20 pm, both barbers in: Ali on Ravi's skin fade until
+  // 3:45, Danial free until Aiman's haircut at 4:00 (the sample day).
+  const { day, at } = thisWeekOn(2, '15:20');
+  setClock(() => at);
+  try {
+    resetDemo();
+    const ali = await signedIn(DEMO_BARBER_EMAIL);
+    const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+    const jason = await signedIn('jason@demo.potongku.my');
+    const ravi = await signedIn('ravi@demo.potongku.my');
+    const farid = await signedIn('farid@demo.potongku.my');
+    const rahman = await signedIn('rahman@demo.potongku.my');
+    const guest = client();
+    const shop = await shopBySlug(ali, 'ali-barber');
+    const kemas = await shopBySlug(ali, 'kemas-barber-kajang');
+    const service = (shopId: string, name: string) =>
+      tables().services.find((v) => v.shop_id === shopId && v.name === name)!.id as string;
+    const [haircut, fade] = [service(shop.id, 'Haircut'), service(shop.id, 'Skin fade')];
+    const barber = (name: string) => tables().barbers.find((b) => b.shop_id === shop.id && b.name === name)!.id as string;
+    const [aliChair, danial] = [barber('Ali'), barber('Danial')];
+    const status = async (c: ReturnType<typeof client>, shopId = shop.id as string) => {
+      const { data, error } = await c.rpc('queue_status', { p_shop_id: shopId });
+      assert.equal(error, null);
+      return data as Row & { mine: Row | null };
+    };
+    const join = (c: ReturnType<typeof client>, serviceId: string, barberId: string | null = null) =>
+      c.rpc('join_queue', { p_service_id: serviceId, p_barber_id: barberId });
+    const refused = async (pending: PromiseLike<{ error: { code?: string; message: string } | null }>, code: string, message: string) => {
+      const { error } = await pending;
+      assert.deepEqual([error?.code, error?.message], [code, message]);
+    };
+    const list = async () => {
+      const { data, error } = await ali.rpc('shop_queue');
+      assert.equal(error, null);
+      return data as Row[];
+    };
+    const waitingAt = async (slug: string) =>
+      ((await guest.rpc('find_shops', { p_search: null, p_area: null, p_limit: 21, p_offset: 0 })).data as Row[]).find(
+        (s) => s.slug === slug,
+      )!.queue_waiting;
+
+    // The sample queue: Encik Hisham's haircut, Jason's skin fade and a kids
+    // cut, 105 minutes over two chairs. Guests see how many and how long, never who.
+    assert.deepEqual(await status(guest), { open: true, waiting: 3, estimate_min: 55, barbers_in: 2, mine: null });
+    assert.equal(await waitingAt('ali-barber'), 3);
+    assert.equal(await waitingAt('kemas-barber-kajang'), null);
+    for (const [name, args] of [
+      ['join_queue', { p_service_id: haircut }],
+      ['leave_queue', { p_id: haircut }],
+      ['my_queue', {}],
+      ['shop_queue', {}],
+      ['add_to_queue', { p_name: 'Pak Long' }],
+      ['call_from_queue', { p_id: haircut }],
+      ['remove_from_queue', { p_id: haircut }],
+      ['start_from_queue', { p_id: haircut, p_barber_id: aliChair }],
+    ] as const) {
+      assert.equal((await guest.rpc(name, args)).error?.code, '42501', name);
+    }
+    for (const c of [guest, hakim, ali]) {
+      assert.equal((await c.from('queue_entries').select('*')).error?.code, '42501');
+    }
+    const written = await hakim.from('queue_entries').insert({ shop_id: shop.id, day, guest_name: 'Me' });
+    assert.equal(written.error?.code, '42501');
+
+    // Hakim joins for a skin fade with anyone: fourth, about 55 minutes away.
+    const joined = await join(hakim, fade);
+    assert.equal(joined.error, null);
+    assert.deepEqual([joined.data.state, joined.data.barber_id, joined.data.day], ['waiting', null, day]);
+    const mine = (await status(hakim)).mine!;
+    assert.deepEqual([mine.id, mine.state, mine.place, mine.estimate_min], [joined.data.id, 'waiting', 4, 55]);
+    const { data: myQueue } = await hakim.rpc('my_queue');
+    assert.deepEqual(
+      (myQueue as Row[]).map((q) => [q.id, q.place, q.service_name, q.barber_name, (q.shop as Row).slug]),
+      [[joined.data.id, 4, 'Skin fade', null, 'ali-barber']],
+    );
+    // My bookings gets the same place with the bookings, in one request.
+    assert.deepEqual((await hakim.rpc('my_bookings')).data.queue, myQueue);
+    assert.equal(await waitingAt('ali-barber'), 4);
+
+    // One place at a time, here or anywhere; nobody with a booking still to
+    // come today (Ravi is in the chair); a queue that is off isn't open.
+    await refused(join(hakim, haircut, aliChair), 'P0001', 'You\'re already in this queue.');
+    await refused(join(jason, haircut), 'P0001', 'You\'re already in this queue.');
+    await refused(join(ravi, haircut), 'P0001', 'You already have a booking here today.');
+    const kemasCut = service(kemas.id, 'Haircut');
+    await refused(join(hakim, kemasCut), 'P0001', 'The queue isn\'t open right now.');
+    assert.equal((await rahman.from('shops').update({ queue_enabled: true }).eq('id', kemas.id)).error, null);
+    await refused(join(hakim, kemasCut), 'P0001', 'You\'re already in another shop\'s queue. Leave it to join this one.');
+    // Customers can't switch on someone else's queue.
+    await hakim.from('shops').update({ queue_enabled: false }).eq('id', shop.id);
+    assert.equal(tables().shops.find((s) => s.id === shop.id)!.queue_enabled, true);
+    // Farid's cut this morning is over, so he can join, with Danial.
+    assert.equal((await join(farid, haircut, danial)).error, null);
+    await refused(join(guest, haircut), '42501', 'permission denied for function join_queue');
+
+    // The shop's list, with names and numbers as its customer list has them.
+    assert.deepEqual(
+      (await list()).map((q) => [q.name, q.phone, q.online, q.service_name, q.barber_name, q.state]),
+      [
+        ['Encik Hisham', '012-667 4410', false, 'Haircut', null, 'waiting'],
+        ['Jason', '012-901 3344', true, 'Skin fade', 'Ali', 'waiting'],
+        ['Adik Faris', null, false, 'Kids cut (under 12)', 'Danial', 'waiting'],
+        ['Hakim', '011-2233 4455', true, 'Skin fade', null, 'waiting'],
+        ['Farid', '012-778 9012', true, 'Haircut', 'Danial', 'waiting'],
+      ],
+    );
+    assert.deepEqual((await rahman.rpc('shop_queue')).data, []);
+    await refused(rahman.rpc('call_from_queue', { p_id: joined.data.id }), 'P0002', 'They\'re no longer in the queue.');
+    await rahman.rpc('remove_from_queue', { p_id: joined.data.id });
+    await refused(
+      rahman.rpc('start_from_queue', { p_id: joined.data.id, p_barber_id: aliChair }),
+      'P0002',
+      'They\'re no longer in the queue.',
+    );
+
+    // Ali calls Hakim: it's his turn, and Farid moves up to fourth.
+    const called = await ali.rpc('call_from_queue', { p_id: joined.data.id });
+    assert.deepEqual([called.error, called.data.state, called.data.called_at], [null, 'called', new Date(at).toISOString()]);
+    const turn = (await status(hakim)).mine!;
+    assert.deepEqual([turn.state, turn.place, turn.estimate_min], ['called', null, null]);
+    assert.equal((await status(farid)).mine!.place, 4);
+
+    // Starting his cut: Ali is still on Ravi's, and a skin fade with Danial
+    // would run into Aiman's 4:00. Each says when, in the detail too.
+    const start = (id: string, barberId: string, serviceId: string | null = null) =>
+      ali.rpc('start_from_queue', { p_id: id, p_barber_id: barberId, p_service_id: serviceId });
+    const ravisCut = tables().bookings.find(
+      (b) => b.barber_id === aliChair && Date.parse(String(b.starts_at)) === at - 20 * 60_000,
+    )!;
+    const busy = await start(joined.data.id, aliChair);
+    assert.deepEqual(
+      [busy.error?.code, busy.error?.message, busy.error?.details],
+      ['P0001', 'Ali is busy until 3:45 pm. Pick another barber.', ravisCut.ends_at],
+    );
+    const before = await start(joined.data.id, danial);
+    assert.deepEqual(
+      [before.error?.message, Date.parse(String(before.error?.details)) - at],
+      ['Danial has a 4:00 pm booking before this cut would finish. Pick another barber.', 40 * 60_000],
+    );
+    await refused(start(joined.data.id, tables().barbers.find((b) => b.shop_id === kemas.id)!.id as string), 'P0002', 'Barber not found.');
+
+    // Encik Hisham's haircut fits Danial before 4:00, as a booking from now.
+    const hisham = (await list())[0];
+    const cut = await start(hisham.id as string, danial);
+    assert.equal(cut.error, null);
+    assert.deepEqual(
+      [cut.data.guest_name, cut.data.guest_phone, cut.data.customer_id, cut.data.service_name, cut.data.price],
+      ['Encik Hisham', '012-667 4410', null, 'Haircut', 20],
+    );
+    assert.deepEqual([cut.data.starts_at, cut.data.ends_at], [new Date(at).toISOString(), new Date(at + 30 * 60_000).toISOString()]);
+    await refused(start(hisham.id as string, aliChair), 'P0002', 'They\'re no longer in the queue.');
+    const served = tables().queue_entries.find((e) => e.id === hisham.id)!;
+    assert.deepEqual([served.state, served.gone_reason, served.booking_id], ['gone', 'served', cut.data.id]);
+
+    // Later, once Ravi's fade is done, Hakim's starts with Ali and is his booking.
+    setClock(() => at + 26 * 60_000);
+    const his = await start(joined.data.id, aliChair);
+    assert.equal(his.error, null);
+    assert.deepEqual(
+      [his.data.customer_id, his.data.guest_name, his.data.service_name, his.data.starts_at],
+      [tables().users.find((u) => u.email === DEMO_CUSTOMER_EMAIL)!.id, null, 'Skin fade', new Date(at + 26 * 60_000).toISOString()],
+    );
+    assert.deepEqual((await hakim.rpc('my_queue')).data, []);
+    assert.equal((await status(hakim)).mine, null);
+    const { data: his2 } = await hakim.rpc('my_bookings');
+    assert.ok((his2.bookings as Row[]).some((b) => b.id === his.data.id));
+
+    // A service when they said none; Not here; Leave; taken off while waiting.
+    const walkIn = await ali.rpc('add_to_queue', { p_name: '  Pak Long ', p_phone: ' 012-111 2222 ' });
+    assert.deepEqual(
+      [walkIn.data.guest_name, walkIn.data.guest_phone, walkIn.data.service_id, walkIn.data.barber_id],
+      ['Pak Long', '012-111 2222', null, null],
+    );
+    await refused(ali.rpc('add_to_queue', { p_name: '  ' }), '22023', 'Add the customer\'s name.');
+    await refused(ali.rpc('add_to_queue', { p_name: 'X', p_service_id: kemasCut }), 'P0002', 'Service not found.');
+    await refused(start(walkIn.data.id, danial), '22023', 'Pick a service for their cut.');
+    const jasonsPlace = (await list()).find((q) => q.name === 'Jason')!;
+    await ali.rpc('call_from_queue', { p_id: jasonsPlace.id });
+    await ali.rpc('remove_from_queue', { p_id: jasonsPlace.id });
+    assert.equal(tables().queue_entries.find((e) => e.id === jasonsPlace.id)!.gone_reason, 'not_here');
+    const faridsPlace = (await status(farid)).mine!;
+    await hakim.rpc('leave_queue', { p_id: faridsPlace.id });
+    assert.equal((await status(farid)).mine!.id, faridsPlace.id, 'only Farid can leave his place');
+    await farid.rpc('leave_queue', { p_id: faridsPlace.id });
+    assert.equal(tables().queue_entries.find((e) => e.id === faridsPlace.id)!.gone_reason, 'left');
+    await ali.rpc('remove_from_queue', { p_id: walkIn.data.id });
+    assert.equal(tables().queue_entries.find((e) => e.id === walkIn.data.id)!.gone_reason, 'removed');
+    assert.deepEqual((await list()).map((q) => q.name), ['Adik Faris']);
+
+    // Thirty waiting at most, online or added by the shop.
+    for (let n = 0; n < 29; n++) insertRow('queue_entries', { shop_id: shop.id, day, guest_name: `Extra ${n}` });
+    await refused(join(farid, haircut), 'P0001', 'The queue is full for now. Try booking a time instead.');
+    await refused(ali.rpc('add_to_queue', { p_name: 'One more' }), 'P0001', 'The queue is full for now. Try booking a time instead.');
+    tables().queue_entries = tables().queue_entries.filter((e) => !String(e.guest_name).startsWith('Extra'));
+
+    // Closed today: not open, and nobody can join.
+    tables().shop_closures.push({ shop_id: shop.id, day, reason: null });
+    assert.deepEqual([(await status(guest)).open, (await status(guest)).barbers_in], [false, 0]);
+    await refused(join(farid, haircut), 'P0001', 'The queue isn\'t open right now.');
+    tables().shop_closures = [];
+
+    // With the queue off, the shop still sees who is left; Find a barber shows no count.
+    assert.equal((await ali.from('shops').update({ queue_enabled: false }).eq('id', shop.id)).error, null);
+    assert.deepEqual((await list()).map((q) => q.name), ['Adik Faris']);
+    assert.equal(await waitingAt('ali-barber'), null);
+    assert.equal((await status(guest)).open, false);
+    await refused(ali.rpc('add_to_queue', { p_name: 'Pak Long' }), 'P0001', 'Turn on the walk-in queue in My shop first.');
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
+test('a booking at eight or eleven is said with “an”, and a barber not in can’t start a cut', async () => {
+  // A Tuesday at 11:00: Ali has Pak Abu's 11:30, and Danial starts at 11.
+  const { at } = thisWeekOn(2, '11:00');
+  setClock(() => at);
+  try {
+    resetDemo();
+    const ali = await signedIn(DEMO_BARBER_EMAIL);
+    const shop = await shopBySlug(ali, 'ali-barber');
+    const barber = (name: string) => tables().barbers.find((b) => b.shop_id === shop.id && b.name === name)!.id as string;
+    const [first] = (await ali.rpc('shop_queue')).data as Row[];
+    const fade = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Skin fade')!.id;
+    const ok = await ali.rpc('start_from_queue', { p_id: first.id, p_barber_id: barber('Ali'), p_service_id: fade });
+    assert.equal(ok.error?.message, 'Ali has an 11:30 am booking before this cut would finish. Pick another barber.');
+    setClock(() => at - 5 * 60_000);
+    const early = await ali.rpc('start_from_queue', { p_id: first.id, p_barber_id: barber('Danial') });
+    assert.deepEqual([early.error?.code, early.error?.message], ['P0001', 'That barber isn\'t working now. Pick another barber.']);
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
+test('Ali’s sample shop has three in its queue, open whenever he or Danial is in, whatever the day and hour', async () => {
+  try {
+    // Every hour of the day, each on a different weekday in turn.
+    for (let hour = 0; hour < 24; hour++) {
+      const date = addDays(today(), hour % 7);
+      const at = dayBounds(date, TZ).start.getTime() + (hour * 60 + 7) * 60_000;
+      const when = `on ${date} at ${hour}:07`;
+      setClock(() => at);
+      resetDemo();
+      const ali = await signedIn(DEMO_BARBER_EMAIL);
+      const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+      const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+      const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+      const inNow = tables()
+        .barbers.filter((b) => b.shop_id === shop.id)
+        .filter((b) =>
+          tables().working_hours.some(
+            (h) => h.barber_id === b.id && h.weekday === weekday && String(h.opens_at) <= `${String(hour).padStart(2, '0')}:07` &&
+              `${String(hour).padStart(2, '0')}:07` < String(h.closes_at),
+          ),
+        );
+      const { data: status } = await hakim.rpc('queue_status', { p_shop_id: shop.id });
+      assert.deepEqual([status.open, status.waiting, status.barbers_in], [inNow.length > 0, 3, inNow.length], when);
+      const queue = (await ali.rpc('shop_queue')).data as Row[];
+      assert.deepEqual(queue.map((q) => q.name), ['Encik Hisham', 'Jason', 'Adik Faris'], when);
+      // Anyone asked for works that day.
+      for (const q of queue.filter((q) => q.barber_id != null)) {
+        assert.ok(tables().working_hours.some((h) => h.barber_id === q.barber_id && h.weekday === weekday), `${q.name} ${when}`);
+      }
+      // Hakim can join while it is open.
+      const haircut = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!;
+      const joined = await hakim.rpc('join_queue', { p_service_id: haircut.id });
+      assert.equal(joined.error?.message ?? null, inNow.length > 0 ? null : 'The queue isn\'t open right now.', when);
+    }
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
+test('opened on a later day, yesterday’s queue is over and today’s sample queue takes its place', async () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  const { at } = thisWeekOn(2, '15:20');
+  setClock(() => at);
+  try {
+    resetDemo();
+    const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+    const ali = await signedIn(DEMO_BARBER_EMAIL);
+    const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+    const haircut = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!;
+    assert.equal((await hakim.rpc('join_queue', { p_service_id: haircut.id })).error, null);
+    const [first] = (await ali.rpc('shop_queue')).data as Row[];
+    await ali.rpc('remove_from_queue', { p_id: first.id });
+
+    // Later the same day, it is as it was left.
+    reloadTables();
+    assert.deepEqual(((await ali.rpc('shop_queue')).data as Row[]).map((q) => q.name), ['Jason', 'Adik Faris', 'Hakim']);
+
+    // The next day, Hakim's place is gone and the sample's three wait again.
+    setClock(() => at + 86_400_000);
+    reloadTables();
+    const tomorrow = localDateString(new Date(at + 86_400_000), TZ);
+    assert.deepEqual(((await ali.rpc('shop_queue')).data as Row[]).map((q) => q.name), ['Encik Hisham', 'Jason', 'Adik Faris']);
+    assert.ok(tables().queue_entries.every((e) => e.day === tomorrow));
+    assert.deepEqual((await hakim.rpc('my_queue')).data, []);
+
+    // A shop that turned its queue off gets none.
+    assert.equal((await ali.from('shops').update({ queue_enabled: false }).eq('id', shop.id)).error, null);
+    setClock(() => at + 2 * 86_400_000);
+    reloadTables();
+    assert.deepEqual(tables().queue_entries, []);
+
+    // A demo saved before the queue came in gets it, with Ali's switched on.
+    const [key, json] = [...saved.entries()].find(([k]) => k === 'potongku.demo.v1')!;
+    const old = JSON.parse(json);
+    delete old.tables.queue_entries;
+    for (const s of old.tables.shops) delete s.queue_enabled;
+    saved.set(key, JSON.stringify(old));
+    reloadTables();
+    assert.equal(tables().shops.find((s) => s.id === shop.id)!.queue_enabled, true);
+    assert.equal(tables().shops.filter((s) => s.queue_enabled === true).length, 1);
+    assert.deepEqual(((await ali.rpc('shop_queue')).data as Row[]).map((q) => q.name), ['Encik Hisham', 'Jason', 'Adik Faris']);
+  } finally {
+    setClock(() => Date.now());
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});

@@ -8,6 +8,7 @@ import { AccountPanel } from '@/components/account-panel';
 import { ClosedDaysCard } from '@/components/closed-days-card';
 import { CustomersCard } from '@/components/customers-card';
 import { KeepLiveButton } from '@/components/keep-live-button';
+import { QueueSwitchCard } from '@/components/queue-switch-card';
 import { ReadyCard } from '@/components/ready-card';
 import { ReviewsCard } from '@/components/reviews-card';
 import { ShopForm } from '@/components/shop-form';
@@ -294,6 +295,8 @@ export default function MyShop() {
       <ReviewsCard reviews={cards.reviews} />
 
       <ClosedDaysCard days={cards.closures} loadError={cards.error} savedAt={cards.savedAt} reload={cards.reload} />
+
+      <QueueSwitchCard shop={shop} onChanged={reload} />
 
       <View ref={linkRef}>
         <Card>

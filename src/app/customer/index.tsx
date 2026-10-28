@@ -27,6 +27,7 @@ import {
   setNearMePosition,
   type LocateProblem,
 } from '@/lib/near-me';
+import { queueCount } from '@/lib/queue';
 import { rememberShop } from '@/lib/shop-preview';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice, localDateString } from '@/lib/time';
@@ -45,6 +46,8 @@ type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'abo
   rating_avg: number | null;
   /** How far the shop is with Near me on; null without it, or when the shop hasn't set its location. */
   distance_km: number | null;
+  /** How many wait in its walk-in queue today; null (or missing, in a list kept from before) without one. */
+  queue_waiting?: number | null;
 };
 type Area = { area: string; shops: number };
 /**
@@ -480,9 +483,17 @@ export default function Explore() {
                 ) : null}
               </Row>
               {openNow ? (
-                <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
-                  {openNow.label}
-                </T>
+                <Row>
+                  <T variant="label" style={{ color: openNow.state === 'open' ? theme.success : theme.textSecondary }}>
+                    {openNow.label}
+                  </T>
+                  {/* A shop taking walk-ins in turn says how long its queue is while it is open. */}
+                  {openNow.state === 'open' && shop.queue_waiting != null ? (
+                    <T variant="small" accessibilityLabel={t('Walk-in queue: {count}', { count: queueCount(shop.queue_waiting) })}>
+                      {queueCount(shop.queue_waiting)}
+                    </T>
+                  ) : null}
+                </Row>
               ) : null}
               {nextFree ? (
                 <T variant="small" style={nextFree.soon ? { color: theme.success } : undefined}>

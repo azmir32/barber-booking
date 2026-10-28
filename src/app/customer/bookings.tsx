@@ -18,10 +18,11 @@ import { confirmAction } from '@/lib/confirm';
 import { t } from '@/lib/lang';
 import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
+import { placeLine, QUEUE_POLL_MS, queuedFor, type MyQueue } from '@/lib/queue';
 import { canRate, rateUntil, starsLabel, type MyReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { useBigText } from '@/lib/text-size-provider';
-import { formatDay, formatPrice, formatTime, noBreak } from '@/lib/time';
+import { formatDay, formatPrice, formatTime, localDateString, noBreak } from '@/lib/time';
 import type { Booking } from '@/lib/types';
 import { openRequests, requestService, type MyWaiting } from '@/lib/waitlist';
 
@@ -69,6 +70,10 @@ function MyBookings() {
   const [waits, setWaits] = useState<MyWaiting[]>(
     () => (session ? appCache.peek<MyWaiting[]>(cacheKey(session.user.id, 'my-waitlist'))?.data : null) ?? [],
   );
+  // Their place in a walk-in queue today, if any, kept and asked for alongside, then every 30 seconds.
+  const [queue, setQueue] = useState<MyQueue[]>(
+    () => (session ? appCache.peek<MyQueue[]>(cacheKey(session.user.id, 'my-queue'))?.data : null) ?? [],
+  );
   // Set once there is a list, so a load that failed never reads as "No bookings yet".
   const [loaded, setLoaded] = useState(Boolean(kept));
   // When the server gave the list on screen, and whether that was before this visit.
@@ -92,12 +97,15 @@ function MyBookings() {
   const load = useCallback(async () => {
     if (!session) return setLoading(false);
     setLoading(true);
-    // One request: the bookings and the days they're waiting on come together.
+    // One request: the bookings, the days they're waiting on and their place in a walk-in queue come together.
     const { data, error } = await supabase.rpc('my_bookings');
     setLoading(false);
-    // A refresh that fails keeps the bookings and requests already on screen.
+    // A refresh that fails keeps the bookings, requests and place already on screen.
     if (error) return setRefreshError(errorMessage(error));
-    const mine = (data ?? {}) as { bookings?: MyBooking[]; waitlist?: MyWaiting[] };
+    const mine = (data ?? {}) as { bookings?: MyBooking[]; waitlist?: MyWaiting[]; queue?: MyQueue[] };
+    const queued = mine.queue ?? [];
+    setQueue(queued);
+    appCache.write(cacheKey(session.user.id, 'my-queue'), queued);
     const waiting = mine.waitlist ?? [];
     setWaits(waiting);
     appCache.write(cacheKey(session.user.id, 'my-waitlist'), waiting);
@@ -118,6 +126,24 @@ function MyBookings() {
     useCallback(() => {
       load();
     }, [load]),
+  );
+
+  /** Just their place in the queue: one small request. */
+  const loadQueue = useCallback(async () => {
+    if (!session) return;
+    const { data, error } = await supabase.rpc('my_queue');
+    if (error) return;
+    setQueue((data ?? []) as MyQueue[]);
+    appCache.write(cacheKey(session.user.id, 'my-queue'), data ?? []);
+  }, [session]);
+  // While they wait, their place is asked for every 30 seconds with the screen in front.
+  const inQueue = queue.length > 0;
+  useFocusEffect(
+    useCallback(() => {
+      if (!inQueue) return;
+      const id = setInterval(loadQueue, QUEUE_POLL_MS);
+      return () => clearInterval(id);
+    }, [inQueue, loadQueue]),
   );
 
   if (!session) {
@@ -150,6 +176,10 @@ function MyBookings() {
   const past = bookings.filter((b) => !upcoming.includes(b) && !cancelledAhead.includes(b));
   // Gone once the day has passed or they have booked that day at that shop, even on last visit's list.
   const waiting = openRequests(waits, bookings, now);
+  // A place kept from a day gone by is over, even on last visit's list.
+  const places = queue.filter(
+    (q) => localDateString(new Date(q.created_at), q.shop.time_zone) === localDateString(new Date(now), q.shop.time_zone),
+  );
   // Done in the last 14 days and not rated yet: asked about on their own, above the rest.
   const toRate = past.filter((b) => canRate(b, now) && (!b.review || justRated.has(b.id)));
   const earlier = past.filter((b) => !toRate.includes(b));
@@ -199,6 +229,15 @@ function MyBookings() {
         ...(w.barber_id ? { barber: w.barber_id } : {}),
       },
     });
+  }
+
+  async function leaveQueue(q: MyQueue) {
+    const ok = await confirmAction(t('Leave the queue?'), t('If you join again, you go to the end of it.'), t('Leave'));
+    if (!ok) return;
+    const { error } = await supabase.rpc('leave_queue', { p_id: q.id });
+    if (error) return setError(errorMessage(error));
+    setError(null);
+    loadQueue();
   }
 
   async function leave(w: MyWaiting) {
@@ -320,10 +359,56 @@ function MyBookings() {
         ) : (
           <BookingsSkeleton />
         )
-      ) : bookings.length === 0 && waiting.length === 0 ? (
+      ) : bookings.length === 0 && waiting.length === 0 && places.length === 0 ? (
         <Empty title={t('No bookings yet')} body={t('Find a barber and grab a slot.')}>
           <Button title={t('Find a barber')} onPress={() => router.push('/customer')} />
         </Empty>
+      ) : null}
+
+      {places.length ? (
+        <Section title={t('Walk-in queue')}>
+          {places.map((q) => {
+            const called = q.state === 'called';
+            return (
+              <Card key={q.id} style={called ? { borderColor: theme.success, borderWidth: 2 } : undefined}>
+                {/* Read out when it changes, as the place moves up while the screen is open. */}
+                <T
+                  variant="heading"
+                  role="status"
+                  accessibilityLiveRegion="polite"
+                  style={called ? { color: theme.success } : undefined}>
+                  {called ? t('It’s your turn. Head to the shop now.') : placeLine(q)}
+                </T>
+                {q.service_name ? <T>{queuedFor(q)}</T> : null}
+                <T variant="muted">
+                  {q.shop.name}
+                  {q.shop.address ? ` · ${q.shop.address}` : ''}
+                </T>
+                <View style={styles.actions}>
+                  <Button
+                    title={t('See the shop')}
+                    variant="secondary"
+                    style={big ? styles.wholeAction : styles.action}
+                    accessibilityLabel={t('See {shop}', { shop: q.shop.name })}
+                    onPress={() =>
+                      router.push({ pathname: '/shop/[slug]', params: { slug: q.shop.slug, name: q.shop.name } })
+                    }
+                  />
+                  {/* Waits for the server's answer: the place on last visit's list may be over. */}
+                  <Button
+                    title={t('Leave')}
+                    variant="secondary"
+                    tone="danger"
+                    style={big ? styles.wholeAction : styles.action}
+                    accessibilityLabel={t('Leave the queue at {shop}', { shop: q.shop.name })}
+                    onPress={() => leaveQueue(q)}
+                    {...hold}
+                  />
+                </View>
+              </Card>
+            );
+          })}
+        </Section>
       ) : null}
 
       {waiting.length ? (
