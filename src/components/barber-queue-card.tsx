@@ -18,6 +18,7 @@ import {
   clashFor,
   firstFree,
   freeText,
+  nextInToday,
   queuedFor,
   queuedStatus,
   startError,
@@ -25,7 +26,7 @@ import {
 } from '@/lib/queue';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { useBigText } from '@/lib/text-size-provider';
-import { formatDuration, formatPrice } from '@/lib/time';
+import { formatDuration, formatPrice, noBreak } from '@/lib/time';
 import type { Barber, Booking, Service, WorkingHours } from '@/lib/types';
 
 type DayBarber = Pick<Barber, 'id' | 'name' | 'is_active'> & {
@@ -72,6 +73,10 @@ export function BarberQueueCard({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ id: string | null; message: string } | null>(null);
   const inNow = barbersInNow(barbers, bookings, now, tz, closed);
+  // Start can take anyone working today: those in now come first, and past
+  // closing (or with everyone on a break) the rest serve who is left.
+  const today = barbersInNow(barbers, bookings, now, tz, closed, true);
+  const pool = inNow.length ? inNow : today;
 
   const nameOf = (q: Queued) => q.name || t('Customer');
 
@@ -111,11 +116,11 @@ export function BarberQueueCard({
         });
     }
     const minutes = q.duration_min ?? 30;
-    setPicking({ id: q.id, barberId: firstFree(inNow, q.barber_id, minutes, bookings, now)?.id ?? null, serviceId: null });
+    setPicking({ id: q.id, barberId: firstFree(pool, q.barber_id, minutes, bookings, now)?.id ?? null, serviceId: null });
   }
 
   async function start(q: Queued, pick: Picking) {
-    const barber = inNow.find((b) => b.id === pick.barberId);
+    const barber = today.find((b) => b.id === pick.barberId);
     if (!barber) return;
     setBusy(q.id);
     setError(null);
@@ -242,7 +247,7 @@ export function BarberQueueCard({
                                 ...open,
                                 serviceId: s.id,
                                 // A longer cut may no longer fit the barber picked first.
-                                barberId: firstFree(inNow, q.barber_id, s.duration_min, bookings, now)?.id ?? null,
+                                barberId: firstFree(pool, q.barber_id, s.duration_min, bookings, now)?.id ?? null,
                               })
                             }
                           />
@@ -253,20 +258,28 @@ export function BarberQueueCard({
                 )}
                 <View style={styles.pickGroup}>
                   <T variant="label">{t('Barber')}</T>
-                  {inNow.length ? (
+                  {today.length ? (
                     <Row role="radiogroup" accessibilityLabel={t('Barber')}>
-                      {inNow.map((b) => (
-                        <Chip
-                          key={b.id}
-                          label={b.name}
-                          sublabel={freeText(clashFor(b.id, minutes, bookings, now), now, tz)}
-                          selected={open.barberId === b.id}
-                          onPress={() => setPicking({ ...open, barberId: b.id })}
-                        />
-                      ))}
+                      {today.map((b) => {
+                        // Someone on a break or not started yet says when they are in.
+                        const back = inNow.includes(b) ? null : nextInToday([b], now, tz);
+                        return (
+                          <Chip
+                            key={b.id}
+                            label={b.name}
+                            sublabel={
+                              back
+                                ? t('In from {time}', { time: noBreak(back.time) })
+                                : freeText(clashFor(b.id, minutes, bookings, now), now, tz)
+                            }
+                            selected={open.barberId === b.id}
+                            onPress={() => setPicking({ ...open, barberId: b.id })}
+                          />
+                        );
+                      })}
                     </Row>
                   ) : (
-                    <T variant="small">{t('Nobody is working now.')}</T>
+                    <T variant="small">{t('Nobody is working today.')}</T>
                   )}
                 </View>
                 <ErrorText message={rowError} />

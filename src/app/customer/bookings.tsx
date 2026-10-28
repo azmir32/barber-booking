@@ -136,8 +136,9 @@ function MyBookings() {
     setQueue((data ?? []) as MyQueue[]);
     appCache.write(cacheKey(session.user.id, 'my-queue'), data ?? []);
   }, [session]);
-  // While they wait, their place is asked for every 30 seconds with the screen in front.
-  const inQueue = queue.length > 0;
+  // While they wait, their place is asked for every 30 seconds with the screen in front;
+  // not for a place the shop took off, which only says so.
+  const inQueue = queue.some((q) => q.state !== 'gone');
   useFocusEffect(
     useCallback(() => {
       if (!inQueue) return;
@@ -369,15 +370,31 @@ function MyBookings() {
         <Section title={t('Walk-in queue')}>
           {places.map((q) => {
             const called = q.state === 'called';
+            const takenOff = q.state === 'gone';
+            const seeShop = (
+              <Button
+                title={t('See the shop')}
+                variant="secondary"
+                style={big ? styles.wholeAction : styles.action}
+                accessibilityLabel={t('See {shop}', { shop: q.shop.name })}
+                onPress={() => router.push({ pathname: '/shop/[slug]', params: { slug: q.shop.slug, name: q.shop.name } })}
+              />
+            );
             return (
-              <Card key={q.id} style={called ? { borderColor: theme.success, borderWidth: 2 } : undefined}>
+              <Card
+                key={q.id}
+                style={called ? { borderColor: theme.success, borderWidth: 2 } : undefined}>
                 {/* Read out when it changes, as the place moves up while the screen is open. */}
                 <T
                   variant="heading"
                   role="status"
                   accessibilityLiveRegion="polite"
-                  style={called ? { color: theme.success } : undefined}>
-                  {called ? t('It’s your turn. Head to the shop now.') : placeLine(q)}
+                  style={called ? { color: theme.success } : takenOff ? { color: theme.danger } : undefined}>
+                  {called
+                    ? t('It’s your turn. Head to the shop now.')
+                    : takenOff
+                      ? t('The shop took you off the queue. Message them if you’re on your way.')
+                      : placeLine(q)}
                 </T>
                 {q.service_name ? <T>{queuedFor(q)}</T> : null}
                 <T variant="muted">
@@ -385,25 +402,50 @@ function MyBookings() {
                   {q.shop.address ? ` · ${q.shop.address}` : ''}
                 </T>
                 <View style={styles.actions}>
-                  <Button
-                    title={t('See the shop')}
-                    variant="secondary"
-                    style={big ? styles.wholeAction : styles.action}
-                    accessibilityLabel={t('See {shop}', { shop: q.shop.name })}
-                    onPress={() =>
-                      router.push({ pathname: '/shop/[slug]', params: { slug: q.shop.slug, name: q.shop.name } })
-                    }
-                  />
+                  {called ? (
+                    <Button
+                      title={t('Directions')}
+                      variant="secondary"
+                      style={big ? styles.wholeAction : styles.action}
+                      accessibilityLabel={t('Directions to {shop}', { shop: q.shop.name })}
+                      onPress={() => Linking.openURL(directionsUrl(q.shop))}
+                    />
+                  ) : null}
+                  {takenOff && q.shop.phone ? (
+                    <Button
+                      title={t('WhatsApp the shop')}
+                      icon="logo-whatsapp"
+                      iconColor={theme.success}
+                      variant="secondary"
+                      style={big ? styles.wholeAction : styles.action}
+                      onPress={() =>
+                        Linking.openURL(
+                          whatsappUrl(
+                            q.shop.phone!,
+                            profile?.full_name
+                              ? t('Hi {shop}, this is {name}. I was in your walk-in queue today.', {
+                                  shop: q.shop.name,
+                                  name: profile.full_name,
+                                })
+                              : undefined,
+                          ),
+                        )
+                      }
+                    />
+                  ) : null}
+                  {seeShop}
                   {/* Waits for the server's answer: the place on last visit's list may be over. */}
-                  <Button
-                    title={t('Leave')}
-                    variant="secondary"
-                    tone="danger"
-                    style={big ? styles.wholeAction : styles.action}
-                    accessibilityLabel={t('Leave the queue at {shop}', { shop: q.shop.name })}
-                    onPress={() => leaveQueue(q)}
-                    {...hold}
-                  />
+                  {takenOff ? null : (
+                    <Button
+                      title={t('Leave')}
+                      variant="secondary"
+                      tone="danger"
+                      style={big ? styles.wholeAction : styles.action}
+                      accessibilityLabel={t('Leave the queue at {shop}', { shop: q.shop.name })}
+                      onPress={() => leaveQueue(q)}
+                      {...hold}
+                    />
+                  )}
                 </View>
               </Card>
             );

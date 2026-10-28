@@ -5,7 +5,7 @@
 // barber can take someone now.
 
 import { getLang, t } from './lang.ts';
-import { dayBounds, formatDuration, formatTime, localDateString, noBreak } from './time.ts';
+import { clockLabel, dayBounds, formatDuration, formatTime, localDateString, noBreak } from './time.ts';
 import type { Barber, Booking, WorkingHours } from './types.ts';
 
 /** How often a waiting customer's screen asks for their place. */
@@ -14,14 +14,17 @@ export const QUEUE_POLL_MS = 30_000;
 /** The customer's own place in a shop's queue today. */
 export type MyPlace = {
   id: string;
-  state: 'waiting' | 'called';
+  /** Gone: the shop took them off in the last hour, so they are told. */
+  state: 'waiting' | 'called' | 'gone';
+  /** Why it went: not here when called, or taken off while waiting. */
+  gone_reason: 'not_here' | 'removed' | null;
   called_at: string | null;
   service_id: string | null;
   barber_id: string | null;
   created_at: string;
-  /** 1 for next; null once called. */
+  /** 1 for next; null once called or gone. */
   place: number | null;
-  /** About how many minutes until their turn; null once called. */
+  /** About how many minutes until their turn; null once called or gone. */
   estimate_min: number | null;
 };
 
@@ -41,7 +44,17 @@ export type MyQueue = MyPlace & {
   shop_id: string;
   service_name: string | null;
   barber_name: string | null;
-  shop: { name: string; slug: string; time_zone: string; phone: string | null; address: string | null };
+  shop: {
+    name: string;
+    slug: string;
+    time_zone: string;
+    phone: string | null;
+    address: string | null;
+    /** With address and the point the owner set, for Directions. */
+    area: string;
+    latitude: number | null;
+    longitude: number | null;
+  };
 };
 
 /** Someone in the shop's queue today, from shop_queue, in order. */
@@ -144,10 +157,18 @@ const minutesOf = (clock: string) => {
   return h * 60 + m;
 };
 
+/** Today's weekday and the minute of the day now, by the shop's clock. */
+function clockNow(now: number, timeZone: string) {
+  const today = localDateString(new Date(now), timeZone);
+  const midnight = dayBounds(today, timeZone).start.getTime();
+  return { weekday: new Date(`${today}T00:00:00Z`).getUTCDay(), midnight, minute: Math.floor((now - midnight) / 60_000) };
+}
+
 /**
  * The barbers in now, in the team's order, as barbers_in_now has them:
  * active, inside one of today's working ranges, and without the whole day
- * off. `bookings` are today's; a closed day has nobody in.
+ * off. With wholeDay, everyone working today, in now or not, as Start can
+ * take them. `bookings` are today's; a closed day has nobody in.
  */
 export function barbersInNow<B extends InBarber>(
   barbers: B[],
@@ -155,17 +176,17 @@ export function barbersInNow<B extends InBarber>(
   now: number,
   timeZone: string,
   closed = false,
+  wholeDay = false,
 ): B[] {
   if (closed) return [];
-  const today = localDateString(new Date(now), timeZone);
-  const midnight = dayBounds(today, timeZone).start.getTime();
-  const minute = Math.floor((now - midnight) / 60_000);
-  const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
+  const { weekday, minute } = clockNow(now, timeZone);
   return barbers.filter(
     (b) =>
       b.is_active &&
       b.working_hours.some(
-        (h) => h.weekday === weekday && minutesOf(h.opens_at) <= minute && minute < minutesOf(h.closes_at),
+        (h) =>
+          h.weekday === weekday &&
+          (wholeDay || (minutesOf(h.opens_at) <= minute && minute < minutesOf(h.closes_at))),
       ) &&
       !bookings.some(
         (x) =>
@@ -178,9 +199,31 @@ export function barbersInNow<B extends InBarber>(
 }
 
 /**
- * Who Start offers first: the barber they asked for when that barber is in,
- * else the first one in with nothing booked from now until the cut would end.
- * Null when nobody is in.
+ * When the first of these barbers is next in today, after now: the end of a
+ * break, or a later start. Null when none of them is in again today. Breaks
+ * only: like barbersInNow, it doesn't look at days off or bookings.
+ */
+export function nextInToday(
+  barbers: InBarber[],
+  now: number,
+  timeZone: string,
+): { at: number; time: string } | null {
+  const { weekday, midnight, minute } = clockNow(now, timeZone);
+  const starts = barbers
+    .filter((b) => b.is_active)
+    .flatMap((b) => b.working_hours)
+    .filter((h) => h.weekday === weekday && minutesOf(h.opens_at) > minute)
+    .map((h) => minutesOf(h.opens_at));
+  if (starts.length === 0) return null;
+  const first = Math.min(...starts);
+  return { at: midnight + first * 60_000, time: clockLabel(Math.floor(first / 60), first % 60) };
+}
+
+/**
+ * Who Start offers first, from those it can pick (the barbers in now, or
+ * past closing everyone working today): the barber they asked for, else the
+ * first one with nothing booked from now until the cut would end. Null when
+ * there is nobody to pick.
  */
 export function firstFree<B extends Pick<Barber, 'id'>>(
   inNow: B[],

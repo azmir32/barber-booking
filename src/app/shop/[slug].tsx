@@ -131,6 +131,11 @@ export default function ShopPage() {
       active = false;
     };
   }, [shopId, todayDate, reload]);
+  // Barbers with the whole of today off, whom the walk-in queue can't offer.
+  const offToday = useMemo(
+    () => new Set(barbers.filter((b) => shutDays.barbers.has(`${todayDate}|${b.id}`)).map((b) => b.id)),
+    [barbers, shutDays, todayDate],
+  );
   // Who is in on a day: working that weekday and without the whole day off.
   const barbersIn = useCallback(
     (date: string) => {
@@ -907,6 +912,7 @@ export default function ShopPage() {
                 shop={shop}
                 services={services}
                 barbers={barbers}
+                offToday={offToday}
                 serviceId={serviceId}
                 likelyOpen={openNow?.state === 'open'}
                 now={now}

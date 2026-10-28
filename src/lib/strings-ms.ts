@@ -1205,7 +1205,6 @@ export const ms: Record<string, string> = {
   'Start the cut': 'Mulakan potongan',
   'Busy until {time}': 'Sibuk hingga {time}',
   'Booked {time}': 'Ada tempahan jam {time}',
-  'Nobody is working now.': 'Tiada sesiapa bekerja sekarang.',
   '{name} is in {barber}’s chair.': '{name} di kerusi {barber}.',
   'Not here': 'Tiada di sini',
   'Take {name} off the queue': 'Keluarkan {name} daripada barisan',
@@ -1230,4 +1229,13 @@ export const ms: Record<string, string> = {
   "That barber isn't working today. Pick another barber.": 'Barber itu tidak bekerja hari ini. Pilih barber lain.',
   'You can join this queue 5 times a day. Book a time instead.':
     'Anda boleh sertai barisan ini 5 kali sehari. Tempah masa sahaja.',
+  'Couldn’t load the queue. {reason}': 'Tidak dapat memuatkan barisan. {reason}',
+  'On a break until {time}. Join the queue then.': 'Rehat hingga {time}. Sertai barisan selepas itu.',
+  'The shop took you off the queue. Message them if you’re on your way.':
+    'Kedai telah keluarkan anda daripada barisan. Hantar mesej kepada mereka jika anda dalam perjalanan.',
+  'Hi {shop}, this is {name}. I was in your walk-in queue today.':
+    'Hai {shop}, saya {name}. Saya dalam barisan walk-in anda hari ini.',
+  'Directions to {shop}': 'Arah ke {shop}',
+  'In from {time}': 'Masuk {time}',
+  'Nobody is working today.': 'Tiada sesiapa bekerja hari ini.',
 };

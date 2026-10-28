@@ -1838,6 +1838,7 @@ test('Hakim joins Ali’s walk-in queue and watches his place, then Ali calls hi
   await button(app, 'See the customer side').click();
   await app.getByRole('tab', { name: /My bookings/ }).click();
   await expect(app.getByText('It’s your turn. Head to the shop now.')).toBeVisible();
+  await expect(button(app, 'Directions to Ali Barber Sungai Chua')).toBeVisible();
   await snap(page, 'demo-55-queue-turn');
   await button(app, 'See Ali Barber Sungai Chua').click();
   await expect(app.getByRole('status').filter({ hasText: 'It’s your turn. Head to the shop now.' })).toBeVisible();
@@ -1861,6 +1862,46 @@ test('Hakim joins Ali’s walk-in queue and watches his place, then Ali calls hi
   await app.getByRole('tab', { name: /My bookings/ }).click();
   await expect(app.getByText(/^Skin fade with Ali · RM25$/).first()).toBeVisible();
   await expect(app.getByRole('heading', { name: 'Walk-in queue', exact: true })).toHaveCount(0);
+});
+
+test('Hakim is told when Ali takes him off the queue, can message the shop and join again', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await queueOpenNow(page);
+  await page.reload();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  const haircut = () =>
+    app.getByRole('radiogroup', { name: 'Service' }).first().getByRole('radio', { name: /^Haircut 30/ }).click();
+  await button(app, 'Join the queue').click();
+  await haircut();
+  await button(app, 'Join the queue').click();
+  await expect(app.getByRole('status').filter({ hasText: /^You’re 4th in the queue/ })).toBeVisible();
+
+  // Ali takes him off while he waits.
+  await app.getByLabel('Go back').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await button(app, 'See the barber side').click();
+  await button(app, 'Take Hakim off the queue').click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Not here', exact: true }).click();
+  await expect(app.getByRole('heading', { name: 'Queue (3)', exact: true })).toBeVisible();
+
+  // His My bookings and the shop's page say so, rather than just offering the queue again.
+  const told = 'The shop took you off the queue. Message them if you’re on your way.';
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await app.getByRole('tab', { name: /My bookings/ }).click();
+  await expect(app.getByRole('status').filter({ hasText: told })).toBeVisible();
+  await expect(button(app, 'WhatsApp the shop').first()).toBeVisible();
+  await expect(button(app, 'Leave the queue at Ali Barber Sungai Chua')).toHaveCount(0);
+  await snap(page, 'demo-57-queue-taken-off');
+  await button(app, 'See Ali Barber Sungai Chua').click();
+  await expect(app.getByRole('status').filter({ hasText: told })).toBeVisible();
+  await button(app, 'Join the queue').click();
+  await haircut();
+  await button(app, 'Join the queue').click();
+  await expect(app.getByRole('status').filter({ hasText: /^You’re 4th in the queue/ })).toBeVisible();
+  await expect(app.getByText(told)).toHaveCount(0);
 });
 
 test('with the largest text on a small phone, the walk-in queue fits on both sides and says what changes', async ({

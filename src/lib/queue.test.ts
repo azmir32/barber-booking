@@ -10,6 +10,7 @@ import {
   clashFor,
   firstFree,
   freeText,
+  nextInToday,
   placeText,
   placeWords,
   queueCount,
@@ -120,6 +121,28 @@ test('barbers in now are inside a working range today, active and without the da
   assert.deepEqual(barbersInNow(team, [dayOff], later, TZ).map((b) => b.id), ['danial']);
   assert.deepEqual(barbersInNow(team, [], later, TZ, true), [], 'a closed day has nobody in');
   assert.deepEqual(barbersInNow(team, [], Date.parse('2026-10-07T15:30:00+08:00'), TZ), [], 'nobody works Wednesdays here');
+});
+
+test('Start can take anyone working today, in now or not: on a break, before starting, or past closing', () => {
+  const team = [ali, danial, away];
+  const whole = (at: number, bookings: Parameters<typeof barbersInNow>[1] = []) =>
+    barbersInNow(team, bookings, at, TZ, false, true).map((b) => b.id);
+  assert.deepEqual(whole(now), ['ali', 'danial'], 'Danial is on his break, but works today');
+  assert.deepEqual(whole(Date.parse('2026-10-06T09:30:00+08:00')), ['ali', 'danial'], 'before opening');
+  assert.deepEqual(whole(Date.parse('2026-10-06T21:30:00+08:00')), ['ali', 'danial'], 'past closing');
+  const dayOff = { ...booked('danial', '00:00', '00:00'), ends_at: new Date(Date.parse(kajang('00:00')) + 86_400_000).toISOString(), is_block: true };
+  assert.deepEqual(whole(now, [dayOff]), ['ali'], 'not with the day off');
+  assert.deepEqual(barbersInNow(team, [], now, TZ, true, true), [], 'nor on a closed day');
+  assert.deepEqual(whole(Date.parse('2026-10-07T15:30:00+08:00')), [], 'nor on a day they don’t work');
+});
+
+test('when someone is next in today: the end of a break, or a later start', () => {
+  // 3:20 pm: Danial is on his break until 3:30.
+  assert.deepEqual(nextInToday([ali, danial], now, TZ), { at: Date.parse('2026-10-06T15:30:00+08:00'), time: '3:30 pm' });
+  assert.deepEqual(nextInToday([danial], Date.parse('2026-10-06T09:00:00+08:00'), TZ)?.time, '11:00 am');
+  assert.equal(nextInToday([ali, danial], Date.parse('2026-10-06T15:30:00+08:00'), TZ), null, 'nobody starts again today');
+  assert.equal(nextInToday([{ ...danial, is_active: false }], now, TZ), null);
+  inMalay(() => assert.equal(nextInToday([danial], now, TZ)?.time, '3.30 petang'));
 });
 
 test('Start offers the barber asked for, else the first one free until the cut would end', () => {
