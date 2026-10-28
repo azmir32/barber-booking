@@ -1901,6 +1901,9 @@ test('Hakim is told when Ali takes him off the queue, can message the shop and j
   await haircut();
   await button(app, 'Join the queue').click();
   await expect(app.getByRole('status').filter({ hasText: /^You’re 4th in the queue/ })).toBeVisible();
+  // Back in My bookings, his new place has taken the notice's.
+  await app.getByLabel('Go back').click();
+  await expect(app.getByText(/^You’re 4th in the queue · about \d+\smin$/)).toBeVisible();
   await expect(app.getByText(told)).toHaveCount(0);
 });
 

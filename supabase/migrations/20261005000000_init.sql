@@ -2963,7 +2963,8 @@ begin
     where e.customer_id = (select auth.uid())
       and e.day between current_date - 1 and current_date + 1
       and e.day = (now() at time zone s.time_zone)::date
-      and (e.state <> 'gone' or e.gone_reason in ('removed', 'not_here') and e.gone_at > now() - public.queue_taken_off_shown())
+      and (e.state <> 'gone'
+           or (e.gone_reason in ('removed', 'not_here') and e.gone_at > now() - public.queue_taken_off_shown()))
   ) mine
   join shops s on s.id = mine.shop_id
   cross join lateral (select public.queue_status(s.id) -> 'mine' as mine) q
