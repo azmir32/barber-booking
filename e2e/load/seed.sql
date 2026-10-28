@@ -157,5 +157,20 @@ select md5('shop' || i)::uuid, (now() at time zone 'Asia/Kuala_Lumpur')::date,
        now() - (6 - n) * interval '7 minutes'
 from generate_series(3, :shops, 3) i, generate_series(0, 5) n;
 
+\echo › photos of cuts
+-- Two shops in three show photos of their cuts, from 4 to 24 each, most
+-- tagged with the barber who did it. Only the rows: the files would be in
+-- Supabase Storage, which the load test doesn't reach.
+insert into public.shop_photos (shop_id, barber_id, caption, path, thumb_path, width, height)
+select md5('shop' || i)::uuid,
+       case when n % 4 <> 0 then md5('barber' || i || '-' || (1 + n % 3))::uuid end,
+       case when n % 2 = 0 then (array['Skin fade', 'Low taper', 'Beard trim', 'Kids cut'])[1 + n % 4] end,
+       md5('shop' || i)::uuid || '/' || md5('photo' || i || '-' || n) || '.jpg',
+       md5('shop' || i)::uuid || '/' || md5('photo' || i || '-' || n) || '-thumb.jpg',
+       1200, 1600
+from generate_series(1, :shops) i,
+     lateral generate_series(1, 4 + (i * 5) % 21) n
+where i % 3 <> 0;
+
 analyze;
 \echo › done

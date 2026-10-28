@@ -124,6 +124,17 @@ const SCENARIOS = {
           .order('booking_id')
           .range(0, 3),
       ),
+      // Photos of the shop's cuts, for the strip above the booking steps (two shops in three have some).
+      must(
+        anon
+          .from('shop_photos')
+          .select('id, barber_id, caption, path, thumb_path, width, height, sort_order')
+          .eq('shop_id', shop.data.id)
+          .order('sort_order')
+          .order('created_at')
+          .order('id')
+          .limit(24),
+      ),
     ]);
     return shop;
   },

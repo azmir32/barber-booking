@@ -4327,6 +4327,322 @@ do $$ begin
 end $$;
 rollback;
 
+-- Photos of the shop's cuts -----------------------------------------------------
+-- The owner puts each photo and its thumbnail in the shop's folder of the
+-- shop-photos bucket, then lists it with who did the cut and a caption.
+-- Anyone sees a live shop's photos, first first; only the owner writes them,
+-- and a shop keeps at most 24. Rahman owns a second shop for this part only.
+begin;
+reset role;
+update shops set is_published = true, subscription_status = 'active' where id = '00000000-0000-0000-0000-00000000005a';
+update barbers set is_active = true where shop_id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts');
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a3', '00000000-0000-0000-0000-00000000005b', 'Rahman'),
+  ('00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-00000000005a', 'Faiz');
+select set_config('test.shop', '00000000-0000-0000-0000-00000000005a', false) \g /dev/null
+
+do $$ begin
+  assert (select public and file_size_limit = 2 * 1024 * 1024
+                 and allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp']
+          from storage.buckets where id = 'shop-photos'),
+    'a public bucket for photos: raster images up to 2 MB';
+end $$;
+
+-- The files: only into the owner's own shop folder.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+insert into storage.objects (bucket_id, name)
+select 'shop-photos', current_setting('test.shop') || '/' || n
+from unnest(array['cut1.jpg', 'cut1-thumb.jpg', 'cut2.jpg', 'cut2-thumb.jpg']) n;
+do $$ begin
+  insert into storage.objects (bucket_id, name) values ('shop-photos', '00000000-0000-0000-0000-00000000005b/cut.jpg');
+  raise exception 'an owner should not write into another shop''s folder';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  insert into storage.objects (bucket_id, name) values ('shop-photos', 'cut.jpg');
+  raise exception 'files go in a shop''s folder, not loose in the bucket';
+exception when insufficient_privilege then null;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  insert into storage.objects (bucket_id, name) values ('shop-photos', current_setting('test.shop') || '/mine.jpg');
+  raise exception 'a customer should not add files';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  assert (select count(*) from storage.objects) = 0, 'customers don''t list the files: they come from the CDN';
+end $$;
+set role anon;
+do $$ begin
+  insert into storage.objects (bucket_id, name) values ('shop-photos', current_setting('test.shop') || '/guest.jpg');
+  raise exception 'a guest should not add files';
+exception when insufficient_privilege then null;
+end $$;
+
+-- The photos, each going last.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+insert into shop_photos (shop_id, barber_id, caption, path, thumb_path, width, height)
+values (current_setting('test.shop')::uuid, '00000000-0000-0000-0000-0000000000a1', 'Skin fade, hard part',
+        current_setting('test.shop') || '/cut1.jpg', current_setting('test.shop') || '/cut1-thumb.jpg', 1200, 1600);
+insert into shop_photos (shop_id, path, thumb_path, width, height)
+values (current_setting('test.shop')::uuid, current_setting('test.shop') || '/cut2.jpg',
+        current_setting('test.shop') || '/cut2-thumb.jpg', 1600, 1200);
+do $$
+declare
+  shop text := current_setting('test.shop');
+begin
+  assert (select array_agg(caption order by sort_order) from shop_photos) = array['Skin fade, hard part', null],
+    'the second photo goes after the first';
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height, sort_order)
+    values (shop::uuid, shop || '/a.jpg', shop || '/a-thumb.jpg', 100, 100, -5);
+    raise exception 'a new photo''s place is the database''s to give';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height)
+    values (shop::uuid, '00000000-0000-0000-0000-00000000005b/a.jpg', shop || '/a-thumb.jpg', 100, 100);
+    raise exception 'a photo''s file is in its own shop''s folder';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height)
+    values (shop::uuid, shop || '/a/b.jpg', shop || '/a-thumb.jpg', 100, 100);
+    raise exception 'no folders inside the shop''s';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height)
+    values (shop::uuid, shop || '/a.jpg', shop || '/a.jpg', 100, 100);
+    raise exception 'the thumbnail is a file of its own';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height)
+    values (shop::uuid, shop || '/a.jpg', shop || '/a-thumb.jpg', 2400, 1600);
+    raise exception 'photos are at most 1600 px';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into shop_photos (shop_id, caption, path, thumb_path, width, height)
+    values (shop::uuid, repeat('x', 61), shop || '/a.jpg', shop || '/a-thumb.jpg', 100, 100);
+    raise exception 'captions are up to 60 characters';
+  exception when check_violation then null;
+  end;
+  begin
+    update shop_photos set caption = '   ' where path = shop || '/cut1.jpg';
+    raise exception 'a blank caption is no caption';
+  exception when check_violation then null;
+  end;
+  begin
+    update shop_photos set caption = E'Fade\nwith beard' where path = shop || '/cut1.jpg';
+    raise exception 'a caption is one line';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into shop_photos (shop_id, barber_id, path, thumb_path, width, height)
+    values (shop::uuid, '00000000-0000-0000-0000-0000000000a3', shop || '/a.jpg', shop || '/a-thumb.jpg', 100, 100);
+    raise exception 'a photo''s barber works at its shop';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Barber not found.', sqlerrm;
+  end;
+  begin
+    update shop_photos set barber_id = '00000000-0000-0000-0000-0000000000a3' where path = shop || '/cut1.jpg';
+    raise exception 'nor can one be moved to another shop''s barber';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Barber not found.', sqlerrm;
+  end;
+  begin
+    update shop_photos set path = shop || '/other.jpg' where path = shop || '/cut1.jpg';
+    raise exception 'a photo''s file never changes';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update shop_photos set shop_id = '00000000-0000-0000-0000-00000000005b';
+    raise exception 'nor its shop';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Customers and guests see a live shop's photos in order, and nothing of a hidden one's.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert (select array_agg(width order by sort_order, created_at, id) from shop_photos
+          where shop_id = current_setting('test.shop')::uuid) = array[1200, 1600],
+    'a customer sees the shop''s photos, first first';
+  assert (select photo_thumb from find_shops() where id = current_setting('test.shop')::uuid)
+         = current_setting('test.shop') || '/cut1-thumb.jpg',
+    'Find a barber has the first photo''s thumbnail';
+end $$;
+set role anon;
+do $$ begin
+  assert (select count(*) from shop_photos) = 2, 'guests see them too';
+end $$;
+reset role;
+update shops set is_published = false where id = current_setting('test.shop')::uuid;
+set role authenticated;
+do $$ begin
+  assert (select count(*) from shop_photos) = 0, 'a hidden shop''s photos are not listed';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert (select count(*) from shop_photos) = 2, 'its owner still sees them';
+end $$;
+reset role;
+update shops set is_published = true where id = current_setting('test.shop')::uuid;
+
+-- Nobody else changes them: not a customer, nor another shop's owner.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$
+declare
+  shop text := current_setting('test.shop');
+begin
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height)
+    values (shop::uuid, shop || '/c.jpg', shop || '/c-thumb.jpg', 100, 100);
+    raise exception 'a customer should not add photos';
+  exception when insufficient_privilege then null;
+  end;
+  update shop_photos set caption = 'Hacked';
+  delete from shop_photos;
+  delete from storage.objects;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$
+declare
+  shop text := current_setting('test.shop');
+begin
+  assert (select count(*) from shop_photos) = 2, 'another owner sees a live shop''s photos like anyone';
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height)
+    values (shop::uuid, shop || '/c.jpg', shop || '/c-thumb.jpg', 100, 100);
+    raise exception 'another owner should not add photos';
+  exception when insufficient_privilege then null;
+  end;
+  update shop_photos set sort_order = -100;
+  delete from shop_photos;
+  delete from storage.objects;
+end $$;
+set role anon;
+delete from shop_photos;
+reset role;
+do $$ begin
+  assert (select count(*) from shop_photos where caption = 'Hacked' or sort_order = -100) = 0
+     and (select count(*) from shop_photos) = 2 and (select count(*) from storage.objects) = 4,
+    'nobody else changed or removed a photo or a file';
+end $$;
+
+-- The owner tags, captions and moves a photo to first.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+update shop_photos set barber_id = '00000000-0000-0000-0000-0000000000a6', caption = 'Low taper'
+where path = current_setting('test.shop') || '/cut2.jpg';
+update shop_photos
+set sort_order = (select min(sort_order) - 1 from shop_photos where shop_id = current_setting('test.shop')::uuid)
+where path = current_setting('test.shop') || '/cut2.jpg';
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert (select array_agg(caption order by sort_order, created_at, id) from shop_photos)
+         = array['Low taper', 'Skin fade, hard part'],
+    'the photo moved to first comes first';
+  assert (select photo_thumb from find_shops() where id = current_setting('test.shop')::uuid)
+         = current_setting('test.shop') || '/cut2-thumb.jpg',
+    'and is the one Find a barber shows';
+end $$;
+
+-- A barber who is deleted leaves their photos untagged.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+delete from barbers where id = '00000000-0000-0000-0000-0000000000a6';
+do $$ begin
+  assert (select barber_id is null and caption = 'Low taper' from shop_photos
+          where path = current_setting('test.shop') || '/cut2.jpg'),
+    'the photo stays, without its barber';
+end $$;
+
+-- 24 at most, however they come.
+insert into shop_photos (shop_id, path, thumb_path, width, height)
+select current_setting('test.shop')::uuid, current_setting('test.shop') || '/more' || n || '.jpg',
+       current_setting('test.shop') || '/more' || n || '-thumb.jpg', 800, 800
+from generate_series(1, 22) n;
+do $$
+declare
+  shop text := current_setting('test.shop');
+begin
+  assert (select count(*) from shop_photos) = 24, 'up to 24';
+  assert (select max(sort_order) from shop_photos) = 22, 'each new one after the last, the moved one at -1';
+  begin
+    insert into shop_photos (shop_id, path, thumb_path, width, height)
+    values (shop::uuid, shop || '/25.jpg', shop || '/25-thumb.jpg', 800, 800);
+    raise exception 'a 25th photo should be refused';
+  exception when sqlstate 'P0001' then
+    assert sqlerrm = 'Your shop has 24 photos, the most it can have. Remove one to add another.', sqlerrm;
+  end;
+  delete from shop_photos where path = shop || '/more22.jpg';
+  insert into shop_photos (shop_id, path, thumb_path, width, height)
+  values (shop::uuid, shop || '/25.jpg', shop || '/25-thumb.jpg', 800, 800);
+  assert (select count(*) from shop_photos) = 24, 'removing one makes room';
+end $$;
+-- The limit is per shop: Rahman's shop starts at none.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+insert into shop_photos (shop_id, path, thumb_path, width, height)
+values ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-00000000005b/first.jpg',
+        '00000000-0000-0000-0000-00000000005b/first-thumb.jpg', 800, 800);
+do $$ begin
+  assert (select sort_order = 0 from shop_photos where shop_id = '00000000-0000-0000-0000-00000000005b'),
+    'another shop''s first photo';
+end $$;
+
+-- Removing: the owner takes the row away, then the files.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+delete from shop_photos where path = current_setting('test.shop') || '/cut1.jpg';
+delete from storage.objects
+where name in (current_setting('test.shop') || '/cut1.jpg', current_setting('test.shop') || '/cut1-thumb.jpg');
+do $$ begin
+  assert (select count(*) from storage.objects) = 2, 'the owner sees and removes their own files';
+end $$;
+
+-- Files no photo points at, a day after they came, for the clean-up script;
+-- only the service role may ask.
+reset role;
+delete from shop_photos;
+delete from storage.objects;
+insert into storage.objects (bucket_id, name, created_at) values
+  ('shop-photos', current_setting('test.shop') || '/kept.jpg', now() - interval '3 days'),
+  ('shop-photos', current_setting('test.shop') || '/kept-thumb.jpg', now() - interval '3 days'),
+  ('shop-photos', current_setting('test.shop') || '/lost.jpg', now() - interval '2 days'),
+  ('shop-photos', current_setting('test.shop') || '/lost-thumb.jpg', now() - interval '2 days'),
+  ('shop-photos', current_setting('test.shop') || '/uploading.jpg', now() - interval '5 minutes');
+insert into shop_photos (shop_id, path, thumb_path, width, height)
+values (current_setting('test.shop')::uuid, current_setting('test.shop') || '/kept.jpg',
+        current_setting('test.shop') || '/kept-thumb.jpg', 800, 800);
+do $$ begin
+  assert (select array_agg(f order by f) from shop_photo_files_left_behind() f)
+         = array[current_setting('test.shop') || '/lost-thumb.jpg', current_setting('test.shop') || '/lost.jpg'],
+    'only the old files no photo points at: ' || (select array_agg(f)::text from shop_photo_files_left_behind() f);
+  assert (select count(*) from shop_photo_files_left_behind(1)) = 1, 'a page at a time';
+end $$;
+set role authenticated;
+do $$ begin
+  perform shop_photo_files_left_behind();
+  raise exception 'owners and customers can''t list leftover files';
+exception when insufficient_privilege then null;
+end $$;
+set role anon;
+do $$ begin
+  perform shop_photo_files_left_behind();
+  raise exception 'guests can''t list leftover files';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+rollback;
+
 -- Deleting an account ------------------------------------------------------
 reset role;
 set role anon;
@@ -4362,13 +4678,16 @@ end $$;
 reset role;
 
 -- The owner deletes their account: the shop and everything in it goes,
--- its walk-in queue too, with the places its bookings served.
+-- its walk-in queue too, with the places its bookings served, and its photos.
 insert into queue_entries (shop_id, day, guest_name, state, gone_reason, gone_at, booking_id)
 select shop_id, (starts_at at time zone 'Asia/Kuala_Lumpur')::date, 'Walked in', 'gone', 'served', starts_at, id
 from bookings
 where shop_id = '00000000-0000-0000-0000-00000000005a' and not is_block;
 insert into queue_entries (shop_id, day, guest_name)
 values ('00000000-0000-0000-0000-00000000005a', (now() at time zone 'Asia/Kuala_Lumpur')::date, 'Still waiting');
+insert into shop_photos (shop_id, path, thumb_path, width, height)
+values ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-00000000005a/last.jpg',
+        '00000000-0000-0000-0000-00000000005a/last-thumb.jpg', 1200, 900);
 do $$ begin
   assert (select count(*) from queue_entries where booking_id is not null) > 0, 'served places to delete';
 end $$;
@@ -4380,7 +4699,7 @@ do $$ begin
   assert (select count(*) from shops) = 0, 'the shop should be gone';
   assert (select count(*) from barbers) = 0 and (select count(*) from services) = 0
      and (select count(*) from working_hours) = 0 and (select count(*) from bookings) = 0
-     and (select count(*) from queue_entries) = 0,
+     and (select count(*) from queue_entries) = 0 and (select count(*) from shop_photos) = 0,
     'everything in the shop should be gone';
   assert exists (select 1 from profiles where id = '00000000-0000-0000-0000-0000000000c1'),
     'customers keep their accounts';
