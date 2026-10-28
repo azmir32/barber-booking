@@ -3292,8 +3292,8 @@ end;
 $$;
 
 -- Everything the barber's Bookings tab asks for on a day, on opening it and
--- on each minute's refresh, in one answer: it was seven requests. Only the
--- caller's own shop. The parts are what those requests gave, with the same
+-- on each minute's refresh, in one answer: it was seven requests, and the
+-- tab's badge asked what customers changed alongside. Only the caller's own shop. The parts are what those requests gave, with the same
 -- rows, fields and rules (booking_test.sql compares them), and they all
 -- stay for everything else: the day's bookings with each one's barber and
 -- customer, as the screen selects them; how many services customers can
