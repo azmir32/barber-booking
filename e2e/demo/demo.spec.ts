@@ -1192,6 +1192,56 @@ test('Find a barber asks for its list once on a new day, with last night’s sho
   expect(await asked(page, '/rest/v1/rpc/my_shops')).toBe(1);
 });
 
+/** Every path the app has asked the demo's server for since the log was last cleared. */
+const askedAll = (page: Page) =>
+  page.evaluate(() => JSON.parse(localStorage.getItem('potongku.demo.requests') ?? '[]') as string[]);
+const clearAsked = (page: Page) => page.evaluate(() => localStorage.setItem('potongku.demo.requests', '[]'));
+
+test('a shop’s page opens with one request, and the barber’s day with one each time it is asked for', async ({
+  page,
+}) => {
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Ali Barber Sungai Chua')).toBeVisible();
+  await network(page, { log: true });
+  await clearAsked(page);
+  await listed(app, 'Ali Barber Sungai Chua').last().click();
+  await expect(app.getByRole('radio', { name: /^Haircut RM/ })).toBeVisible();
+  // The reviews, today's hours and the days off came with it.
+  await expect(app.getByRole('heading', { name: 'Reviews', exact: true })).toBeVisible();
+  await expect(app.getByText('Opening hours', { exact: true })).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(await askedAll(page)).toEqual(['/rest/v1/rpc/shop_page']);
+  // Another day's free times still ask for themselves.
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await app.getByRole('radiogroup', { name: 'Barber' }).first().getByRole('radio').first().click();
+  await expect.poll(() => asked(page, '/rest/v1/rpc/available_slots')).toBeGreaterThan(0);
+
+  await network(page, null);
+  await page.goto('/host');
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await button(app, 'Try as a barber').click();
+  const tomorrow = app.getByRole('radio', { name: /^Tomorrow/ });
+  await expect(tomorrow).toBeVisible();
+  await network(page, { log: true });
+  await page.reload();
+  await expect(tomorrow).toBeVisible();
+  await expect.poll(() => asked(page, '/rest/v1/rpc/shop_day')).toBe(1);
+  await page.waitForTimeout(800);
+  const opening = await askedAll(page);
+  // Once, with what customers changed in it: the badge doesn't ask as well.
+  expect(opening.filter((p) => p === '/rest/v1/rpc/shop_day')).toHaveLength(1);
+  const before = ['bookings', 'services', 'barbers', 'rpc/shop_closed_days', 'rpc/shop_waitlist', 'rpc/shop_queue'];
+  for (const path of [...before, 'rpc/shop_changes']) expect(opening).not.toContain(`/rest/v1/${path}`);
+  await clearAsked(page);
+  await tomorrow.click();
+  await expect(app.getByText('“Same as last time”')).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(await askedAll(page)).toEqual(['/rest/v1/rpc/shop_day']);
+  await network(page, null);
+});
+
 test('My shop asks for all its cards at once, and opens with last time’s, closed days too', async ({ page }) => {
   const app = await open(page);
   await button(app, 'Try as a barber').click();
