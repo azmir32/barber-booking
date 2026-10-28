@@ -26,7 +26,8 @@ import { nearMePosition } from '@/lib/near-me';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
-import { ratingAverage } from '@/lib/reviews';
+import type { QueueStatus } from '@/lib/queue';
+import { ratingAverage, type ShopReview } from '@/lib/reviews';
 import { shopPreview } from '@/lib/shop-preview';
 import { couldFreeUp, requestService, type MyWaiting } from '@/lib/waitlist';
 import {
@@ -49,6 +50,27 @@ type BarberWithHours = Barber & { working_hours: Pick<WorkingHours, 'weekday' | 
 type Step = 'move' | 'barber' | 'time' | 'note';
 /** A shop that exists but is hidden from customers (paused, or its trial ended). */
 type HiddenShop = { name: string; phone: string | null; is_live: boolean };
+/**
+ * Everything the page shows when it opens, in one request (shop_page in
+ * supabase/migrations): it was seven, and their round trips took longer than
+ * the database's work. A shop the caller can't see comes as `status` only.
+ */
+type ShopPageAnswer = {
+  shop: Shop | null;
+  /** Whose shop a hidden link is, as shop_public_status says; null for an unknown link. */
+  status?: HiddenShop | null;
+  services: Service[];
+  barbers: BarberWithHours[];
+  /** The shop's date, which the closed days start from and the hours are for. */
+  today: string;
+  closed_days: { day: string; barber_id: string | null }[];
+  hours_today: { opens_today: string | null; closes_today: string | null } | null;
+  /** The queue's count and wait, and the caller's place; null while the shop runs no queue. */
+  queue: QueueStatus | null;
+  /** The newest reviews, as many as the page shows first. */
+  reviews: ShopReview[];
+  more_reviews: boolean;
+};
 /** ScrollView's getInnerViewRef, its scrolled content: there on native and on the web, but missing from its types. */
 type ScrollWithContent = ScrollView & { getInnerViewRef?: () => View | null };
 
@@ -102,26 +124,15 @@ export default function ShopPage() {
     barbers: new Set(),
   }));
   const shopId = shop?.id;
-  useEffect(() => {
-    if (!shopId || days.length === 0) return;
-    supabase
-      .rpc('shop_closed_days', { p_shop_id: shopId, p_from: days[0].date, p_to: days[days.length - 1].date })
-      .then(({ data }) => {
-        const rows = (data ?? []) as { day: string; barber_id?: string | null }[];
-        setShutDays({
-          shop: new Set(rows.filter((d) => !d.barber_id).map((d) => d.day)),
-          barbers: new Set(rows.filter((d) => d.barber_id).map((d) => `${d.day}|${d.barber_id}`)),
-        });
-      });
-  }, [shopId, days, reload]);
-  // Today's hours, leaving out barbers with the day off and a shop closed for the day.
-  // Fetched again after midnight, so a page left open doesn't show yesterday's.
+  // Today's hours, leaving out barbers with the day off and a shop closed for the day. They come
+  // with the page, and are asked for again after midnight, so a page left open doesn't show yesterday's.
   const todayDate = localDateString(new Date(now), shop?.time_zone);
   const [hoursToday, setHoursToday] = useState<{ date: string; opens: string | null; closes: string | null } | null>(
     null,
   );
+  const hoursFor = hoursToday?.date ?? null;
   useEffect(() => {
-    if (!shopId) return;
+    if (!shopId || hoursFor === todayDate) return;
     let active = true;
     supabase.rpc('shop_hours_today', { p_shop_id: shopId }).then(({ data }) => {
       const row = ((data ?? []) as { opens_today: string | null; closes_today: string | null }[])[0];
@@ -130,7 +141,10 @@ export default function ShopPage() {
     return () => {
       active = false;
     };
-  }, [shopId, todayDate, reload]);
+  }, [shopId, todayDate, hoursFor]);
+  // The queue's first answer and the newest reviews, which came with the page, for the cards that keep them up to date.
+  const [firstQueue, setFirstQueue] = useState<{ uid: string | null; at: number; value: QueueStatus } | null>(null);
+  const [firstReviews, setFirstReviews] = useState<{ reviews: ShopReview[]; hasMore: boolean } | null>(null);
   // Barbers with the whole of today off, whom the walk-in queue can't offer.
   const offToday = useMemo(
     () => new Set(barbers.filter((b) => shutDays.barbers.has(`${todayDate}|${b.id}`)).map((b) => b.id)),
@@ -210,6 +224,8 @@ export default function ShopPage() {
   const scrollAfterLayout = useRef<Step | null>(null);
   const reviewsRef = useRef<View>(null);
 
+  // Who the page's answer is for: the queue's part says where they are in it.
+  const askingAs = useEffectEvent(() => session?.user.id ?? null);
   useEffect(() => {
     if (waitForAuth) return;
     // A guest who signed up from a move link to book is booking, not moving: leave the page as it is.
@@ -218,44 +234,41 @@ export default function ShopPage() {
       setLoading(true);
       setLoadError(null);
       setHidden(null);
-      const { data: shopRow, error } = await supabase.from('shops').select('*').eq('slug', slug).maybeSingle();
-      if (error) {
-        setLoadError(errorMessage(error));
-        setLoading(false);
-        return;
-      }
-      if (!shopRow) {
-        // Customers can't read a paused shop, but its link may still be on a poster
-        // or in an Instagram bio, so find out whose it is to say more than "not found".
-        const status = await supabase.rpc('shop_public_status', { p_slug: slug });
-        const row = ((status.data ?? []) as HiddenShop[])[0];
-        setLoadError(status.error ? errorMessage(status.error) : null);
-        setHidden(row && !row.is_live ? row : null);
-        setLoading(false);
-        return;
-      }
-      const [svc, brb, mv] = await Promise.all([
-        supabase.from('services').select('*').eq('shop_id', shopRow.id).eq('is_active', true).order('sort_order').order('name'),
-        supabase
-          .from('barbers')
-          .select('*, working_hours(weekday, opens_at, closes_at)')
-          .eq('shop_id', shopRow.id)
-          .eq('is_active', true)
-          .order('sort_order')
-          .order('name'),
+      const asker = askingAs();
+      // The booking being moved, alongside, so a Change time link is one round trip too.
+      const [answer, mv] = await Promise.all([
+        supabase.rpc('shop_page', { p_slug: slug }),
         moveUser ? supabase.from('bookings').select('*').eq('id', params.move!).maybeSingle() : null,
       ]);
-      // Without these the page would wrongly say the shop isn't taking bookings.
-      if (svc.error || brb.error || mv?.error) {
-        setLoadError(errorMessage(svc.error ?? brb.error ?? mv?.error));
+      // Without all of it the page would wrongly say the shop isn't taking bookings.
+      if (answer.error || mv?.error) {
+        setLoadError(errorMessage(answer.error ?? mv?.error));
         setLoading(false);
         return;
       }
-      const activeServices = (svc.data ?? []) as Service[];
-      const activeBarbers = (brb.data ?? []) as BarberWithHours[];
-      setShop(shopRow as Shop);
+      const page = answer.data as ShopPageAnswer;
+      const shopRow = page.shop;
+      if (!shopRow) {
+        // Customers can't read a paused shop, but its link may still be on a poster
+        // or in an Instagram bio, so the answer says whose it is to say more than "not found".
+        setHidden(page.status && !page.status.is_live ? page.status : null);
+        setLoading(false);
+        return;
+      }
+      const activeServices = page.services;
+      const activeBarbers = page.barbers;
+      setShop(shopRow);
       setServices(activeServices);
       setBarbers(activeBarbers);
+      setShutDays({
+        shop: new Set(page.closed_days.filter((d) => !d.barber_id).map((d) => d.day)),
+        barbers: new Set(page.closed_days.filter((d) => d.barber_id).map((d) => `${d.day}|${d.barber_id}`)),
+      });
+      if (page.hours_today) {
+        setHoursToday({ date: page.today, opens: page.hours_today.opens_today, closes: page.hours_today.closes_today });
+      }
+      setFirstQueue(page.queue ? { uid: asker, at: Date.now(), value: page.queue } : null);
+      setFirstReviews({ reviews: page.reviews, hasMore: page.more_reviews });
       // Book again: start from the last visit's picks if the shop still offers them.
       if (activeBarbers.some((b) => b.id === params.barber)) setBarberId(params.barber!);
       if (activeServices.some((s) => s.id === params.service)) {
@@ -916,6 +929,7 @@ export default function ShopPage() {
                 serviceId={serviceId}
                 likelyOpen={openNow?.state === 'open'}
                 now={now}
+                first={firstQueue}
               />
               <Section title={t('1. Pick a service')}>
                 {services.map((s) => (
@@ -1117,7 +1131,7 @@ export default function ShopPage() {
 
       {/* Below the steps, so choosing a time is as quick as ever; a booking being moved needs none of it. */}
       {moving ? null : (
-        <ShopReviews shop={shop} barbers={barbers} now={now} ref={reviewsRef} />
+        <ShopReviews shop={shop} barbers={barbers} now={now} first={firstReviews} ref={reviewsRef} />
       )}
 
       {week.some(Boolean) ? (

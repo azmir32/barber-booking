@@ -49,6 +49,7 @@ export function ShopQueueCard({
   serviceId,
   likelyOpen,
   now,
+  first,
 }: {
   shop: Pick<
     Shop,
@@ -63,11 +64,18 @@ export function ShopQueueCard({
   /** Today's hours say the shop is open, so a place for the card is kept while it loads. */
   likelyOpen: boolean;
   now: number;
+  /** The answer that came with the page, when it did, and who it is for: not asked for again on opening. */
+  first?: { uid: string | null; at: number; value: QueueStatus } | null;
 }) {
   const theme = useTheme();
   const { session, profile } = useAuth();
   const uid = session?.user.id ?? null;
-  const [status, setStatus] = useState<{ uid: string | null; value: QueueStatus } | null>(null);
+  // Fresh from the page, for this customer: shown at once, and asked for again from the next focus on.
+  const [fresh] = useState(() => first != null && first.uid === uid && Date.now() - first.at < QUEUE_POLL_MS);
+  const [status, setStatus] = useState<{ uid: string | null; value: QueueStatus } | null>(
+    fresh && first ? { uid: first.uid, value: first.value } : null,
+  );
+  const fromPage = useRef(fresh);
   // Why the first answer didn't come; the card says so, with Try again, rather than loading for ever.
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -89,6 +97,10 @@ export function ShopQueueCard({
 
   useFocusEffect(
     useCallback(() => {
+      if (fromPage.current) {
+        fromPage.current = false;
+        return;
+      }
       load();
     }, [load]),
   );

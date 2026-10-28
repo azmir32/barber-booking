@@ -37,22 +37,27 @@ export function ShopReviews({
   shop,
   barbers,
   now,
+  first,
   ref,
 }: {
   shop: { id: string; time_zone: string; rating_count: number; rating_sum: number };
   /** The shop's barbers as the page loaded them, with their stars: the chips over the reviews. */
   barbers: (BarberStars & { id: string; name: string })[];
   now: number;
+  /** The newest reviews as they came with the page, so everyone's first page isn't asked for again. */
+  first?: { reviews: ShopReview[]; hasMore: boolean } | null;
   /** The section, so "See reviews" by the shop's name can find it and scroll there. */
   ref?: Ref<View>;
 }) {
   const [barberId, setBarberId] = useState<string | null>(null);
-  const [shown, setShown] = useState<Shown | null>(null);
+  const [shown, setShown] = useState<Shown | null>(() => (first ? { key: '', ...first } : null));
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retries, setRetries] = useState(0);
   const latest = useRef(0);
   const { id: shopId, rating_count: count } = shop;
+  // The count the page's reviews came with: until it, the barber or a retry changes, they are the answer.
+  const given = useRef(first ? count : null);
   const filters = reviewFilters(barbers);
   // A barber no longer among them is everyone again.
   const pickedId = filters.some((b) => b.id === barberId) ? barberId : null;
@@ -75,6 +80,11 @@ export function ShopReviews({
   // Only the newest answer counts.
   useEffect(() => {
     if (count === 0) return;
+    if (given.current !== null) {
+      const unchanged = given.current === count && key === '' && retries === 0;
+      given.current = null;
+      if (unchanged) return;
+    }
     const request = ++latest.current;
     fetchPage(0, FIRST).then(({ data, error }) => {
       if (request !== latest.current) return;
