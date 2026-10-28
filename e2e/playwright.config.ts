@@ -8,7 +8,11 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  reporter: process.env.CI ? [['list'], ['html', { open: 'never', outputFolder: '../playwright-report' }]] : 'list',
+  // On CI, 'github' also turns each failure into an annotation on the check run, which can be
+  // read without downloading the log or the report.
+  reporter: process.env.CI
+    ? [['list'], ['github'], ['html', { open: 'never', outputFolder: '../playwright-report' }]]
+    : 'list',
   outputDir: '../test-results',
   use: {
     baseURL: `http://127.0.0.1:${process.env.GATEWAY_PORT ?? 54321}`,

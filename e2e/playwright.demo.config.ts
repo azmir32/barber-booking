@@ -11,7 +11,9 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  reporter: 'list',
+  // On CI, 'github' also turns each failure into an annotation on the check run, which can be
+  // read without downloading the log or the report.
+  reporter: process.env.CI ? [['list'], ['github']] : 'list',
   outputDir: '../test-results/demo',
   use: {
     baseURL: `http://127.0.0.1:${port}`,
