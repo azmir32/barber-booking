@@ -2967,7 +2967,8 @@ begin
            or (e.gone_reason in ('removed', 'not_here') and e.gone_at > now() - public.queue_taken_off_shown()))
   ) mine
   join shops s on s.id = mine.shop_id
-  cross join lateral (select public.queue_status(s.id) -> 'mine' as mine) q
+  -- offset 0 keeps it one call: otherwise each use of q.mine below calls it again.
+  cross join lateral (select public.queue_status(s.id) -> 'mine' as mine offset 0) q
   left join services v on v.id = (q.mine ->> 'service_id')::uuid
   left join barbers b on b.id = (q.mine ->> 'barber_id')::uuid
   where jsonb_typeof(q.mine) = 'object');
