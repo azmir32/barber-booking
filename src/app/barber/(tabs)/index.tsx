@@ -39,7 +39,7 @@ import { confirmAction } from '@/lib/confirm';
 import { WALK_IN } from '@/lib/customers';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
-import { ago, changeLine, changeTag, moreText, seenMark, type ShopChange, type ShopChanges } from '@/lib/news';
+import { ago, changeLine, changeTag, moreText, NEWS_LINES, seenMark, type ShopChange, type ShopChanges } from '@/lib/news';
 import { whatsappUrl } from '@/lib/phone';
 import type { Queued } from '@/lib/queue';
 import { canRemind, needsReminder, reminderMessage } from '@/lib/reminders';
@@ -81,7 +81,11 @@ type BarberWithHours = Barber & { working_hours: WorkingHours[] };
 
 type ClosedDay = { day: string; reason: string | null; is_closure: boolean; barber_id?: string | null };
 
-/** Everything a day's screen asks for, as kept for next time; null for a part whose request failed. */
+/**
+ * Everything a day's screen asks for, as kept for next time. It comes in one
+ * request, shop_day in supabase/migrations, which was seven; null for a part
+ * of a day kept from when each part was a request of its own and that one failed.
+ */
 type DayAnswer = {
   bookings: ShopBooking[];
   services: number;
@@ -184,13 +188,13 @@ export default function BarberBookings() {
   // The day's waiting list, for the day it belongs to.
   const [waiting, setWaiting] = useState<{ day: string; list: ShopWaiting[] } | null>(null);
   const [queue, setQueue] = useState<{ day: string; list: Queued[] } | null>(null);
-  // Someone was in the queue last time, so it is asked for even with the queue since turned off, until they are seen to.
-  const queueSeen = useRef(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const latest = useRef(0);
   const shopId = shop?.id;
   // What customers changed since this phone last looked; the tab's badge counts the same.
-  const { news, seen, refresh: refreshNews, markSeen } = useShopNews();
+  const { news, seen, markSeen, begin: beginNews, receive: receiveNews, host: hostNews } = useShopNews();
+  // The day's request brings them while this tab is in front, so the badge doesn't ask as well.
+  useFocusEffect(hostNews);
   const scroller = useRef<ScrollView>(null);
   const scrollY = useRef(0);
   const insets = useSafeAreaInsets();
@@ -249,11 +253,6 @@ export default function BarberBookings() {
     if (a.queue) setQueue({ day: forDay, list: a.queue });
     else setQueue((q) => (q?.day === forDay ? q : null));
   }, []);
-  // Including a day kept from last visit, so its people are asked about even with the queue turned off since.
-  useEffect(() => {
-    if (queue?.list.length) queueSeen.current = true;
-  }, [queue]);
-
   // A day kept from before (last visit, or earlier on this one) shows at once while it is asked for again.
   const dayKey = uid && shopId ? cacheKey(uid, 'day', shopId, day) : null;
   const [peeked, setPeeked] = useState<string | null>(null);
@@ -266,77 +265,39 @@ export default function BarberBookings() {
     }
   }
 
+  // By the shop's id alone, so the kept shop giving way to the server's doesn't ask for the day twice.
   const load = useCallback(async () => {
-    if (!shop) return;
+    if (!shopId) return;
+    // What customers changed comes along, counted from this phone's mark. Until the mark is read
+    // there is no asking; this runs again once it is, a moment after the tab opens.
+    const asked = beginNews();
+    if (!asked) return;
     // Only the newest load fills the screen, so a slow answer for the day before can't replace it.
     const request = ++latest.current;
     setAsking(true);
-    const { start, end } = dayBounds(day, tz);
-    const today = localDateString(new Date(), tz);
-    // On today, tomorrow's bookings nobody has reminded yet, for the card at the top.
-    const next = day === today ? dayBounds(addDays(today, 1), tz) : null;
-    const first = days[0].date;
-    const last = days[days.length - 1].date;
-    // Today's queue, only while the shop runs one (or still has people in it).
-    const askQueue = day === today && (shop.queue_enabled || queueSeen.current);
-    const [list, active, team, closed, unreminded, waitlist, queued] = await Promise.all([
-      supabase
-        .from('bookings')
-        .select('*, barbers(name), customer:profiles!bookings_customer_id_fkey(full_name, phone)')
-        .eq('shop_id', shop.id)
-        .gte('starts_at', start.toISOString())
-        .lt('starts_at', end.toISOString())
-        .order('starts_at'),
-      supabase.from('services').select('id', { count: 'exact', head: true }).eq('shop_id', shop.id).eq('is_active', true),
-      supabase.from('barbers').select('*, working_hours(*)').eq('shop_id', shop.id).order('sort_order').order('created_at'),
-      // The whole strip, so closed days say so before they are picked.
-      supabase.rpc('shop_closed_days', {
-        p_shop_id: shop.id,
-        p_from: day < first ? day : first,
-        p_to: day > last ? day : last,
-      }),
-      next
-        ? supabase
-            .from('bookings')
-            .select(
-              'id, barber_id, status, is_block, starts_at, reminded_at, guest_phone, created_at, customer:profiles!bookings_customer_id_fkey(phone)',
-            )
-            .eq('shop_id', shop.id)
-            .eq('status', 'confirmed')
-            .eq('is_block', false)
-            .is('reminded_at', null)
-            .gte('starts_at', next.start.toISOString())
-            .lt('starts_at', next.end.toISOString())
-        : null,
-      // Who is waiting for a time this day; nobody is, for a day gone by.
-      day >= today ? supabase.rpc('shop_waitlist', { p_day: day }) : null,
-      askQueue ? supabase.rpc('shop_queue') : null,
-    ]);
+    // The day's bookings, the team, the strip's closed days, tomorrow's reminders and today's queue
+    // (only while the shop runs one, or still has people in it), the waiting list, and the changes.
+    const { data, error: failed } = await supabase.rpc('shop_day', {
+      p_day: day,
+      p_since: asked.since,
+      p_limit: NEWS_LINES,
+    });
     if (request !== latest.current) return;
     setAsking(false);
-    if (list.error) {
-      setRefreshError(errorMessage(list.error));
+    if (failed || !data) {
+      setRefreshError(errorMessage(failed));
       return;
     }
-    const answer: DayAnswer = {
-      bookings: (list.data ?? []) as ShopBooking[],
-      services: active.count ?? 0,
-      barbers: team.error ? null : ((team.data ?? []) as BarberWithHours[]),
-      closed: closed.error ? null : ((closed.data ?? []) as ClosedDay[]),
-      // The client can't tell that the customer is one profile rather than a list.
-      tomorrow: !unreminded ? [] : unreminded.error ? null : ((unreminded.data ?? []) as unknown as ToRemind[]),
-      waiting: !waitlist ? [] : waitlist.error ? null : ((waitlist.data ?? []) as ShopWaiting[]),
-      queue: !queued ? [] : queued.error ? null : ((queued.data ?? []) as Queued[]),
-    };
-    if (askQueue && answer.queue) queueSeen.current = answer.queue.length > 0;
+    const { changes, ...answer } = data as DayAnswer & { changes: ShopChanges };
+    receiveNews(asked.ask, asked.since, changes);
     setRefreshError(null);
     setError(null);
     showDay(answer, day);
     setSavedAt(Date.now());
     setFreshFor(day);
-    if (uid) appCache.write(cacheKey(uid, 'day', shop.id, day), answer);
+    if (uid) appCache.write(cacheKey(uid, 'day', shopId, day), answer);
     return answer.bookings;
-  }, [shop, day, tz, days, uid, showDay]);
+  }, [shopId, day, uid, showDay, beginNews, receiveNews]);
 
   // Reloads after a status change use the day on screen by then, not the day the button was tapped on.
   const loadRef = useRef(load);
@@ -817,7 +778,7 @@ export default function BarberBookings() {
 
   return (
     <Screen
-      onRefresh={() => Promise.all([load(), refreshNews()])}
+      onRefresh={load}
       scrollRef={scroller}
       onScroll={(y) => {
         scrollY.current = y;

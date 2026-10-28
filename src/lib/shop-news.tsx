@@ -16,6 +16,19 @@ type ShopNews = {
   refresh: () => Promise<void>;
   /** Got it: everything so far counts as seen on this phone. */
   markSeen: () => void;
+  /**
+   * For a screen whose own request brings the changes along (the Bookings
+   * tab's shop_day): the mark to count from, and which ask this is; null
+   * until the mark has been read from the phone.
+   */
+  begin: () => { ask: number; since: string | null } | null;
+  /** That request's changes, kept unless a newer ask or a Got it came while it was out. */
+  receive: (ask: number, since: string | null, data: ShopChanges) => void;
+  /**
+   * While a screen asks for the changes with its own minute's refresh, the
+   * badge doesn't ask as well. For useFocusEffect; it returns the undo.
+   */
+  host: () => () => void;
 };
 
 const ShopNewsContext = createContext<ShopNews | null>(null);
@@ -32,7 +45,8 @@ const newsKey = (uid: string | undefined, shopId: string, mark: string | null) =
 
 /**
  * What customers changed since this phone last looked, for the barber tabs:
- * one small call when the app opens or comes back, and once a minute.
+ * one small call when the app opens or comes back, and once a minute. While
+ * the Bookings tab is in front, its day's request brings them instead.
  */
 export function ShopNewsProvider({ shopId, children }: { shopId: string | null; children: ReactNode }) {
   const uid = useAuth().session?.user.id;
@@ -42,6 +56,8 @@ export function ShopNewsProvider({ shopId, children }: { shopId: string | null; 
   const [news, setNews] = useState<ShopChanges | null>(null);
   const seenRef = useRef<string | null>(null);
   const request = useRef(0);
+  // Screens that bring the changes with their own requests just now.
+  const hosts = useRef(0);
   const ready = shopId !== null && readFor === shopId;
 
   useEffect(() => {
@@ -62,25 +78,41 @@ export function ShopNewsProvider({ shopId, children }: { shopId: string | null; 
     };
   }, [shopId, uid]);
 
+  const begin = useCallback(() => (ready ? { ask: ++request.current, since: seenRef.current } : null), [ready]);
+
+  const receive = useCallback(
+    (ask: number, since: string | null, data: ShopChanges) => {
+      // A newer ask or a Got it while this one was out: this answer counts from an older mark.
+      if (ask !== request.current || !shopId) return;
+      setNews(data);
+      const key = newsKey(uid, shopId, since);
+      if (key) appCache.write(key, data);
+    },
+    [shopId, uid],
+  );
+
   const refresh = useCallback(async () => {
-    if (!ready || !shopId) return;
-    const ask = ++request.current;
-    const mark = seenRef.current;
-    const { data, error } = await supabase.rpc('shop_changes', { p_since: mark, p_limit: NEWS_LINES });
-    // A newer ask or a Got it while this one was out: this answer counts from an older mark.
+    const asked = begin();
+    if (!asked) return;
+    const { data, error } = await supabase.rpc('shop_changes', { p_since: asked.since, p_limit: NEWS_LINES });
     // On an error the last answer stays; the next minute tries again.
-    if (ask !== request.current || error || !data) return;
-    setNews(data as ShopChanges);
-    const key = newsKey(uid, shopId, mark);
-    if (key) appCache.write(key, data);
-  }, [ready, shopId, uid]);
+    if (!error && data) receive(asked.ask, asked.since, data as ShopChanges);
+  }, [begin, receive]);
+
+  const host = useCallback(() => {
+    hosts.current++;
+    return () => {
+      hosts.current--;
+    };
+  }, []);
 
   useEffect(() => {
     if (!ready) return;
-    refresh();
+    // The Bookings tab, open as the app starts, asks along with its day.
+    if (hosts.current === 0) refresh();
     const timer = setInterval(() => {
       // A phone with the app in the background asks nothing until it is back.
-      if (AppState.currentState === 'active') refresh();
+      if (AppState.currentState === 'active' && hosts.current === 0) refresh();
     }, EVERY_MS);
     const listener = AppState.addEventListener('change', (state) => {
       if (state === 'active') refresh();
@@ -105,7 +137,7 @@ export function ShopNewsProvider({ shopId, children }: { shopId: string | null; 
   }, [news, shopId]);
 
   return (
-    <ShopNewsContext.Provider value={{ news: ready ? news : null, seen, refresh, markSeen }}>
+    <ShopNewsContext.Provider value={{ news: ready ? news : null, seen, refresh, markSeen, begin, receive, host }}>
       {children}
     </ShopNewsContext.Provider>
   );
