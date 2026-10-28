@@ -209,6 +209,8 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     state: req('text', () => 'waiting', ['waiting', 'called', 'gone']),
     gone_reason: opt('text'),
     called_at: opt('timestamptz'),
+    // When it went, so a customer the shop took off is told so for a while.
+    gone_at: opt('timestamptz'),
     booking_id: opt('uuid'),
     created_at: createdAt,
   },

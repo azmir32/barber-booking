@@ -99,7 +99,8 @@ const DYNAMIC_KEYS = [
   'Turn on the walk-in queue in My shop first.',
   "They're no longer in the queue.",
   'Pick a service for their cut.',
-  "That barber isn't working now. Pick another barber.",
+  "That barber isn't working today. Pick another barber.",
+  'You can join this queue 5 times a day. Book a time instead.',
 ];
 
 test('every piece of UI text has a Malay translation', () => {

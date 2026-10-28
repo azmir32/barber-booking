@@ -1166,7 +1166,6 @@ export const ms: Record<string, string> = {
   'Turn on the walk-in queue in My shop first.': 'Hidupkan barisan walk-in di Kedai saya dahulu.',
   "They're no longer in the queue.": 'Mereka sudah tiada dalam barisan.',
   'Pick a service for their cut.': 'Pilih servis untuk potongan mereka.',
-  "That barber isn't working now. Pick another barber.": 'Barber itu tidak bekerja sekarang. Pilih barber lain.',
   // The shop's page, signing up or in to join, and My bookings.
   'Walk-in queue': 'Barisan walk-in',
   'Loading the queue': 'Memuatkan barisan',
@@ -1225,4 +1224,10 @@ export const ms: Record<string, string> = {
   'Let customers join a queue': 'Benarkan pelanggan sertai barisan',
   'While you’re open, customers join from your page and you call them in order from Bookings.':
     'Semasa anda buka, pelanggan sertai dari halaman anda dan anda panggil mereka ikut giliran dari Tempahan.',
+
+  // Round 13, walk-in queue fixes after review (the shop page's queue card,
+  // My bookings and the barber's Start)
+  "That barber isn't working today. Pick another barber.": 'Barber itu tidak bekerja hari ini. Pilih barber lain.',
+  'You can join this queue 5 times a day. Book a time instead.':
+    'Anda boleh sertai barisan ini 5 kali sehari. Tempah masa sahaja.',
 };

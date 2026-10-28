@@ -3565,7 +3565,7 @@ test('customers join a shop’s walk-in queue while it is open, and only the sho
   }
 });
 
-test('a booking at eight or eleven is said with “an”, and a barber not in can’t start a cut', async () => {
+test('a booking at eight or eleven is said with “an”, and a cut starts with anyone working today, past closing too', async () => {
   // A Tuesday at 11:00: Ali has Pak Abu's 11:30, and Danial starts at 11.
   const { at } = thisWeekOn(2, '11:00');
   setClock(() => at);
@@ -3574,13 +3574,141 @@ test('a booking at eight or eleven is said with “an”, and a barber not in ca
     const ali = await signedIn(DEMO_BARBER_EMAIL);
     const shop = await shopBySlug(ali, 'ali-barber');
     const barber = (name: string) => tables().barbers.find((b) => b.shop_id === shop.id && b.name === name)!.id as string;
-    const [first] = (await ali.rpc('shop_queue')).data as Row[];
+    const queue = async () => (await ali.rpc('shop_queue')).data as Row[];
+    const [first] = await queue();
     const fade = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Skin fade')!.id;
     const ok = await ali.rpc('start_from_queue', { p_id: first.id, p_barber_id: barber('Ali'), p_service_id: fade });
     assert.equal(ok.error?.message, 'Ali has an 11:30 am booking before this cut would finish. Pick another barber.');
+    // Danial starts at 11 and his first customer cancelled. In five minutes
+    // early, he can take someone.
+    const danials = tables().bookings.filter(
+      (b) => b.barber_id === barber('Danial') && Date.parse(String(b.starts_at)) < at + 30 * 60_000 && Date.parse(String(b.ends_at)) > at,
+    );
+    updateRows('bookings', danials, { status: 'cancelled' });
     setClock(() => at - 5 * 60_000);
     const early = await ali.rpc('start_from_queue', { p_id: first.id, p_barber_id: barber('Danial') });
-    assert.deepEqual([early.error?.code, early.error?.message], ['P0001', 'That barber isn\'t working now. Pick another barber.']);
+    assert.equal(early.error, null, early.error?.message);
+    assert.equal(early.data.barber_id, barber('Danial'));
+    // At 9:30 pm both have finished and the queue is shut, but those still waiting are served.
+    setClock(() => at + 630 * 60_000);
+    const { data: status } = await ali.rpc('queue_status', { p_shop_id: shop.id });
+    assert.deepEqual([status.open, status.barbers_in], [false, 0]);
+    const [next] = await queue();
+    const late = await ali.rpc('start_from_queue', { p_id: next.id, p_barber_id: barber('Ali'), p_service_id: fade });
+    assert.deepEqual([late.error, late.data.barber_id, late.data.starts_at], [null, barber('Ali'), new Date(at + 630 * 60_000).toISOString()]);
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
+test('a barber off today can’t start a cut: Danial on a Monday', async () => {
+  const { at } = thisWeekOn(1, '15:00');
+  setClock(() => at);
+  try {
+    resetDemo();
+    const ali = await signedIn(DEMO_BARBER_EMAIL);
+    const shop = await shopBySlug(ali, 'ali-barber');
+    const danial = tables().barbers.find((b) => b.shop_id === shop.id && b.name === 'Danial')!.id;
+    const [first] = (await ali.rpc('shop_queue')).data as Row[];
+    const off = await ali.rpc('start_from_queue', { p_id: first.id, p_barber_id: danial });
+    assert.deepEqual([off.error?.code, off.error?.message], ['P0001', 'That barber isn\'t working today. Pick another barber.']);
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
+test('taken off the queue, a customer is told for an hour; joining is five times a day; a time today ends a place', async () => {
+  // A Tuesday at 3:20 pm, both barbers in (the sample day).
+  const { day, at } = thisWeekOn(2, '15:20');
+  setClock(() => at);
+  try {
+    resetDemo();
+    const ali = await signedIn(DEMO_BARBER_EMAIL);
+    const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+    const farid = await signedIn('farid@demo.potongku.my');
+    const shop = await shopBySlug(ali, 'ali-barber');
+    const kemas = await shopBySlug(ali, 'kemas-barber-kajang');
+    const haircut = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!.id as string;
+    const mine = async (c: ReturnType<typeof client>) => (await c.rpc('queue_status', { p_shop_id: shop.id })).data.mine as Row | null;
+    const join = async (c: ReturnType<typeof client>) => {
+      const { data, error } = await c.rpc('join_queue', { p_service_id: haircut });
+      assert.equal(error, null);
+      return data as Row;
+    };
+
+    // Called, then taken off as not here: his page and My bookings say so,
+    // with the shop's number and where it is, for Directions.
+    const place = await join(hakim);
+    await ali.rpc('call_from_queue', { p_id: place.id });
+    setClock(() => at + 10 * 60_000);
+    await ali.rpc('remove_from_queue', { p_id: place.id });
+    assert.deepEqual(
+      [(await mine(hakim))?.id, (await mine(hakim))?.state, (await mine(hakim))?.gone_reason, (await mine(hakim))?.place],
+      [place.id, 'gone', 'not_here', null],
+    );
+    const [told] = (await hakim.rpc('my_queue')).data as Row[];
+    assert.deepEqual([told.id, told.state, told.gone_reason], [place.id, 'gone', 'not_here']);
+    assert.deepEqual(told.shop, {
+      name: shop.name,
+      slug: 'ali-barber',
+      time_zone: TZ,
+      phone: shop.phone,
+      address: shop.address,
+      area: shop.area,
+      latitude: shop.latitude,
+      longitude: shop.longitude,
+    });
+    assert.deepEqual((await hakim.rpc('my_bookings')).data.queue, [told]);
+    // An hour on, it is as it was.
+    setClock(() => at + 71 * 60_000);
+    assert.equal(await mine(hakim), null);
+    assert.deepEqual((await hakim.rpc('my_queue')).data, []);
+    // Joining again, his new place is the one shown; leaving it, nothing is.
+    const again = await join(hakim);
+    assert.deepEqual([(await mine(hakim))?.id, (await mine(hakim))?.state], [again.id, 'waiting']);
+    setClock(() => at + 72 * 60_000);
+    await hakim.rpc('leave_queue', { p_id: again.id });
+    assert.equal(await mine(hakim), null);
+
+    // Five times a day at one shop, however each place ended.
+    for (let n = 0; n < 3; n++) await hakim.rpc('leave_queue', { p_id: (await join(hakim)).id });
+    const sixth = await hakim.rpc('join_queue', { p_service_id: haircut });
+    assert.deepEqual(
+      [sixth.error?.code, sixth.error?.message],
+      ['P0001', 'You can join this queue 5 times a day. Book a time instead.'],
+    );
+    assert.equal(
+      tables().queue_entries.filter((e) => e.shop_id === shop.id && e.day === day && e.state === 'gone' && e.gone_reason === 'left').length,
+      4,
+    );
+
+    // Farid books a time later today: he is out of the queue. Moving a time
+    // from another day into today does the same.
+    const faridsPlace = await join(farid);
+    const later = (await farid.rpc('available_slots', { p_service_id: haircut, p_day: day })).data as Row[];
+    const booked = await farid.rpc('book_appointment', { p_service_id: haircut, p_starts_at: later.at(-1)!.starts_at });
+    assert.equal(booked.error, null);
+    const gone = tables().queue_entries.find((e) => e.id === faridsPlace.id)!;
+    assert.deepEqual([gone.state, gone.gone_reason, gone.gone_at], ['gone', 'left', new Date(at + 72 * 60_000).toISOString()]);
+    assert.equal(await mine(farid), null);
+    await farid.rpc('set_booking_status', { p_booking_id: booked.data.id, p_status: 'cancelled' });
+    const tomorrow = addDays(day, 1);
+    const nextDay = (await farid.rpc('available_slots', { p_service_id: haircut, p_day: tomorrow })).data as Row[];
+    const ahead = await farid.rpc('book_appointment', { p_service_id: haircut, p_starts_at: nextDay[0].starts_at });
+    assert.equal(ahead.error, null);
+    const second = await join(farid);
+    const moved = await farid.rpc('reschedule_booking', { p_booking_id: ahead.data.id, p_starts_at: later.at(-1)!.starts_at });
+    assert.equal(moved.error, null);
+    assert.equal(tables().queue_entries.find((e) => e.id === second.id)!.gone_reason, 'left');
+    // A time at another shop, or another day, leaves the place as it is.
+    assert.equal((await farid.rpc('set_booking_status', { p_booking_id: ahead.data.id, p_status: 'cancelled' })).error, null);
+    const third = await join(farid);
+    const kemasCut = tables().services.find((v) => v.shop_id === kemas.id && v.name === 'Haircut')!.id;
+    const kemasSlots = (await farid.rpc('available_slots', { p_service_id: kemasCut, p_day: day })).data as Row[];
+    if (kemasSlots.length) {
+      assert.equal((await farid.rpc('book_appointment', { p_service_id: kemasCut, p_starts_at: kemasSlots[0].starts_at })).error, null);
+    }
+    assert.equal((await mine(farid))?.id, third.id);
   } finally {
     setClock(() => Date.now());
   }

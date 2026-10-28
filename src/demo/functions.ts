@@ -335,6 +335,7 @@ export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown
   );
   // They have their time that day, so they are no longer waiting for one.
   stopWaiting(c.uid, service.shop_id, day);
+  leaveQueueFor(c.uid, service.shop_id, day);
   return booking;
 }
 
@@ -383,6 +384,7 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
   );
   // Moved into a day they were waiting on: as good as booking it.
   stopWaiting(booking.customer_id, booking.shop_id, day);
+  leaveQueueFor(booking.customer_id, booking.shop_id, day);
   return moved;
 }
 
@@ -1334,6 +1336,10 @@ export function myWaitlist(c: Caller) {
 
 /** How many can wait in one shop's queue at once. */
 const MAX_QUEUE_WAITING = 30;
+/** How many times one customer can join one shop's queue in a day. */
+const MAX_QUEUE_JOINS_A_DAY = 5;
+/** How long a customer the shop took off is told so. */
+const QUEUE_TAKEN_OFF_SHOWN_MS = 60 * 60_000;
 const QUEUE_GONE = 'They\'re no longer in the queue.';
 const QUEUE_FULL = 'The queue is full for now. Try booking a time instead.';
 
@@ -1343,9 +1349,10 @@ const byTeamOrder = (a: Row, b: Row) =>
 /**
  * barbers_in_now: the shop's barbers in right now by its own clock, in the
  * team's order: active, inside one of today's working ranges, and without
- * the whole day off, while the shop isn't closed today.
+ * the whole day off, while the shop isn't closed today. With wholeDay,
+ * everyone working today, in now or not.
  */
-function barbersInNow(shop: Row): Row[] {
+function barbersInNow(shop: Row, wholeDay = false): Row[] {
   const tz = String(shop.time_zone);
   const date = localDateString(new Date(now()), tz);
   if (tables().shop_closures.some((c) => c.shop_id === shop.id && c.day === date)) return [];
@@ -1360,8 +1367,8 @@ function barbersInNow(shop: Row): Row[] {
           (wh) =>
             wh.barber_id === b.id &&
             wh.weekday === weekday &&
-            localInstant(date, String(wh.opens_at), tz) <= now() &&
-            now() < localInstant(date, String(wh.closes_at), tz),
+            (wholeDay ||
+              (localInstant(date, String(wh.opens_at), tz) <= now() && now() < localInstant(date, String(wh.closes_at), tz))),
         ) &&
         !tables().bookings.some(
           (bk) =>
@@ -1385,6 +1392,33 @@ function clockInEnglish(at: unknown, tz: string): string {
 const queueToday = (shop: Row) => localDateString(new Date(now()), String(shop.time_zone));
 const waitingAt = (shopId: unknown, day: string) =>
   tables().queue_entries.filter((e) => e.shop_id === shopId && e.day === day && e.state === 'waiting');
+/** A customer with a time at the shop later today is out of its queue (see join_queue). */
+function leaveQueueFor(customerId: unknown, shopId: unknown, day: string) {
+  const shop = findById('shops', shopId);
+  if (customerId == null || !shop || day !== queueToday(shop)) return;
+  updateRows(
+    'queue_entries',
+    tables().queue_entries.filter(
+      (e) => e.customer_id === customerId && e.shop_id === shop.id && e.day === day && e.state !== 'gone',
+    ),
+    { state: 'gone', gone_reason: 'left', gone_at: new Date(now()).toISOString() },
+  );
+}
+/**
+ * The caller's place at a shop today: their latest entry there, while it is
+ * open, or gone in the last hour because the shop took them off.
+ */
+function myPlaceAt(c: Caller, shop: Row): Row | undefined {
+  if (c.uid == null) return undefined;
+  const day = queueToday(shop);
+  const latest = tables()
+    .queue_entries.filter((e) => e.customer_id === c.uid && e.day === day && e.shop_id === shop.id)
+    .sort(byCreated)
+    .at(-1);
+  if (!latest || latest.state !== 'gone') return latest;
+  const takenOff = latest.gone_reason === 'removed' || latest.gone_reason === 'not_here';
+  return takenOff && ms(latest.gone_at) > now() - QUEUE_TAKEN_OFF_SHOWN_MS ? latest : undefined;
+}
 /** clock_timestamp() under the shop's diary lock: after everyone already in its queue, even within a millisecond. */
 const joinedAt = (shopId: unknown) =>
   new Date(
@@ -1394,8 +1428,9 @@ const joinedAt = (shopId: unknown) =>
 /**
  * queue_status: whether the shop's queue is open now, how many are waiting,
  * about how long someone joining now would wait, and the caller's own place
- * today with the wait ahead of them. A waiting entry with no service counts
- * as the shop's shortest one.
+ * today with the wait ahead of them (or, gone, that the shop took them off
+ * in the last hour). A waiting entry with no service counts as the shop's
+ * shortest one.
  */
 export function queueStatus(c: Caller, shopId: unknown) {
   const shop = findById('shops', shopId);
@@ -1408,13 +1443,7 @@ export function queueStatus(c: Caller, shopId: unknown) {
   const shortest = lengths.length ? Math.min(...lengths) : 30;
   const minutes = (list: Row[]) =>
     list.reduce((sum, e) => sum + Number(findById('services', e.service_id)?.duration_min ?? shortest), 0);
-  const mine =
-    c.uid == null
-      ? undefined
-      : tables()
-          .queue_entries.filter((e) => e.customer_id === c.uid && e.day === day && e.shop_id === shop.id && e.state !== 'gone')
-          .sort(byCreated)
-          .at(-1);
+  const mine = myPlaceAt(c, shop);
   const waiting = waitingAt(shop.id, day);
   const ahead = mine ? waiting.filter((e) => byCreated(e, mine) < 0) : [];
   return {
@@ -1426,6 +1455,7 @@ export function queueStatus(c: Caller, shopId: unknown) {
       ? {
           id: mine.id,
           state: mine.state,
+          gone_reason: mine.gone_reason ?? null,
           called_at: mine.called_at ?? null,
           service_id: mine.service_id ?? null,
           barber_id: mine.barber_id ?? null,
@@ -1440,8 +1470,8 @@ export function queueStatus(c: Caller, shopId: unknown) {
 /**
  * join_queue: a signed-in customer joins a shop's queue for today while it is
  * open, with a barber who is in (or any). One place at a time across every
- * shop, none where they have a booking still to come today, and no more than
- * thirty waiting.
+ * shop, none where they have a booking still to come today, no more than
+ * thirty waiting, and five times a day at one shop.
  */
 export function joinQueue(c: Caller, serviceId: unknown, barberId: unknown = null) {
   if (c.uid == null) throw new PgError('28000', 'Please sign in to join the queue.', 403);
@@ -1479,6 +1509,10 @@ export function joinQueue(c: Caller, serviceId: unknown, barberId: unknown = nul
   });
   if (other?.shop_id === shop.id) throw new PgError('P0001', 'You\'re already in this queue.', 400);
   if (other) throw new PgError('P0001', 'You\'re already in another shop\'s queue. Leave it to join this one.', 400);
+  const joins = tables().queue_entries.filter((e) => e.customer_id === c.uid && e.day === day && e.shop_id === shop.id);
+  if (joins.length >= MAX_QUEUE_JOINS_A_DAY) {
+    throw new PgError('P0001', `You can join this queue ${MAX_QUEUE_JOINS_A_DAY} times a day. Book a time instead.`, 400);
+  }
   if (waitingAt(shop.id, day).length >= MAX_QUEUE_WAITING) throw new PgError('P0001', QUEUE_FULL, 400);
   return insertRow('queue_entries', {
     shop_id: shop.id,
@@ -1496,7 +1530,7 @@ export function leaveQueue(c: Caller, id: unknown) {
   updateRows(
     'queue_entries',
     tables().queue_entries.filter((e) => e.id === key && c.uid != null && e.customer_id === c.uid && e.state !== 'gone'),
-    { state: 'gone', gone_reason: 'left' },
+    { state: 'gone', gone_reason: 'left', gone_at: new Date(now()).toISOString() },
   );
 }
 
@@ -1542,13 +1576,18 @@ export function callFromQueue(c: Caller, id: unknown) {
 export function removeFromQueue(c: Caller, id: unknown) {
   const key = toColumnValue('queue_entries', 'id', id);
   for (const e of tables().queue_entries.filter((e) => e.id === key && ownsShop(e.shop_id, c.uid) && e.state !== 'gone')) {
-    updateRows('queue_entries', [e], { state: 'gone', gone_reason: e.state === 'called' ? 'not_here' : 'removed' });
+    updateRows('queue_entries', [e], {
+      state: 'gone',
+      gone_reason: e.state === 'called' ? 'not_here' : 'removed',
+      gone_at: new Date(now()).toISOString(),
+    });
   }
 }
 
 /**
  * start_from_queue: their cut becomes an ordinary booking from now (to the
- * minute) with a barber who is in and free until it would end. A booking
+ * minute) with a barber working today (in now or not, as past closing time
+ * the shop still serves who is left) and free until it would end. A booking
  * in the way is named, with its time as the error's detail.
  */
 export function startFromQueue(c: Caller, id: unknown, barberId: unknown, serviceId: unknown = null) {
@@ -1564,8 +1603,8 @@ export function startFromQueue(c: Caller, id: unknown, barberId: unknown, servic
   if (!tables().barbers.some((b) => b.id === barberId && b.shop_id === shop.id)) {
     throw new PgError('P0002', 'Barber not found.', 500);
   }
-  const barber = barbersInNow(shop).find((b) => b.id === barberId);
-  if (!barber) throw new PgError('P0001', 'That barber isn\'t working now. Pick another barber.', 400);
+  const barber = barbersInNow(shop, true).find((b) => b.id === barberId);
+  if (!barber) throw new PgError('P0001', 'That barber isn\'t working today. Pick another barber.', 400);
 
   const start = Math.floor(now() / 60_000) * 60_000;
   const end = start + Number(service.duration_min) * 60_000;
@@ -1605,7 +1644,12 @@ export function startFromQueue(c: Caller, id: unknown, barberId: unknown, servic
       }),
     'That barber already has a booking at that time.',
   );
-  updateRows('queue_entries', [entry], { state: 'gone', gone_reason: 'served', booking_id: booking.id });
+  updateRows('queue_entries', [entry], {
+    state: 'gone',
+    gone_reason: 'served',
+    gone_at: new Date(now()).toISOString(),
+    booking_id: booking.id,
+  });
   return booking;
 }
 
@@ -1640,30 +1684,37 @@ export function shopQueue(c: Caller) {
     });
 }
 
-/** my_queue: the caller's place in a queue today, with its shop and what they asked for. */
+/**
+ * my_queue: the caller's place in a queue today, with its shop and what they
+ * asked for, and a place the shop took off in the last hour, as queue_status
+ * gives them.
+ */
 export function myQueue(c: Caller) {
-  return tables()
-    .queue_entries.filter((e) => {
-      const shop = findById('shops', e.shop_id);
-      return c.uid != null && e.customer_id === c.uid && e.state !== 'gone' && shop != null && e.day === queueToday(shop);
+  if (c.uid == null) return [];
+  const shopIds = new Set(tables().queue_entries.filter((e) => e.customer_id === c.uid).map((e) => e.shop_id));
+  return [...shopIds]
+    .map((id) => findById('shops', id))
+    .flatMap((shop) => {
+      const mine = shop ? myPlaceAt(c, shop) : undefined;
+      return shop && mine ? [{ shop, mine }] : [];
     })
-    .sort(byCreated)
-    .map((e) => {
-      const shop = findById('shops', e.shop_id)!;
-      return {
-        ...queueStatus(c, shop.id).mine,
-        shop_id: shop.id,
-        service_name: e.service_id == null ? null : (findById('services', e.service_id)?.name ?? null),
-        barber_name: e.barber_id == null ? null : (findById('barbers', e.barber_id)?.name ?? null),
-        shop: {
-          name: shop.name,
-          slug: shop.slug,
-          time_zone: shop.time_zone,
-          phone: shop.phone ?? null,
-          address: shop.address ?? null,
-        },
-      };
-    });
+    .sort((a, b) => byCreated(a.mine, b.mine))
+    .map(({ shop, mine }) => ({
+      ...queueStatus(c, shop.id).mine,
+      shop_id: shop.id,
+      service_name: mine.service_id == null ? null : (findById('services', mine.service_id)?.name ?? null),
+      barber_name: mine.barber_id == null ? null : (findById('barbers', mine.barber_id)?.name ?? null),
+      shop: {
+        name: shop.name,
+        slug: shop.slug,
+        time_zone: shop.time_zone,
+        phone: shop.phone ?? null,
+        address: shop.address ?? null,
+        area: shop.area,
+        latitude: shop.latitude ?? null,
+        longitude: shop.longitude ?? null,
+      },
+    }));
 }
 
 // Reviews -------------------------------------------------------------------
