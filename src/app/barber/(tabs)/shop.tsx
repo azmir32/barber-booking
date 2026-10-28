@@ -223,7 +223,8 @@ export default function MyShop() {
             if (ready.staleSince != null) ready.reload();
             if (photos.staleSince != null) photos.reload();
           }}
-          retrying={cards.loading || askingShop || ready.loading || photos.loading}
+          // Not the photos: they come again on their own, and a slow answer to the last try mustn't hold this one.
+          retrying={cards.loading || askingShop || ready.loading}
           timeZone={shop.time_zone}
         />
       ) : null}

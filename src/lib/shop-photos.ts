@@ -7,7 +7,7 @@
 import { ImageManipulator, SaveFormat, type ImageRef } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { appCache } from '@/lib/app-cache';
@@ -16,6 +16,7 @@ import { cacheKey } from '@/lib/cache';
 import { t } from '@/lib/lang';
 import {
   base64Bytes,
+  MAX_PHOTOS,
   PHOTO_BUCKET,
   PHOTO_COLUMNS,
   PHOTO_QUALITY,
@@ -173,8 +174,11 @@ export function useShopPhotos(shopId: string | undefined) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the latest ask's answer counts, so one that failed offline can't land after one that worked.
+  const asked = useRef(0);
   const load = useCallback(async () => {
     if (!shopId) return;
+    const n = ++asked.current;
     setLoading(true);
     const { data, error } = await supabase
       .from('shop_photos')
@@ -183,7 +187,8 @@ export function useShopPhotos(shopId: string | undefined) {
       .order('sort_order')
       .order('created_at')
       .order('id')
-      .limit(24);
+      .limit(MAX_PHOTOS);
+    if (n !== asked.current) return;
     setLoading(false);
     if (error || !data) return setError(errorMessage(error));
     const list = data as unknown as OwnPhoto[];
