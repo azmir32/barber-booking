@@ -9,7 +9,7 @@ import { firstName } from '../lib/reviews.ts';
 import type { MyShops } from '../lib/my-shops.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { insertRow, reloadTables, save, setClock, tables, updateRows, type Row } from './db.ts';
+import { insertRow, now as demoNow, reloadTables, save, setClock, tables, updateRows, type Row } from './db.ts';
 import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
@@ -3100,8 +3100,8 @@ test('customers wait for a time on a day they could book, and only the shop sees
   // Three days at a time across every shop; a day gone by doesn't count and goes.
   const gone = () => ({ shop_id: shop.id, day: addDays(today(), -1), service_id: haircut.id, created_at: kajang(-3, '09:00') });
   insertRow('waitlist', { ...gone(), customer_id: userId(DEMO_CUSTOMER_EMAIL) });
-  // Kemas is closed on Fridays.
-  const kemasDay = new Date(`${day(6)}T00:00:00Z`).getUTCDay() === 5 ? day(7) : day(6);
+  // Kemas is closed on Fridays. Not day 7, which Hakim waits on at Ali's below.
+  const kemasDay = new Date(`${day(6)}T00:00:00Z`).getUTCDay() === 5 ? day(9) : day(6);
   const atKemas = (await join(hakim, kemasServices![1].id, kemasDay)).data as Row;
   assert.ok(atKemas);
   await refused(hakim, haircut.id, day(8), null, 'You can be on 3 waiting lists at a time. Leave one to join another.');
@@ -3806,4 +3806,294 @@ test('opened on a later day, yesterday’s queue is over and today’s sample qu
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
     reloadTables();
   }
+});
+
+// Whole screens in one request ---------------------------------------------------
+
+type Client = ReturnType<typeof client>;
+/** Working hours in one order: the requests the app sent before left it to the database. */
+const byHours = (hours: Row[]) =>
+  [...hours].sort((a, b) => Number(a.weekday) - Number(b.weekday) || String(a.opens_at).localeCompare(String(b.opens_at)));
+const withSortedHours = (barbers: Row[]) => barbers.map((b) => ({ ...b, working_hours: byHours(b.working_hours as Row[]) }));
+/** Rows in time order, then by id, as the one request sends them. */
+const byStart = (rows: Row[]) =>
+  [...rows].sort((a, b) => Date.parse(String(a.starts_at)) - Date.parse(String(b.starts_at)) || (String(a.id) < String(b.id) ? -1 : 1));
+
+/** What a shop's page asked for before shop_page, one request each, as the app sent them. */
+async function shopPageBefore(c: Client, slug: string) {
+  const shop = (await c.from('shops').select('*').eq('slug', slug).maybeSingle()).data;
+  if (!shop) {
+    const status = (await c.rpc('shop_public_status', { p_slug: slug })).data as Row[];
+    return { shop: null, status: status[0] ?? null };
+  }
+  const day = localDateString(new Date(demoNow()), shop.time_zone);
+  const [services, barbers, closed, hours, queue, reviews] = await Promise.all([
+    c.from('services').select('*').eq('shop_id', shop.id).eq('is_active', true).order('sort_order').order('name'),
+    c
+      .from('barbers')
+      .select('*, working_hours(weekday, opens_at, closes_at)')
+      .eq('shop_id', shop.id)
+      .eq('is_active', true)
+      .order('sort_order')
+      .order('name'),
+    c.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: day, p_to: addDays(day, 13) }),
+    c.rpc('shop_hours_today', { p_shop_id: shop.id }),
+    shop.queue_enabled ? c.rpc('queue_status', { p_shop_id: shop.id }) : null,
+    c
+      .from('reviews')
+      .select('booking_id, rating, comment, first_name, reply, replied_at, created_at, barbers(name)')
+      .eq('shop_id', shop.id)
+      .order('created_at', { ascending: false })
+      .order('booking_id')
+      .range(0, 3),
+  ]);
+  return {
+    shop,
+    services: services.data,
+    barbers: withSortedHours(barbers.data as Row[]),
+    today: day,
+    closed_days: closed.data,
+    hours_today: (hours.data as Row[])[0],
+    queue: queue ? queue.data : null,
+    reviews: reviews.data!.slice(0, 3),
+    more_reviews: reviews.data!.length > 3,
+  };
+}
+
+async function shopPage(c: Client, slug: string) {
+  const { data, error } = await c.rpc('shop_page', { p_slug: slug });
+  assert.equal(error, null);
+  return data;
+}
+
+test('a shop’s page comes in one answer, part for part what its requests gave a guest, a customer and the owner', async () => {
+  try {
+    // A few hours of the day, each on another weekday: the queue open and shut, today's hours, the closed days.
+    for (const hour of [0, 9, 13, 21]) {
+      const date = addDays(today(), hour % 7);
+      const at = dayBounds(date, TZ).start.getTime() + (hour * 60 + 7) * 60_000;
+      const when = `on ${date} at ${hour}:07`;
+      setClock(() => at);
+      resetDemo();
+      const ali = await signedIn(DEMO_BARBER_EMAIL);
+      const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+      const guest = client();
+      const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+      const team = tables().barbers.filter((b) => b.shop_id === shop.id);
+      // A closure and a barber's day off in the next fortnight, with reasons only the owner may read,
+      // and Hakim in the queue today.
+      insertRow('shop_closures', { shop_id: shop.id, day: addDays(date, 6), reason: 'Hari Raya' });
+      // Danial's customers that day are put off first: a barber can't be booked twice.
+      const off = addDays(date, 12);
+      const offStart = dayBounds(off, TZ).start.getTime();
+      updateRows(
+        'bookings',
+        tables().bookings.filter(
+          (b) => b.barber_id === team[1].id && Date.parse(String(b.ends_at)) > offStart && Date.parse(String(b.starts_at)) < offStart + 86_400_000,
+        ),
+        { status: 'cancelled' },
+      );
+      insertRow('bookings', {
+        shop_id: shop.id,
+        barber_id: team[1].id,
+        is_block: true,
+        service_name: 'Kenduri',
+        price: 0,
+        starts_at: dayBounds(off, TZ).start.toISOString(),
+        ends_at: dayBounds(addDays(off, 1), TZ).start.toISOString(),
+      });
+      const hakimId = (await hakim.auth.getUser()).data.user!.id;
+      insertRow('queue_entries', { shop_id: shop.id, day: date, customer_id: hakimId, created_at: new Date(at).toISOString() });
+
+      for (const [who, c] of [['guest', guest], ['Hakim', hakim], ['Ali', ali]] as const) {
+        for (const slug of ['ali-barber', 'kemas-barber-kajang', 'the-fade-room']) {
+          assert.deepEqual(await shopPage(c, slug), await shopPageBefore(c, slug), `${who} at ${slug} ${when}`);
+        }
+      }
+      const page = await shopPage(guest, 'ali-barber');
+      assert.equal(page.shop.name, 'Ali Barber Sungai Chua');
+      assert.equal(page.reviews.length, 3);
+      assert.equal(page.more_reviews, true);
+      assert.ok(page.barbers.every((b: Row) => (b.working_hours as Row[]).length > 0));
+      assert.ok(page.queue.waiting >= 3, when);
+      assert.equal(page.queue.mine, null);
+      assert.equal((await shopPage(hakim, 'ali-barber')).queue.mine.state, 'waiting', when);
+      assert.deepEqual(
+        page.closed_days.map((d: Row) => [d.day, d.reason]),
+        [
+          [addDays(date, 6), null],
+          [off, null],
+        ],
+        when,
+      );
+      assert.ok(JSON.stringify(await shopPage(ali, 'ali-barber')).includes('Hari Raya'), 'the owner sees the reasons');
+      // Nothing private reaches a guest: no customer's number, note or account, nobody in the queue, no reasons.
+      const text = JSON.stringify(page);
+      const hakimProfile = tables().profiles.find((p) => p.id === hakimId)!;
+      const customers = tables().profiles.filter((p) => p.role === 'customer' && p.phone);
+      const notes = tables().bookings.filter((b) => b.customer_note).map((b) => String(b.customer_note));
+      assert.ok(notes.length > 0 && customers.length > 0);
+      for (const secret of [...customers.map((p) => String(p.phone)), ...notes, 'Kenduri', 'Hari Raya', hakimId, 'customer_id']) {
+        assert.ok(!text.includes(secret), `a guest must not see ${secret}`);
+      }
+      assert.ok(!JSON.stringify(await shopPage(hakim, 'ali-barber')).includes('Kenduri'));
+      assert.equal(hakimProfile.full_name, 'Hakim');
+
+      // Paused: customers only learn whose shop it is; the owner still sees their page; an unknown link, nothing.
+      assert.equal((await ali.from('shops').update({ is_published: false }).eq('id', shop.id)).error, null);
+      for (const [who, c] of [['guest', guest], ['Hakim', hakim], ['Ali', ali]] as const) {
+        assert.deepEqual(await shopPage(c, 'ali-barber'), await shopPageBefore(c, 'ali-barber'), `${who} paused ${when}`);
+        assert.deepEqual(await shopPage(c, 'nope'), { shop: null, status: null });
+      }
+      assert.deepEqual(await shopPage(guest, 'ali-barber'), {
+        shop: null,
+        status: { name: 'Ali Barber Sungai Chua', phone: '012-345 6789', is_live: false },
+      });
+      assert.equal((await shopPage(ali, 'ali-barber')).shop.name, 'Ali Barber Sungai Chua');
+    }
+  } finally {
+    setClock(() => Date.now());
+  }
+});
+
+/** What the Bookings tab asked for on a day before shop_day, one request each, as the app sent them. */
+async function shopDayBefore(c: Client, day: string, since: string | null = null, limit = 5) {
+  const uid = (await c.auth.getUser()).data.user!.id;
+  const mine = (await c.from('shops').select('*').eq('owner_id', uid).maybeSingle()).data!;
+  const tz = mine.time_zone;
+  const now = localDateString(new Date(demoNow()), tz);
+  const days = [addDays(now, -1), addDays(now, 13)];
+  const { start, end } = dayBounds(day, tz);
+  const next = dayBounds(addDays(now, 1), tz);
+  const [list, active, team, closed, unreminded, waitlist, queued, changes] = await Promise.all([
+    c
+      .from('bookings')
+      .select('*, barbers(name), customer:profiles!bookings_customer_id_fkey(full_name, phone)')
+      .eq('shop_id', mine.id)
+      .gte('starts_at', start.toISOString())
+      .lt('starts_at', end.toISOString())
+      .order('starts_at'),
+    c.from('services').select('id', { count: 'exact', head: true }).eq('shop_id', mine.id).eq('is_active', true),
+    c.from('barbers').select('*, working_hours(*)').eq('shop_id', mine.id).order('sort_order').order('created_at'),
+    c.rpc('shop_closed_days', {
+      p_shop_id: mine.id,
+      p_from: day < days[0] ? day : days[0],
+      p_to: day > days[1] ? day : days[1],
+    }),
+    day === now
+      ? c
+          .from('bookings')
+          .select(
+            'id, barber_id, status, is_block, starts_at, reminded_at, guest_phone, created_at, customer:profiles!bookings_customer_id_fkey(phone)',
+          )
+          .eq('shop_id', mine.id)
+          .eq('status', 'confirmed')
+          .eq('is_block', false)
+          .is('reminded_at', null)
+          .gte('starts_at', next.start.toISOString())
+          .lt('starts_at', next.end.toISOString())
+      : null,
+    day >= now ? c.rpc('shop_waitlist', { p_day: day }) : null,
+    day === now ? c.rpc('shop_queue') : null,
+    c.rpc('shop_changes', { p_since: since, p_limit: limit }),
+  ]);
+  return {
+    bookings: byStart(list.data as Row[]),
+    services: active.count,
+    barbers: withSortedHours(
+      [...(team.data as Row[])].sort(
+        (a, b) =>
+          Number(a.sort_order) - Number(b.sort_order) ||
+          Date.parse(String(a.created_at)) - Date.parse(String(b.created_at)) ||
+          (String(a.id) < String(b.id) ? -1 : 1),
+      ),
+    ),
+    closed: closed.data,
+    tomorrow: unreminded ? byStart(unreminded.data as unknown as Row[]) : [],
+    waiting: waitlist ? waitlist.data : [],
+    queue: queued ? queued.data : [],
+    changes: changes.data,
+  };
+}
+
+async function shopDay(c: Client, day: string, since: string | null = null, limit = 5) {
+  const { data, error } = await c.rpc('shop_day', { p_day: day, p_since: since, p_limit: limit });
+  assert.equal(error, null);
+  return data;
+}
+
+test('the barber’s day comes in one answer, part for part what the Bookings tab’s requests gave the owner', async () => {
+  try {
+    for (const hour of [0, 10, 18, 23]) {
+      const date = addDays(today(), hour % 7);
+      const at = dayBounds(date, TZ).start.getTime() + (hour * 60 + 7) * 60_000;
+      const when = `on ${date} at ${hour}:07`;
+      setClock(() => at);
+      resetDemo();
+      const ali = await signedIn(DEMO_BARBER_EMAIL);
+      const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+      insertRow('shop_closures', { shop_id: shop.id, day: addDays(date, 3), reason: 'Hari Raya' });
+      insertRow('shop_closures', { shop_id: shop.id, day: addDays(date, 40), reason: 'Kenduri' });
+      const saturday = String(tables().waitlist.find((w) => w.shop_id === shop.id)!.day);
+      const days = [addDays(date, -7), addDays(date, -1), date, addDays(date, 1), addDays(date, 3), saturday, addDays(date, 40)];
+      for (const day of days) assert.deepEqual(await shopDay(ali, day), await shopDayBefore(ali, day), `${day} ${when}`);
+      const mark = (await shopDay(ali, date)).changes.changes[1]?.changed_at ?? null;
+      assert.ok(mark, `the sample has changes to count from ${when}`);
+      assert.deepEqual(await shopDay(ali, date, mark, 1), await shopDayBefore(ali, date, mark, 1), when);
+
+      // Something in every part on its day.
+      const todays = await shopDay(ali, date);
+      assert.ok(todays.bookings.some((b: Row) => (b.customer as Row | null)?.phone && b.barbers), when);
+      assert.equal(todays.services, 5);
+      assert.ok(todays.tomorrow.length >= 2, when);
+      assert.deepEqual(todays.queue.map((q: Row) => q.name), ['Encik Hisham', 'Jason', 'Adik Faris'], when);
+      assert.equal(todays.changes.count, 3, when);
+      assert.ok(todays.closed.some((d: Row) => d.reason === 'Hari Raya'), when);
+      assert.deepEqual((await shopDay(ali, saturday)).waiting.map((w: Row) => w.name), ['Farid', 'Aiman'], when);
+      assert.ok((await shopDay(ali, addDays(date, 40))).closed.some((d: Row) => d.reason === 'Kenduri'), 'a day off the strip');
+      assert.deepEqual((await shopDay(ali, addDays(date, 1))).queue, []);
+
+      // Paused, the owner's day is the same as before.
+      assert.equal((await ali.from('shops').update({ is_published: false }).eq('id', shop.id)).error, null);
+      assert.deepEqual(await shopDay(ali, date), await shopDayBefore(ali, date), `paused ${when}`);
+    }
+  } finally {
+    setClock(() => Date.now());
+  }
+
+  // Another owner gets their own shop's day and nothing of Ali's; customers have none, and guests can't ask.
+  // The clock stands still, as a phone that never looked counts from 24 hours before the call.
+  const at = Date.now();
+  setClock(() => at);
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  const kemas = tables().shops.find((s) => s.slug === 'kemas-barber-kajang')!;
+  const ali = tables().shops.find((s) => s.slug === 'ali-barber')!;
+  let seen = 0;
+  const booked = tables()
+    .bookings.filter((b) => b.shop_id === kemas.id)
+    .map((b) => localDateString(new Date(String(b.starts_at)), TZ))
+    .filter((d) => d >= addDays(today(), -7) && d <= addDays(today(), 13));
+  for (const day of [...new Set([today(), addDays(today(), 1), ...booked.slice(0, 3)])]) {
+    const theirs = await shopDay(rahman, day);
+    seen += theirs.bookings.length;
+    assert.deepEqual(theirs, await shopDayBefore(rahman, day), day);
+    assert.ok((theirs.bookings as Row[]).every((b) => b.shop_id === kemas.id));
+    assert.ok((theirs.barbers as Row[]).every((b) => b.shop_id === kemas.id));
+    assert.ok(!JSON.stringify(theirs).includes(String(ali.id)), 'nothing of Ali’s shop');
+    // Not one of Ali's bookings, queue places or requests, nor his barbers.
+    const alis = [
+      ...tables().bookings.filter((b) => b.shop_id === ali.id),
+      ...tables().queue_entries.filter((e) => e.shop_id === ali.id),
+      ...tables().waitlist.filter((w) => w.shop_id === ali.id),
+      ...tables().barbers.filter((b) => b.shop_id === ali.id),
+    ].map((r) => String(r.id));
+    assert.ok(alis.length > 50);
+    for (const id of alis) assert.ok(!JSON.stringify(theirs).includes(id), id);
+  }
+  assert.ok(seen > 0, 'Rahman has bookings of his own');
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const notOwner = await hakim.rpc('shop_day', { p_day: today() });
+  assert.deepEqual([notOwner.error?.code, notOwner.error?.message], ['P0002', 'Set up your shop first.']);
+  assert.equal((await client().rpc('shop_day', { p_day: today() })).error?.code, '42501');
+  setClock(() => Date.now());
 });

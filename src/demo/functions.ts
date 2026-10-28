@@ -24,7 +24,7 @@ import {
   updateRows,
   type Row,
 } from './db.ts';
-import type { Caller } from './postgrest.ts';
+import { handleRest, type Caller } from './postgrest.ts';
 
 const BOOKING_HORIZON_DAYS = 60;
 const MAX_UPCOMING_PER_SHOP = 4;
@@ -1839,6 +1839,111 @@ export function becomeCustomer(c: Caller) {
   if (profile) updateRows('profiles', [profile], { role: 'customer' });
 }
 
+// Whole screens in one request ---------------------------------------------------
+
+/** What a select the app sends gives this caller, through the same pretend PostgREST and its policies. */
+function selectAs(c: Caller, table: string, query: Record<string, string | string[]>): Row[] {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) for (const one of [value].flat()) params.append(key, one);
+  return handleRest('GET', table, params, new Headers(), undefined, c).body as Row[];
+}
+
+/**
+ * shop_page: everything a shop's page shows when it opens, part for part
+ * what its separate requests give the caller. A shop they can't see gives
+ * only shop_public_status's answer, and an unknown link neither. To add a
+ * part, add a line to the answer.
+ */
+export function shopPage(c: Caller, slug: unknown) {
+  const [shop] = slug == null ? [] : selectAs(c, 'shops', { select: '*', slug: `eq.${String(slug)}` });
+  if (!shop) return { shop: null, status: shopPublicStatus(slug)[0] ?? null };
+  const today = localDateString(new Date(now()), String(shop.time_zone));
+  const forShop = { shop_id: `eq.${String(shop.id)}` };
+  // One more than the page shows, to know whether there are more.
+  const reviews = selectAs(c, 'reviews', {
+    select: 'booking_id,rating,comment,first_name,reply,replied_at,created_at,barbers(name)',
+    ...forShop,
+    order: 'created_at.desc,booking_id',
+    limit: '4',
+  });
+  return {
+    shop,
+    services: selectAs(c, 'services', { select: '*', ...forShop, is_active: 'eq.true', order: 'sort_order,name,id' }),
+    barbers: selectAs(c, 'barbers', {
+      select: '*,working_hours(weekday,opens_at,closes_at)',
+      ...forShop,
+      is_active: 'eq.true',
+      order: 'sort_order,name,id',
+      'working_hours.order': 'weekday,opens_at',
+    }),
+    today,
+    closed_days: shopClosedDays(c, shop.id, today, addDays(today, 13)),
+    hours_today: shopHoursToday(c, shop.id)[0],
+    queue: shop.queue_enabled ? queueStatus(c, shop.id) : null,
+    reviews: reviews.slice(0, 3),
+    more_reviews: reviews.length > 3,
+  };
+}
+
+/**
+ * shop_day: everything the Bookings tab asks for on a day, part for part what
+ * its separate requests give the owner: the day's bookings, how many services
+ * customers can book, every barber with their hours, the strip's closed days,
+ * on today tomorrow's bookings still to remind and today's queue, the day's
+ * waiting list, and what customers changed since p_since.
+ */
+export function shopDay(c: Caller, dayArg: unknown, sinceArg: unknown = null, limitArg: unknown = 5) {
+  const shop = myShop(c);
+  const tz = String(shop.time_zone);
+  const today = localDateString(new Date(now()), tz);
+  const day = dayArg == null ? null : parseDate(dayArg);
+  const forShop = { shop_id: `eq.${String(shop.id)}` };
+  const during = (date: string) => [
+    `gte.${dayBounds(date, tz).start.toISOString()}`,
+    `lt.${dayBounds(addDays(date, 1), tz).start.toISOString()}`,
+  ];
+  const strip = [addDays(today, -1), addDays(today, 13)];
+  return {
+    bookings: day
+      ? selectAs(c, 'bookings', {
+          select: '*,barbers(name),customer:profiles!bookings_customer_id_fkey(full_name,phone)',
+          ...forShop,
+          starts_at: during(day),
+          order: 'starts_at,id',
+        })
+      : [],
+    services: tables().services.filter((v) => v.shop_id === shop.id && v.is_active === true).length,
+    barbers: selectAs(c, 'barbers', {
+      select: '*,working_hours(*)',
+      ...forShop,
+      order: 'sort_order,created_at,id',
+      'working_hours.order': 'weekday,opens_at',
+    }),
+    closed: shopClosedDays(
+      c,
+      shop.id,
+      day && day < strip[0] ? day : strip[0],
+      day && day > strip[1] ? day : strip[1],
+    ),
+    tomorrow:
+      day === today
+        ? selectAs(c, 'bookings', {
+            select:
+              'id,barber_id,status,is_block,starts_at,reminded_at,guest_phone,created_at,customer:profiles!bookings_customer_id_fkey(phone)',
+            ...forShop,
+            status: 'eq.confirmed',
+            is_block: 'eq.false',
+            reminded_at: 'is.null',
+            starts_at: during(addDays(today, 1)),
+            order: 'starts_at,id',
+          })
+        : [],
+    waiting: day ? shopWaitlist(c, day) : [],
+    queue: day === today ? shopQueue(c) : [],
+    changes: shopChanges(c, sinceArg, limitArg),
+  };
+}
+
 /** Who may call what: the migration revokes these from anonymous callers. */
 const SIGNED_IN_ONLY = new Set([
   'book_appointment',
@@ -1873,6 +1978,7 @@ const SIGNED_IN_ONLY = new Set([
   'start_from_queue',
   'shop_queue',
   'my_queue',
+  'shop_day',
 ]);
 
 export function callFunction(name: string, args: Record<string, unknown>, c: Caller): { status: number; body?: unknown } {
@@ -1969,6 +2075,10 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: shopQueue(c) };
     case 'my_queue':
       return { status: 200, body: myQueue(c) };
+    case 'shop_page':
+      return { status: 200, body: shopPage(c, args.p_slug) };
+    case 'shop_day':
+      return { status: 200, body: shopDay(c, args.p_day, args.p_since ?? null, args.p_limit ?? 5) };
     case 'delete_my_account':
       deleteMyAccount(c);
       return { status: 204 };
