@@ -6,6 +6,9 @@
 // Env: REST_URL (PostgREST), JWT_SECRET, SHOPS, CUSTOMERS (as seeded),
 //      CONCURRENCY (default 50), SECONDS per scenario (default 15),
 //      RUSH (customers in the rush, default 300), ONLY (comma list of scenarios)
+//
+// Some screens against a PostgREST of your own, e.g. on port 54581:
+//   REST_URL=http://127.0.0.1:54581 JWT_SECRET=... ONLY="shop page,barber's day" SECONDS=10 node e2e/load/run.mjs
 
 import crypto from 'node:crypto';
 
@@ -94,39 +97,10 @@ const SCENARIOS = {
   },
   'Search for a barber': async () =>
     must(anon.rpc('find_shops', { p_search: AREAS[pick(AREAS.length) - 1], p_area: null, p_limit: 20, p_offset: 0 })),
-  'Shop page': async () => {
-    const i = pick(SHOPS);
-    const shop = await must(anon.from('shops').select('*').eq('slug', `kedai-gunting-${i}`).maybeSingle());
-    await Promise.all([
-      must(anon.from('services').select('*').eq('shop_id', shop.data.id).eq('is_active', true).order('sort_order').order('name')),
-      // With each barber's intro and stars, so the barber step needs no request of its own.
-      must(
-        anon
-          .from('barbers')
-          .select('*, working_hours(weekday, opens_at, closes_at)')
-          .eq('shop_id', shop.data.id)
-          .eq('is_active', true)
-          .order('sort_order')
-          .order('name'),
-      ),
-      // Closed days for the day picker and today's hours for "Open now".
-      must(anon.rpc('shop_closed_days', { p_shop_id: shop.data.id, p_from: localDate(0), p_to: localDate(13) })),
-      must(anon.rpc('shop_hours_today', { p_shop_id: shop.data.id })),
-      // How long the walk-in queue is, at the one shop in three that runs one.
-      shop.data.queue_enabled ? must(anon.rpc('queue_status', { p_shop_id: shop.data.id })) : null,
-      // The newest reviews, and one more to know whether there are others.
-      must(
-        anon
-          .from('reviews')
-          .select('booking_id, rating, comment, first_name, reply, replied_at, created_at, barbers(name)')
-          .eq('shop_id', shop.data.id)
-          .order('created_at', { ascending: false })
-          .order('booking_id')
-          .range(0, 3),
-      ),
-    ]);
-    return shop;
-  },
+  // Everything the page shows on opening, in one request (shop_page): the shop, its services, barbers
+  // with their hours, intros and stars, closed days, today's hours, the walk-in queue at the one shop in
+  // three that runs one, and the newest reviews. Another day's free times and more reviews come later.
+  'Shop page': async () => must(anon.rpc('shop_page', { p_slug: `kedai-gunting-${pick(SHOPS)}` })),
   'Free times for a day': async () =>
     must(
       anon.rpc('available_slots', {
@@ -141,40 +115,12 @@ const SCENARIOS = {
   // bookings policy has to stay fast without the app's filter.
   'Every booking I may see': async () =>
     must(customer().from('bookings').select('id, starts_at').order('starts_at', { ascending: false }).limit(100)),
-  "Barber's day": async () => {
-    const i = pick(SHOPS);
-    const c = owner(i);
-    const shopId = idOf(`shop${i}`);
-    const day = localDate(pick(3) - 1);
-    const start = new Date(`${day}T00:00:00+08:00`).toISOString();
-    const end = new Date(new Date(start).getTime() + 86_400_000).toISOString();
-    return Promise.all([
-      must(
-        c
-          .from('bookings')
-          .select('*, barbers(name), customer:profiles!bookings_customer_id_fkey(full_name, phone)')
-          .eq('shop_id', shopId)
-          .gte('starts_at', start)
-          .lt('starts_at', end)
-          .order('starts_at'),
-      ),
-      must(c.from('services').select('id', { count: 'exact', head: true }).eq('shop_id', shopId).eq('is_active', true)),
-      must(c.from('barbers').select('id', { count: 'exact', head: true }).eq('shop_id', shopId).eq('is_active', true)),
-      must(
-        c
-          .from('working_hours')
-          .select('id, barbers!inner(shop_id)', { count: 'exact', head: true })
-          .eq('barbers.shop_id', shopId),
-      ),
-      // Who is waiting for a time that day.
-      must(c.rpc('shop_waitlist', { p_day: day })),
-      // The Bookings tab's number, asked every minute: as a phone that has never looked, the most to count.
-      must(c.rpc('shop_changes', { p_since: null, p_limit: 5 })),
-      // Today's walk-in queue, which the app asks for on today while the shop runs one: sent each time
-      // here to measure it at its most.
-      must(c.rpc('shop_queue')),
-    ]);
-  },
+  // Everything the Bookings tab shows, in one request (shop_day), on opening and each minute: the day's
+  // bookings, the team with their hours, the strip's closed days, the waiting list, on today tomorrow's
+  // reminders and the walk-in queue, and what customers changed, as a phone that has never looked (the
+  // most to count).
+  "Barber's day": async () =>
+    must(owner(pick(SHOPS)).rpc('shop_day', { p_day: localDate(pick(3) - 1), p_since: null, p_limit: 5 })),
   // The owner opening the app on My shop: their shop, then every card's
   // numbers in one call (the week's takings, customers, reviews and closed
   // days). Every seeded shop is live, so the "Get your shop ready" card's
