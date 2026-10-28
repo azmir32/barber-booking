@@ -4327,6 +4327,422 @@ do $$ begin
 end $$;
 rollback;
 
+-- Whole screens in one request ------------------------------------------------------
+-- The shop's page (shop_page) and the barber's day (shop_day) each come in one
+-- answer, part for part what the requests they replace give the same caller:
+-- the selects under row-level security as the app sent them, and the
+-- functions. A diary with something in every part: an away barber and a
+-- hidden service, a closure, a barber's day off, five reviews, a waiting
+-- list, a walk-in queue, notes and numbers. Ali works all day every day, so
+-- the queue is open at any hour. Hakim and Siti are customers, and Rahman
+-- owns another shop, for this part only.
+begin;
+reset role;
+delete from bookings;
+delete from shop_closures;
+delete from waitlist;
+delete from queue_entries;
+delete from working_hours
+where barber_id in ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2');
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a1', d, '00:00', '24:00' from generate_series(0, 6) d;
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a2', d, r.opens, r.closes
+from generate_series(1, 5) d, (values ('09:00'::time, '12:00'::time), ('13:00', '18:00')) r (opens, closes);
+update barbers set is_active = true, sort_order = 0, about = null where shop_id = '00000000-0000-0000-0000-00000000005a';
+update barbers set about = 'Skin fades and beard trims' where id = '00000000-0000-0000-0000-0000000000a2';
+update shops set is_published = true, subscription_status = 'active', queue_enabled = true
+where id = '00000000-0000-0000-0000-00000000005a';
+update services set is_active = true where shop_id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000001c1', 'hakim.p@test', '{"role":"customer","full_name":"Hakim bin Omar","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000001c2', 'siti.p@test', '{"role":"customer","full_name":"Siti Aminah","phone":"019-555 1234"}'),
+  ('00000000-0000-0000-0000-0000000001b1', 'rahman.p@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug, is_published) values
+  ('00000000-0000-0000-0000-00000000015b', '00000000-0000-0000-0000-0000000001b1', 'Kemas Cuts', 'kemas-cuts', true);
+insert into barbers (id, shop_id, name, is_active, sort_order) values
+  ('00000000-0000-0000-0000-0000000001a1', '00000000-0000-0000-0000-00000000015b', 'Rahman', true, 0),
+  ('00000000-0000-0000-0000-0000000001a2', '00000000-0000-0000-0000-00000000005a', 'Zul', false, 5);
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select b, d, '10:00', '18:00'
+from unnest(array['00000000-0000-0000-0000-0000000001a1', '00000000-0000-0000-0000-0000000001a2']::uuid[]) b,
+     generate_series(0, 6) d;
+insert into services (id, shop_id, name, duration_min, price, sort_order, is_active) values
+  ('00000000-0000-0000-0000-0000000001e1', '00000000-0000-0000-0000-00000000005a', 'Skin fade', 45, 35, 1, true),
+  ('00000000-0000-0000-0000-0000000001e2', '00000000-0000-0000-0000-00000000005a', 'Old style', 30, 20, 2, false),
+  ('00000000-0000-0000-0000-0000000001e3', '00000000-0000-0000-0000-00000000015b', 'Fade', 45, 30, 0, true);
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  at_ time := '10:00';
+  shop uuid := '00000000-0000-0000-0000-00000000005a';
+  ali uuid := '00000000-0000-0000-0000-0000000000a1';
+  danial uuid := '00000000-0000-0000-0000-0000000000a2';
+  ben uuid := '00000000-0000-0000-0000-0000000000c1';
+  hakim uuid := '00000000-0000-0000-0000-0000000001c1';
+  siti uuid := '00000000-0000-0000-0000-0000000001c2';
+  haircut uuid := '00000000-0000-0000-0000-0000000000e1';
+  local_ timestamptz;
+  b bookings;
+begin
+  update profiles set phone = '012-777 8888' where id = ben;
+  -- Five finished cuts over the last weeks, each reviewed: the page shows three, and there are more.
+  for n in 1..5 loop
+    local_ := (today - 7 * n + at_)::timestamp at time zone 'Asia/Kuala_Lumpur';
+    insert into bookings (shop_id, barber_id, service_id, customer_id, service_name, price, starts_at, ends_at, status)
+    values (shop, case when n % 2 = 0 then danial else ali end, haircut, case when n % 2 = 0 then hakim else ben end,
+            'Haircut', 25, local_, local_ + interval '30 minutes', 'completed')
+    returning * into b;
+    insert into reviews (booking_id, shop_id, barber_id, customer_id, rating, comment, first_name, reply, replied_at, created_at)
+    values (b.id, shop, b.barber_id, b.customer_id, 3 + n % 3, case when n <> 3 then 'Kemas ' || n end,
+            case when n % 2 = 0 then 'Hakim' else 'Ben' end, case when n = 1 then 'Terima kasih' end,
+            case when n = 1 then now() end, b.ends_at + interval '1 hour');
+  end loop;
+  -- Today: Ben's online cut with a note, a walk-in with a number, Danial's break, and one Siti cancelled.
+  insert into bookings (shop_id, barber_id, service_id, customer_id, service_name, price, starts_at, ends_at,
+                        customer_note, customer_changed_at, customer_change)
+  values (shop, ali, haircut, ben, 'Haircut', 25, (today + time '10:00')::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + time '10:30')::timestamp at time zone 'Asia/Kuala_Lumpur', 'Low fade, keep the top long',
+          now() - interval '2 hours', 'booked');
+  insert into bookings (shop_id, barber_id, service_id, guest_name, guest_phone, service_name, price, starts_at, ends_at)
+  values (shop, danial, haircut, 'Pak Mat', '013-999 0000', 'Haircut', 25,
+          (today + time '11:00')::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + time '11:30')::timestamp at time zone 'Asia/Kuala_Lumpur');
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  values (shop, danial, true, 'Lunch', 0, (today + time '12:00')::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + time '13:00')::timestamp at time zone 'Asia/Kuala_Lumpur');
+  insert into bookings (shop_id, barber_id, service_id, customer_id, service_name, price, starts_at, ends_at, status,
+                        customer_changed_at, customer_change)
+  values (shop, ali, haircut, siti, 'Haircut', 25, (today + 2 + time '15:00')::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + 2 + time '15:30')::timestamp at time zone 'Asia/Kuala_Lumpur', 'cancelled',
+          now() - interval '1 hour', 'cancelled');
+  -- Tomorrow: Ben still to remind, Siti reminded, and a walk-in with a number still to remind.
+  insert into bookings (shop_id, barber_id, service_id, customer_id, service_name, price, starts_at, ends_at, reminded_at)
+  values (shop, ali, haircut, ben, 'Haircut', 25, (today + 1 + time '10:00')::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + 1 + time '10:30')::timestamp at time zone 'Asia/Kuala_Lumpur', null),
+         (shop, danial, haircut, siti, 'Haircut', 25, (today + 1 + time '10:00')::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + 1 + time '10:30')::timestamp at time zone 'Asia/Kuala_Lumpur', now());
+  insert into bookings (shop_id, barber_id, service_id, guest_name, guest_phone, service_name, price, starts_at, ends_at)
+  values (shop, ali, haircut, 'Pak Long', '017-123 4567', 'Haircut', 25,
+          (today + 1 + time '11:00')::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + 1 + time '11:30')::timestamp at time zone 'Asia/Kuala_Lumpur');
+  -- Danial's whole day off in three days, and the shop closed in five, each with a reason only the owner sees.
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  values (shop, danial, true, 'Kenduri', 0, (today + 3)::timestamp at time zone 'Asia/Kuala_Lumpur',
+          (today + 4)::timestamp at time zone 'Asia/Kuala_Lumpur');
+  insert into shop_closures (shop_id, day, reason) values (shop, today + 5, 'Hari Raya'), (shop, today + 30, 'Cuti');
+  -- Waiting for a time two days out, and today's queue: Hakim online, a walk-in with a number, one gone.
+  insert into waitlist (shop_id, customer_id, day, service_id, barber_id, created_at) values
+    (shop, hakim, today + 2, haircut, null, now() - interval '3 hours'),
+    (shop, ben, today + 2, '00000000-0000-0000-0000-0000000001e1', danial, now() - interval '2 hours');
+  insert into queue_entries (shop_id, day, customer_id, service_id, created_at) values
+    (shop, today, hakim, haircut, now() - interval '20 minutes');
+  insert into queue_entries (shop_id, day, guest_name, guest_phone, barber_id, created_at) values
+    (shop, today, 'Pak Su', '016-444 5555', ali, now() - interval '10 minutes');
+  insert into queue_entries (shop_id, day, customer_id, state, gone_reason, gone_at, created_at) values
+    (shop, today, siti, 'gone', 'left', now() - interval '5 minutes', now() - interval '30 minutes');
+end $$;
+
+-- What the shop's page asked for before, one request each, as the caller.
+-- Security invoker, so row-level security decides what each select sees.
+create function public.test_shop_requests(p_slug text)
+returns jsonb
+language plpgsql
+as $$
+declare
+  s shops;
+  today date;
+  page jsonb;
+begin
+  select * into s from shops where slug = p_slug;
+  if not found then
+    return jsonb_build_object('shop', null, 'status', (select to_jsonb(x) from shop_public_status(p_slug) x));
+  end if;
+  today := (now() at time zone s.time_zone)::date;
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'booking_id', r.booking_id, 'rating', r.rating, 'comment', r.comment, 'first_name', r.first_name,
+           'reply', r.reply, 'replied_at', r.replied_at, 'created_at', r.created_at,
+           'barbers', (select jsonb_build_object('name', b.name) from barbers b where b.id = r.barber_id))
+         order by r.created_at desc, r.booking_id), '[]')
+    into page
+  from (select r.booking_id, r.rating, r.comment, r.first_name, r.reply, r.replied_at, r.created_at, r.barber_id
+        from reviews r where r.shop_id = s.id order by r.created_at desc, r.booking_id limit 4) r;
+  return jsonb_build_object(
+    'shop', to_jsonb(s),
+    'services', coalesce((select jsonb_agg(to_jsonb(v) order by v.sort_order, v.name, v.id)
+                          from services v where v.shop_id = s.id and v.is_active), '[]'),
+    'barbers', coalesce((
+      select jsonb_agg(to_jsonb(b) || jsonb_build_object('working_hours', coalesce((
+               select jsonb_agg(jsonb_build_object('weekday', wh.weekday, 'opens_at', wh.opens_at, 'closes_at', wh.closes_at)
+                                order by wh.weekday, wh.opens_at)
+               from working_hours wh where wh.barber_id = b.id), '[]')) order by b.sort_order, b.name, b.id)
+      from barbers b where b.shop_id = s.id and b.is_active), '[]'),
+    'today', today,
+    'closed_days', coalesce((select jsonb_agg(to_jsonb(d)) from shop_closed_days(s.id, today, today + 13) d), '[]'),
+    'hours_today', (select to_jsonb(h) from shop_hours_today(s.id) h),
+    'queue', case when s.queue_enabled then queue_status(s.id) end,
+    'reviews', coalesce(jsonb_path_query_array(page, '$[0 to 2]'), '[]'),
+    'more_reviews', jsonb_array_length(page) > 3);
+end;
+$$;
+
+-- What the Bookings tab asked for on a day before, one request each, as the owner.
+create function public.test_day_requests(p_day date, p_since timestamptz default null)
+returns jsonb
+language plpgsql
+as $$
+declare
+  s shops;
+  today date;
+begin
+  select * into s from shops where owner_id = auth.uid();
+  today := (now() at time zone s.time_zone)::date;
+  return jsonb_build_object(
+    'bookings', coalesce((
+      select jsonb_agg(to_jsonb(b) || jsonb_build_object(
+               'barbers', (select jsonb_build_object('name', br.name) from barbers br where br.id = b.barber_id),
+               'customer', (select jsonb_build_object('full_name', p.full_name, 'phone', p.phone)
+                            from profiles p where p.id = b.customer_id)) order by b.starts_at, b.id)
+      from bookings b
+      where b.shop_id = s.id
+        and b.starts_at >= p_day::timestamp at time zone s.time_zone
+        and b.starts_at < (p_day + 1)::timestamp at time zone s.time_zone), '[]'),
+    'services', (select count(*) from services v where v.shop_id = s.id and v.is_active),
+    'barbers', coalesce((
+      select jsonb_agg(to_jsonb(br) || jsonb_build_object('working_hours', coalesce((
+               select jsonb_agg(to_jsonb(wh) order by wh.weekday, wh.opens_at)
+               from working_hours wh where wh.barber_id = br.id), '[]')) order by br.sort_order, br.created_at, br.id)
+      from barbers br where br.shop_id = s.id), '[]'),
+    'closed', coalesce((select jsonb_agg(to_jsonb(d))
+                        from shop_closed_days(s.id, least(p_day, today - 1), greatest(p_day, today + 13)) d), '[]'),
+    'tomorrow', case when p_day = today then coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', b.id, 'barber_id', b.barber_id, 'status', b.status, 'is_block', b.is_block, 'starts_at', b.starts_at,
+               'reminded_at', b.reminded_at, 'guest_phone', b.guest_phone, 'created_at', b.created_at,
+               'customer', (select jsonb_build_object('phone', p.phone) from profiles p where p.id = b.customer_id))
+             order by b.starts_at, b.id)
+      from bookings b
+      where b.shop_id = s.id and b.status = 'confirmed' and not b.is_block and b.reminded_at is null
+        and b.starts_at >= (today + 1)::timestamp at time zone s.time_zone
+        and b.starts_at < (today + 2)::timestamp at time zone s.time_zone), '[]') else '[]' end,
+    'waiting', coalesce((select jsonb_agg(to_jsonb(w)) from shop_waitlist(p_day) w), '[]'),
+    'queue', case when p_day = today then coalesce((select jsonb_agg(to_jsonb(q)) from shop_queue() q), '[]') else '[]' end,
+    'changes', shop_changes(p_since, 5));
+end;
+$$;
+
+-- Each part the same as before, for a guest, a customer in the queue and the owner.
+set role anon;
+do $$
+declare
+  p jsonb := shop_page('ali-cuts');
+  before jsonb := test_shop_requests('ali-cuts');
+  part text;
+begin
+  for part in select jsonb_object_keys(before) loop
+    assert p -> part = before -> part, format('a guest''s %s: %s, not %s', part, p -> part, before -> part);
+  end loop;
+  assert (select array_agg(k order by k) from jsonb_object_keys(p) k) = (select array_agg(k order by k) from jsonb_object_keys(before) k),
+    'the same parts: ' || p::text;
+  -- What the page needs is all there.
+  assert p #>> '{shop,name}' = 'Ali Cuts' and p -> 'status' is null, 'the shop: ' || (p -> 'shop')::text;
+  assert (select array_agg(s ->> 'name') from jsonb_array_elements(p -> 'services') s) = array['Haircut', 'Skin fade'],
+    'active services in order: ' || (p -> 'services')::text;
+  assert (select array_agg(b ->> 'name') from jsonb_array_elements(p -> 'barbers') b) = array['Ali', 'Danial'],
+    'active barbers only: ' || (p -> 'barbers')::text;
+  assert jsonb_array_length(p #> '{barbers,1,working_hours}') = 10 and p #>> '{barbers,1,about}' = 'Skin fades and beard trims'
+     and (p #>> '{barbers,0,rating_count}')::int = 3, 'each barber with hours, line and stars: ' || (p -> 'barbers')::text;
+  assert jsonb_array_length(p -> 'reviews') = 3 and p -> 'more_reviews' = 'true'
+     and p #>> '{reviews,0,first_name}' = 'Ben' and p #>> '{reviews,0,barbers,name}' = 'Ali'
+     and p #>> '{reviews,0,reply}' = 'Terima kasih', 'the newest three reviews, and more: ' || (p -> 'reviews')::text;
+  assert jsonb_array_length(p -> 'closed_days') = 2, 'Danial''s day off and the closure: ' || (p -> 'closed_days')::text;
+  assert (p #>> '{queue,waiting}')::int = 2 and p #> '{queue,mine}' = 'null', 'two waiting, and none of them a guest';
+  -- And nothing private: no customer's number, note, account or full name, nobody in the queue,
+  -- and no reason for a day off.
+  for part in select unnest(array['012-777 8888', '011-2233 4455', '019-555 1234', 'Low fade', 'Pak Mat', 'Pak Su',
+                                  '016-444 5555', 'Hakim bin Omar', 'Siti', 'Kenduri', 'Hari Raya', 'customer_id',
+                                  '00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000001c1']) loop
+    assert strpos(p::text, part) = 0, format('a guest must not see %s: %s', part, p);
+  end loop;
+end $$;
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000001c1';
+do $$
+declare
+  p jsonb := shop_page('ali-cuts');
+  before jsonb := test_shop_requests('ali-cuts');
+  part text;
+begin
+  for part in select jsonb_object_keys(before) loop
+    assert p -> part = before -> part, format('a customer''s %s: %s, not %s', part, p -> part, before -> part);
+  end loop;
+  assert (p #>> '{queue,mine,place}')::int = 1 and p #>> '{queue,mine,state}' = 'waiting',
+    'Hakim sees his own place: ' || (p -> 'queue')::text;
+  for part in select unnest(array['012-777 8888', '019-555 1234', 'Low fade', 'Pak Mat', 'Pak Su', '016-444 5555',
+                                  'Siti', 'Kenduri', 'Hari Raya', 'customer_id']) loop
+    assert strpos(p::text, part) = 0, format('a customer must not see %s: %s', part, p);
+  end loop;
+end $$;
+-- The owner sees the reasons for the days off, as shop_closed_days gives them to the owner.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  p jsonb := shop_page('ali-cuts');
+  before jsonb := test_shop_requests('ali-cuts');
+  part text;
+begin
+  for part in select jsonb_object_keys(before) loop
+    assert p -> part = before -> part, format('the owner''s %s: %s, not %s', part, p -> part, before -> part);
+  end loop;
+  assert strpos(p::text, 'Kenduri') > 0 and strpos(p::text, 'Hari Raya') > 0, 'the owner''s reasons: ' || (p -> 'closed_days')::text;
+end $$;
+-- A shop with no queue sends none, and its reviews are none yet.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000001c1';
+do $$
+declare
+  p jsonb := shop_page('kemas-cuts');
+begin
+  assert p = test_shop_requests('kemas-cuts'), 'Kemas Cuts as before: ' || p::text;
+  assert p -> 'queue' = 'null' and p -> 'reviews' = '[]' and p -> 'more_reviews' = 'false', 'no queue, no reviews: ' || p::text;
+end $$;
+
+-- Hidden: the page only learns whose shop it is, the way shop_public_status says, and an unknown link nothing.
+reset role;
+update shops set is_published = false where id = '00000000-0000-0000-0000-00000000005a';
+set role anon;
+do $$
+declare
+  p jsonb := shop_page('ali-cuts');
+begin
+  assert p = jsonb_build_object('shop', null, 'status',
+               jsonb_build_object('name', 'Ali Cuts', 'phone', '012-345 6789', 'is_live', false)), 'paused: ' || p::text;
+  assert p = test_shop_requests('ali-cuts'), 'as shop_public_status says';
+  assert shop_page('no-such-shop') = '{"shop": null, "status": null}', 'an unknown link: ' || shop_page('no-such-shop')::text;
+  assert test_shop_requests('no-such-shop') = '{"shop": null, "status": null}', 'as before';
+end $$;
+reset role;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000001c1';
+do $$ begin
+  assert shop_page('ali-cuts') = test_shop_requests('ali-cuts') and shop_page('ali-cuts') -> 'shop' = 'null',
+    'a customer sees it paused too';
+end $$;
+-- Its owner still sees their own page, as the shops policy lets them.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  p jsonb := shop_page('ali-cuts');
+begin
+  assert p = test_shop_requests('ali-cuts') and p #>> '{shop,name}' = 'Ali Cuts', 'the owner''s paused shop: ' || p::text;
+  assert p #> '{queue,open}' = 'false', 'with its queue shut while paused';
+end $$;
+reset role;
+update shops set is_published = true where id = '00000000-0000-0000-0000-00000000005a';
+
+-- The barber's day: every part as the separate requests gave the owner, on
+-- each day the strip shows that has something, a day gone by and one off it.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  d date;
+  got jsonb;
+  before jsonb;
+  part text;
+begin
+  foreach d in array array[today - 7, today - 1, today, today + 1, today + 2, today + 3, today + 5, today + 30] loop
+    got := shop_day(d);
+    before := test_day_requests(d);
+    for part in select jsonb_object_keys(before) loop
+      assert got -> part = before -> part, format('%s''s %s: %s, not %s', d, part, got -> part, before -> part);
+    end loop;
+    assert (select count(*) from jsonb_object_keys(got)) = (select count(*) from jsonb_object_keys(before)),
+      'the same parts: ' || got::text;
+  end loop;
+  got := shop_day(today);
+  assert jsonb_array_length(got -> 'bookings') = 3, 'today''s three: ' || (got -> 'bookings')::text;
+  assert (select count(*) from jsonb_array_elements(got -> 'bookings') b
+          where b #>> '{customer,full_name}' = 'Ben' and b #>> '{customer,phone}' = '012-777 8888'
+            and b ->> 'customer_note' = 'Low fade, keep the top long' and b #>> '{barbers,name}' = 'Ali') = 1,
+    'Ben''s booking with his name, number and note';
+  assert (select array_agg(b ->> 'name' order by b ->> 'name') from jsonb_array_elements(got -> 'barbers') b)
+         = array['Ali', 'Danial', 'Zul'], 'every barber, away ones too: ' || (got -> 'barbers')::text;
+  assert (got ->> 'services')::int = 2, 'two services customers can book';
+  assert (select array_agg(b ->> 'guest_phone' order by b ->> 'starts_at') from jsonb_array_elements(got -> 'tomorrow') b)
+         = array[null, '017-123 4567'], 'tomorrow''s two still to remind: ' || (got -> 'tomorrow')::text;
+  assert (select array_agg(q ->> 'name' order by q ->> 'created_at') from jsonb_array_elements(got -> 'queue') q)
+         = array['Hakim bin Omar', 'Pak Su'], 'today''s queue in order: ' || (got -> 'queue')::text;
+  assert (got #>> '{changes,count}')::int = 2, 'Ben''s booking and Siti''s cancellation: ' || (got -> 'changes')::text;
+  assert (select count(*) from jsonb_array_elements(got -> 'closed') c where c ->> 'reason' = 'Hari Raya') = 1
+     and (select count(*) from jsonb_array_elements(got -> 'closed') c where c ->> 'reason' = 'Kenduri') = 1,
+    'the strip''s closed days with reasons: ' || (got -> 'closed')::text;
+  got := shop_day(today + 2);
+  assert jsonb_array_length(got -> 'waiting') = 2 and got -> 'queue' = '[]' and got -> 'tomorrow' = '[]',
+    'two waiting in two days, and no queue or reminders but today''s: ' || got::text;
+  assert shop_day(today + 30) -> 'closed' @> jsonb_build_array(jsonb_build_object('day', today + 30, 'reason', 'Cuti')),
+    'a day off the strip is asked for too: ' || (shop_day(today + 30) -> 'closed')::text;
+  -- What customers changed since a time, and how many lines, as shop_changes takes them.
+  assert shop_day(today, now() - interval '90 minutes', 1) -> 'changes' = shop_changes(now() - interval '90 minutes', 1),
+    'since a time: ' || (shop_day(today, now() - interval '90 minutes', 1) -> 'changes')::text;
+  assert (shop_day(today, now() - interval '90 minutes', 1) #>> '{changes,count}')::int = 1, 'only Siti''s since then';
+  assert shop_day(today, null, 1) -> 'changes' = test_day_requests(today) -> 'changes' #- '{changes,1}',
+    'one line of two';
+end $$;
+-- With the queue off and nobody in it, today has no queue; turned off with people still in it, they still show.
+reset role;
+update shops set queue_enabled = false where id = '00000000-0000-0000-0000-00000000005a';
+set role authenticated;
+do $$ begin
+  assert jsonb_array_length(shop_day((now() at time zone 'Asia/Kuala_Lumpur')::date) -> 'queue') = 2,
+    'turned off with two still in it';
+end $$;
+reset role;
+update queue_entries set state = 'gone', gone_reason = 'served', gone_at = now() where shop_id = '00000000-0000-0000-0000-00000000005a';
+set role authenticated;
+do $$ begin
+  assert shop_day((now() at time zone 'Asia/Kuala_Lumpur')::date) -> 'queue' = '[]', 'off and empty';
+end $$;
+
+-- Another owner gets their own shop's day and nothing of Ali's; a customer has no day, and guests can't ask.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000001b1';
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  got jsonb;
+  part text;
+begin
+  foreach part in array array['-1', '0', '1', '2', '3', '5'] loop
+    got := shop_day(today + part::int);
+    assert got = test_day_requests(today + part::int), 'Rahman''s own day: ' || got::text;
+    assert got -> 'bookings' = '[]' and got -> 'waiting' = '[]' and got -> 'queue' = '[]' and got -> 'closed' = '[]'
+       and got #>> '{changes,count}' = '0' and got -> 'tomorrow' = '[]', 'nothing of Ali''s: ' || got::text;
+    assert (select array_agg(b ->> 'name') from jsonb_array_elements(got -> 'barbers') b) = array['Rahman'],
+      'only his own barber';
+    for part in select unnest(array['Ben', 'Hakim', 'Siti', 'Pak', 'Ali', 'Danial', '00000000-0000-0000-0000-00000000005a']) loop
+      assert strpos(got::text, part) = 0, format('Rahman must not see %s: %s', part, got);
+    end loop;
+    part := '0';
+  end loop;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform shop_day(current_date);
+  raise exception 'customers have no day to see';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'Set up your shop first.', 'unexpected message: ' || sqlerrm;
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform shop_day(current_date);
+  raise exception 'guests must not call shop_day';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+rollback;
+
 -- Deleting an account ------------------------------------------------------
 reset role;
 set role anon;

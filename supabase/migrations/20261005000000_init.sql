@@ -3198,6 +3198,191 @@ begin
 end;
 $$;
 
+-- Whole screens in one request ---------------------------------------------------
+
+-- Everything a shop's page shows when it opens, in one answer, for anyone
+-- (guests too). It sent the shop, then six requests at once, and their
+-- round trips took far longer than the database's work (see README, "How
+-- many users it handles"). The parts are what those requests gave, with
+-- the same rows, fields and rules (booking_test.sql compares them), and
+-- they all stay for everything else: the shop as select * gives it; its
+-- active services and active barbers (each with their intro, stars and
+-- hours), in the page's order; the days closed in the 14 the page offers
+-- (shop_closed_days); today's hours (shop_hours_today) and the date they
+-- are for; while the shop runs a queue, its count and wait with the
+-- caller's own place (queue_status); and the newest reviews, three as the
+-- page shows them, with whether there are more. The shop is there when the
+-- caller can see it, as the shops policy says: live, or their own. Any
+-- other shop gives only what shop_public_status gives, so its link can say
+-- whose shop it is and that it isn't taking bookings; an unknown link gives
+-- neither. plpgsql with a generic plan, so a connection plans it once. To
+-- add a part, add a line to the last jsonb_build_object.
+create function public.shop_page(p_slug text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+set plan_cache_mode = force_generic_plan
+as $$
+declare
+  v_shop shops;
+  v_today date;
+  v_reviews jsonb;
+  v_more boolean;
+begin
+  select * into v_shop
+  from shops s
+  where s.slug = p_slug and (public.shop_is_live(s) or s.owner_id = (select auth.uid()));
+  if not found then
+    return jsonb_build_object('shop', null, 'status', (
+      select jsonb_build_object('name', s.name, 'phone', s.phone, 'is_live', public.shop_is_live(s))
+      from shops s
+      where s.slug = p_slug));
+  end if;
+  v_today := (now() at time zone v_shop.time_zone)::date;
+
+  -- One more than the page shows, to know whether there are more. Read
+  -- newest first straight off reviews_shop_created_idx.
+  select coalesce(jsonb_agg(r.item order by r.n) filter (where r.n <= 3), '[]'::jsonb), count(*) > 3
+    into v_reviews, v_more
+  from (
+    select row_number() over (order by r.created_at desc, r.booking_id) as n,
+           jsonb_build_object(
+             'booking_id', r.booking_id, 'rating', r.rating, 'comment', r.comment, 'first_name', r.first_name,
+             'reply', r.reply, 'replied_at', r.replied_at, 'created_at', r.created_at,
+             'barbers', jsonb_build_object('name', b.name)) as item
+    from (
+      select * from reviews r
+      where r.shop_id = v_shop.id
+      order by r.created_at desc, r.booking_id
+      limit 4
+    ) r
+    join barbers b on b.id = r.barber_id
+  ) r;
+
+  return jsonb_build_object(
+    'shop', to_jsonb(v_shop),
+    'services', coalesce((
+      select jsonb_agg(to_jsonb(v) order by v.sort_order, v.name, v.id)
+      from services v
+      where v.shop_id = v_shop.id and v.is_active
+    ), '[]'::jsonb),
+    'barbers', coalesce((
+      select jsonb_agg(to_jsonb(b) || jsonb_build_object('working_hours', coalesce((
+               select jsonb_agg(jsonb_build_object('weekday', wh.weekday, 'opens_at', wh.opens_at, 'closes_at', wh.closes_at)
+                                order by wh.weekday, wh.opens_at)
+               from working_hours wh
+               where wh.barber_id = b.id
+             ), '[]'::jsonb)) order by b.sort_order, b.name, b.id)
+      from barbers b
+      where b.shop_id = v_shop.id and b.is_active
+    ), '[]'::jsonb),
+    'today', v_today,
+    'closed_days', coalesce((
+      select jsonb_agg(to_jsonb(d) - 'ordinality' order by d.ordinality)
+      from public.shop_closed_days(v_shop.id, v_today, v_today + 13) with ordinality d
+    ), '[]'::jsonb),
+    'hours_today', (select to_jsonb(h) from public.shop_hours_today(v_shop.id) h),
+    'queue', case when v_shop.queue_enabled then public.queue_status(v_shop.id) end,
+    'reviews', v_reviews,
+    'more_reviews', v_more
+  );
+end;
+$$;
+
+-- Everything the barber's Bookings tab asks for on a day, on opening it and
+-- on each minute's refresh, in one answer: it was seven requests. Only the
+-- caller's own shop. The parts are what those requests gave, with the same
+-- rows, fields and rules (booking_test.sql compares them), and they all
+-- stay for everything else: the day's bookings with each one's barber and
+-- customer, as the screen selects them; how many services customers can
+-- book; every barber with their hours, away ones too; the closed days over
+-- the day strip, yesterday to 13 days ahead (and the day itself, if it is
+-- off the strip), as shop_closed_days gives them to the owner; on today,
+-- tomorrow's bookings nobody has reminded yet and today's walk-in queue
+-- (shop_queue, which is empty unless the queue is on or someone is still
+-- in it); the day's waiting list (shop_waitlist); and what customers
+-- changed since p_since, as shop_changes counts it with p_since and
+-- p_limit. Each part is an index lookup bounded by the shop. plpgsql with a
+-- generic plan, so a connection plans it once.
+create function public.shop_day(p_day date, p_since timestamptz default null, p_limit int default 5)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+set plan_cache_mode = force_generic_plan
+as $$
+declare
+  v_shop shops;
+  v_today date;
+  v_tz text;
+begin
+  select * into v_shop from shops where owner_id = auth.uid();
+  if not found then
+    raise exception 'Set up your shop first.' using errcode = 'P0002';
+  end if;
+  v_tz := v_shop.time_zone;
+  v_today := (now() at time zone v_tz)::date;
+
+  return jsonb_build_object(
+    'bookings', coalesce((
+      select jsonb_agg(to_jsonb(b) || jsonb_build_object(
+               'barbers', jsonb_build_object('name', br.name),
+               'customer', case when p.id is not null then jsonb_build_object('full_name', p.full_name, 'phone', p.phone) end
+             ) order by b.starts_at, b.id)
+      from bookings b
+      join barbers br on br.id = b.barber_id
+      left join profiles p on p.id = b.customer_id
+      where b.shop_id = v_shop.id
+        and b.starts_at >= p_day::timestamp at time zone v_tz
+        and b.starts_at < (p_day + 1)::timestamp at time zone v_tz
+    ), '[]'::jsonb),
+    'services', (select count(*)::int from services v where v.shop_id = v_shop.id and v.is_active),
+    'barbers', coalesce((
+      select jsonb_agg(to_jsonb(br) || jsonb_build_object('working_hours', coalesce((
+               select jsonb_agg(to_jsonb(wh) order by wh.weekday, wh.opens_at)
+               from working_hours wh
+               where wh.barber_id = br.id
+             ), '[]'::jsonb)) order by br.sort_order, br.created_at, br.id)
+      from barbers br
+      where br.shop_id = v_shop.id
+    ), '[]'::jsonb),
+    'closed', coalesce((
+      select jsonb_agg(to_jsonb(d) - 'ordinality' order by d.ordinality)
+      from public.shop_closed_days(v_shop.id, least(p_day, v_today - 1), greatest(p_day, v_today + 13)) with ordinality d
+    ), '[]'::jsonb),
+    'tomorrow', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', b.id, 'barber_id', b.barber_id, 'status', b.status, 'is_block', b.is_block,
+               'starts_at', b.starts_at, 'reminded_at', b.reminded_at, 'guest_phone', b.guest_phone,
+               'created_at', b.created_at,
+               'customer', case when p.id is not null then jsonb_build_object('phone', p.phone) end
+             ) order by b.starts_at, b.id)
+      from bookings b
+      left join profiles p on p.id = b.customer_id
+      where p_day = v_today
+        and b.shop_id = v_shop.id
+        and b.starts_at >= (v_today + 1)::timestamp at time zone v_tz
+        and b.starts_at < (v_today + 2)::timestamp at time zone v_tz
+        and b.status = 'confirmed'
+        and not b.is_block
+        and b.reminded_at is null
+    ), '[]'::jsonb),
+    'waiting', coalesce((
+      select jsonb_agg(to_jsonb(w) - 'ordinality' order by w.ordinality)
+      from public.shop_waitlist(p_day) with ordinality w
+    ), '[]'::jsonb),
+    'queue', case when p_day = v_today then coalesce((
+      select jsonb_agg(to_jsonb(q) - 'ordinality' order by q.ordinality)
+      from public.shop_queue() with ordinality q
+    ), '[]'::jsonb) else '[]'::jsonb end,
+    'changes', public.shop_changes(p_since, p_limit)
+  );
+end;
+$$;
+
 -- People can delete their own account (the app stores require it).
 -- A customer's upcoming bookings are cancelled, and their past ones stay in
 -- the shop's history without their name or phone. An owner's shop goes
@@ -3334,7 +3519,11 @@ revoke execute on function public.shop_queue() from public, anon;
 grant execute on function public.shop_queue() to authenticated;
 revoke execute on function public.my_queue() from public, anon;
 grant execute on function public.my_queue() to authenticated;
+revoke execute on function public.shop_day(date, timestamptz, int) from public, anon;
+grant execute on function public.shop_day(date, timestamptz, int) to authenticated;
 -- Booking links are opened by guests too, and so is a shop's queue count.
 grant execute on function public.shop_public_status(text) to anon, authenticated;
 revoke execute on function public.queue_status(uuid) from public;
 grant execute on function public.queue_status(uuid) to anon, authenticated;
+revoke execute on function public.shop_page(text) from public;
+grant execute on function public.shop_page(text) to anon, authenticated;
