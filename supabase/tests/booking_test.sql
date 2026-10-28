@@ -4120,16 +4120,32 @@ reset role;
 do $$ begin
   assert (select gone_reason from queue_entries where id = current_setting('test.siti')::uuid) = 'not_here',
     'Siti wasn''t here';
+  assert (select gone_at from queue_entries where id = current_setting('test.siti')::uuid) = now(), 'just now';
 end $$;
 set role authenticated;
 
--- Siti comes back and joins again, then leaves; Chong can't take her off.
+-- Her page and My bookings say the shop took her off, rather than just
+-- offering the queue again, so she knows to message them.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c7';
+do $$
+declare
+  s jsonb := queue_status('00000000-0000-0000-0000-00000000005a');
+begin
+  assert s->'mine'->>'id' = current_setting('test.siti') and s->'mine'->>'state' = 'gone'
+     and s->'mine'->>'gone_reason' = 'not_here' and s->'mine'->'place' = 'null', 'Siti is told: ' || s::text;
+  s := my_queue();
+  assert jsonb_array_length(s) = 1 and s->0->>'state' = 'gone' and s->0->>'gone_reason' = 'not_here'
+     and s->0->'shop'->>'name' = 'Ali Cuts', 'in My bookings too: ' || s::text;
+end $$;
+
+-- Siti comes back and joins again, then leaves; Chong can't take her off.
 do $$
 declare
   e queue_entries := join_queue('00000000-0000-0000-0000-0000000000e1');
 begin
   perform set_config('test.siti', e.id::text, false);
+  assert queue_status('00000000-0000-0000-0000-00000000005a')->'mine'->>'state' = 'waiting', 'her new place counts';
+  assert my_queue()->0->>'state' = 'waiting' and jsonb_array_length(my_queue()) = 1, 'and is the only one listed';
 end $$;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
 do $$ begin
@@ -4147,9 +4163,52 @@ do $$ begin
   assert (select gone_reason from queue_entries where id = current_setting('test.siti')::uuid) = 'left', 'she left';
 end $$;
 
--- Taken off while waiting; and with the queue off, the shop still sees who
--- is left, but customers can't join and Find a barber shows no count.
+-- Taken off while waiting, Chong is told for an hour, then the page is as
+-- it was.
 set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin perform set_config('test.chong', join_queue('00000000-0000-0000-0000-0000000000e1')::text, false); end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin perform remove_from_queue((current_setting('test.chong')::queue_entries).id); end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  assert queue_status('00000000-0000-0000-0000-00000000005a')->'mine'->>'gone_reason' = 'removed', 'Chong is told';
+  assert my_queue()->0->>'gone_reason' = 'removed', 'in My bookings too';
+end $$;
+reset role;
+update queue_entries set gone_at = now() - interval '61 minutes'
+where id = (current_setting('test.chong')::queue_entries).id;
+set role authenticated;
+do $$ begin
+  assert queue_status('00000000-0000-0000-0000-00000000005a')->'mine' = 'null', 'an hour on, his page is as it was';
+  assert my_queue() = '[]', 'and so is My bookings';
+end $$;
+
+-- Five times a day at one shop, however each place ended, so joining and
+-- leaving over and over can't pile up entries.
+do $$
+declare
+  e queue_entries;
+begin
+  for n in 1..4 loop
+    e := join_queue('00000000-0000-0000-0000-0000000000e1');
+    perform leave_queue(e.id);
+  end loop;
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+  raise exception 'a sixth time should be refused';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'You can join this queue 5 times a day. Book a time instead.', sqlerrm;
+end $$;
+-- Elsewhere is another queue.
+do $$
+declare
+  e queue_entries := join_queue('00000000-0000-0000-0000-0000000000e3');
+begin
+  perform leave_queue(e.id);
+end $$;
+
+-- And with the queue off, the shop still sees who is left, but customers
+-- can't join and Find a barber shows no count.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 do $$
 declare
@@ -4165,6 +4224,97 @@ begin
   assert (select queue_waiting from find_shops() where id = '00000000-0000-0000-0000-00000000005a') is null,
     'no count with the queue off';
   assert queue_status('00000000-0000-0000-0000-00000000005a')->>'open' = 'false', 'not open';
+end $$;
+
+-- Booking a time here later today, or moving one into today, leaves the
+-- queue: the time is their turn (see join_queue). Past closing time, or
+-- with a barber back from a break a minute early, the shop still starts the
+-- cuts of those left, with anyone working today but not someone off. In a
+-- zone where it is now just past noon, so there are times left today
+-- whenever the test runs; Ali works the morning and Danial from noon.
+reset role;
+delete from bookings where shop_id = '00000000-0000-0000-0000-00000000005a';
+-- In that zone, Kajang's yesterday may be today.
+delete from queue_entries where id = current_setting('test.yesterday')::uuid;
+update shops set queue_enabled = true where id = '00000000-0000-0000-0000-00000000005a';
+do $$
+declare
+  tz text;
+begin
+  select z into tz
+  from generate_series(-12, 14) o,
+       lateral (select 'Etc/GMT' || case when o > 0 then '-' || o when o < 0 then '+' || -o else '' end as z) n
+  where extract(hour from now() at time zone z) = 12
+  order by o
+  limit 1;
+  update shops set time_zone = tz where id = '00000000-0000-0000-0000-00000000005a';
+  perform set_config('test.tz', tz, false);
+end $$;
+delete from working_hours
+where barber_id in ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2');
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a1'::uuid, d, '09:00'::time, '12:00'::time from generate_series(0, 6) d
+union all
+select '00000000-0000-0000-0000-0000000000a2', d, '12:00', '20:00' from generate_series(0, 6) d;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c6';
+do $$
+declare
+  tz text := current_setting('test.tz');
+  today date := (now() at time zone current_setting('test.tz'))::date;
+  e queue_entries := join_queue('00000000-0000-0000-0000-0000000000e1');
+  b bookings;
+begin
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (today + time '17:00') at time zone tz);
+  assert my_queue() = '[]' and queue_status('00000000-0000-0000-0000-00000000005a')->'mine' = 'null',
+    'Hakim booked 5 pm today, so he is out of the queue';
+  reset role;
+  select * into e from queue_entries where id = e.id;
+  assert e.state = 'gone' and e.gone_reason = 'left' and e.gone_at = now(), 'he left it: ' || e::text;
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c7';
+do $$
+declare
+  tz text := current_setting('test.tz');
+  today date := (now() at time zone current_setting('test.tz'))::date;
+  e queue_entries;
+  b bookings;
+begin
+  -- A time tomorrow doesn't count, until she moves it to today.
+  b := book_appointment('00000000-0000-0000-0000-0000000000e1', (today + 1 + time '15:00') at time zone tz);
+  e := join_queue('00000000-0000-0000-0000-0000000000e1');
+  assert my_queue()->0->>'state' = 'waiting', 'Siti waits with a booking tomorrow';
+  b := reschedule_booking(b.id, (today + time '16:00') at time zone tz);
+  assert my_queue() = '[]', 'moved to 4 pm today, she is out of the queue';
+  reset role;
+  assert (select gone_reason from queue_entries where id = e.id) = 'left', 'she left it';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  e queue_entries := add_to_queue('Pak Mat', null, '00000000-0000-0000-0000-0000000000e1');
+  b bookings;
+begin
+  assert queue_status('00000000-0000-0000-0000-00000000005a')->>'barbers_in' = '1', 'only Danial is in';
+  b := start_from_queue(e.id, '00000000-0000-0000-0000-0000000000a1');
+  assert b.barber_id = '00000000-0000-0000-0000-0000000000a1' and b.starts_at = date_trunc('minute', now())
+     and b.guest_name = 'Pak Mat', 'Ali finished at noon, but takes Pak Mat: ' || b::text;
+end $$;
+reset role;
+delete from working_hours
+where barber_id = '00000000-0000-0000-0000-0000000000a2'
+  and weekday = extract(dow from (now() at time zone current_setting('test.tz'))::date);
+set role authenticated;
+do $$
+declare
+  e queue_entries := add_to_queue('Pak Su', null, '00000000-0000-0000-0000-0000000000e1');
+begin
+  perform start_from_queue(e.id, '00000000-0000-0000-0000-0000000000a2');
+  raise exception 'a barber not working today should be refused';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'That barber isn''t working today. Pick another barber.', sqlerrm;
 end $$;
 
 -- Deleting an account takes its places with it.
@@ -4211,7 +4361,17 @@ do $$ begin
 end $$;
 reset role;
 
--- The owner deletes their account: the shop and everything in it goes.
+-- The owner deletes their account: the shop and everything in it goes,
+-- its walk-in queue too, with the places its bookings served.
+insert into queue_entries (shop_id, day, guest_name, state, gone_reason, gone_at, booking_id)
+select shop_id, (starts_at at time zone 'Asia/Kuala_Lumpur')::date, 'Walked in', 'gone', 'served', starts_at, id
+from bookings
+where shop_id = '00000000-0000-0000-0000-00000000005a' and not is_block;
+insert into queue_entries (shop_id, day, guest_name)
+values ('00000000-0000-0000-0000-00000000005a', (now() at time zone 'Asia/Kuala_Lumpur')::date, 'Still waiting');
+do $$ begin
+  assert (select count(*) from queue_entries where booking_id is not null) > 0, 'served places to delete';
+end $$;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 set role authenticated;
 do $$ begin perform delete_my_account(); end $$;
@@ -4219,7 +4379,8 @@ reset role;
 do $$ begin
   assert (select count(*) from shops) = 0, 'the shop should be gone';
   assert (select count(*) from barbers) = 0 and (select count(*) from services) = 0
-     and (select count(*) from working_hours) = 0 and (select count(*) from bookings) = 0,
+     and (select count(*) from working_hours) = 0 and (select count(*) from bookings) = 0
+     and (select count(*) from queue_entries) = 0,
     'everything in the shop should be gone';
   assert exists (select 1 from profiles where id = '00000000-0000-0000-0000-0000000000c1'),
     'customers keep their accounts';

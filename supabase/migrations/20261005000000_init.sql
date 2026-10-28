@@ -370,9 +370,9 @@ create index waitlist_shop_day_idx on public.waitlist (shop_id, day, created_at)
 -- name. day is the shop's own date, and days gone by are left out wherever
 -- the queue is read, so nothing clears it on a timer. An entry waits in the
 -- order it joined until the shop calls it (called_at, so the customer sees
--- it is their turn), then goes: served (its cut is booking_id), left, taken
--- off, or not here when called. Read and written only through the functions
--- below.
+-- it is their turn), then goes (gone_at): served (its cut is booking_id),
+-- left, taken off, or not here when called. Read and written only through
+-- the functions below.
 create table public.queue_entries (
   id uuid primary key default gen_random_uuid(),
   shop_id uuid not null references public.shops (id) on delete cascade,
@@ -388,6 +388,8 @@ create table public.queue_entries (
   state text not null default 'waiting' check (state in ('waiting', 'called', 'gone')),
   gone_reason text check (gone_reason in ('left', 'removed', 'not_here', 'served')),
   called_at timestamptz,
+  -- When it went, so a customer the shop took off is told so for a while.
+  gone_at timestamptz,
   booking_id uuid references public.bookings (id) on delete set null,
   created_at timestamptz not null default now(),
   check (customer_id is not null or guest_name is not null),
@@ -396,10 +398,20 @@ create table public.queue_entries (
 );
 -- A shop's queue today in order: its page's count, the barber's day and
 -- Find a barber's count, one index lookup however long the shop's history.
-create index queue_entries_shop_day_idx on public.queue_entries (shop_id, day, created_at);
+-- Only those still waiting or called are in it, so however many come and
+-- go in a day (someone joining and leaving over and over), those reads stay
+-- the size of the queue.
+create index queue_entries_shop_day_idx on public.queue_entries (shop_id, day, created_at)
+  where state <> 'gone';
+-- The rest are found by shop only when the shop is deleted.
+create index queue_entries_shop_idx on public.queue_entries (shop_id);
 -- A customer's own place, today or yesterday, without reading their history.
 create index queue_entries_customer_day_idx on public.queue_entries (customer_id, day)
   where customer_id is not null;
+-- Deleting a booking clears the entry it served. Without this, deleting a
+-- shop with years of bookings read the whole queue once for each of them.
+create index queue_entries_booking_idx on public.queue_entries (booking_id)
+  where booking_id is not null;
 
 -- Keeps shops.rating_count and rating_sum in step with the shop's reviews,
 -- and each barber's with the reviews of their cuts, also when a review
@@ -1107,6 +1119,10 @@ begin
 
   -- They have their time that day, so they are no longer waiting for one.
   delete from waitlist where customer_id = v_uid and shop_id = v_service.shop_id and day = v_day;
+  -- A time here today is their turn, so they leave its walk-in queue (see join_queue).
+  update queue_entries set state = 'gone', gone_reason = 'left', gone_at = now()
+  where customer_id = v_uid and day = v_day and shop_id = v_service.shop_id and state <> 'gone'
+    and v_day = (now() at time zone v_tz)::date;
 
   return v_booking;
 end;
@@ -1287,6 +1303,10 @@ begin
   -- Moved into a day they were waiting on: as good as booking it.
   delete from waitlist
   where customer_id = v_booking.customer_id and shop_id = v_booking.shop_id and day = v_day;
+  -- And moved to later today, out of the shop's walk-in queue, as booking it would.
+  update queue_entries set state = 'gone', gone_reason = 'left', gone_at = now()
+  where customer_id = v_booking.customer_id and day = v_day and shop_id = v_booking.shop_id and state <> 'gone'
+    and v_day = (now() at time zone v_tz)::date;
 
   return v_booking;
 end;
@@ -2465,13 +2485,21 @@ $$;
 -- How many can wait in one shop's queue at once, so its page can't be
 -- flooded with sign-ups.
 create function public.max_queue_waiting() returns int language sql immutable as $$ select 30 $$;
+-- How many times one customer can join one shop's queue in a day, so
+-- joining and leaving over and over can't pile up entries.
+create function public.max_queue_joins_a_day() returns int language sql immutable as $$ select 5 $$;
+-- How long a customer the shop took off is told so.
+create function public.queue_taken_off_shown() returns interval language sql immutable as $$ select interval '1 hour' $$;
 
 -- The shop's barbers in right now by its own clock: active, inside one of
 -- today's working ranges, and without the whole day off, while the shop
 -- isn't closed today. The queue is open while anyone is. A break between
 -- ranges counts as out; blocked time inside a range doesn't, as the barber
--- is coming back. plpgsql for the same reason as shop_hours_today.
-create function public.barbers_in_now(p_shop_id uuid, p_tz text)
+-- is coming back. With p_whole_day, everyone working today, in now or not:
+-- the shop can still start a cut for someone who waited past closing time,
+-- or with a barber back from a break a minute early. plpgsql for the same
+-- reason as shop_hours_today.
+create function public.barbers_in_now(p_shop_id uuid, p_tz text, p_whole_day boolean default false)
 returns setof public.barbers
 language plpgsql
 stable
@@ -2490,7 +2518,7 @@ begin
     and exists (
       select 1 from working_hours wh
       where wh.barber_id = b.id and wh.weekday = extract(dow from v_day)::int
-        and wh.opens_at <= v_local::time and v_local::time < wh.closes_at
+        and (p_whole_day or (wh.opens_at <= v_local::time and v_local::time < wh.closes_at))
     )
     and b.id not in (
       select bk.barber_id from bookings bk
@@ -2524,6 +2552,10 @@ $$;
 -- counts, never who. A waiting entry with no service counts as the shop's
 -- shortest one. The page asks every 30 seconds while its customer waits:
 -- one lookup of queue_entries_shop_day_idx for today, and one of theirs.
+-- Their place is their latest entry here today, so one the shop took off
+-- in the last hour (taken off while waiting, or not here when called) is
+-- still given, gone, so the page can say what happened rather than just
+-- offer the queue again; a newer one takes its place.
 create function public.queue_status(p_shop_id uuid)
 returns jsonb
 language plpgsql
@@ -2553,9 +2585,14 @@ begin
 
   if v_uid is not null then
     select * into v_mine from queue_entries e
-    where e.customer_id = v_uid and e.day = v_day and e.shop_id = v_shop.id and e.state <> 'gone'
-    order by e.created_at desc
+    where e.customer_id = v_uid and e.day = v_day and e.shop_id = v_shop.id
+    order by e.created_at desc, e.id desc
     limit 1;
+    if v_mine.state = 'gone' and not (
+      v_mine.gone_reason in ('removed', 'not_here') and v_mine.gone_at > now() - public.queue_taken_off_shown()
+    ) then
+      v_mine := null;
+    end if;
   end if;
 
   select count(*), sum(coalesce(v.duration_min, v_default, 30)),
@@ -2572,7 +2609,7 @@ begin
     'estimate_min', public.queue_estimate(v_minutes, v_in),
     'barbers_in', v_in,
     'mine', case when v_mine.id is not null then jsonb_build_object(
-      'id', v_mine.id, 'state', v_mine.state, 'called_at', v_mine.called_at,
+      'id', v_mine.id, 'state', v_mine.state, 'gone_reason', v_mine.gone_reason, 'called_at', v_mine.called_at,
       'service_id', v_mine.service_id, 'barber_id', v_mine.barber_id, 'created_at', v_mine.created_at,
       'place', case when v_mine.state = 'waiting' then v_ahead + 1 end,
       'estimate_min', case when v_mine.state = 'waiting' then public.queue_estimate(v_ahead_minutes, v_in) end
@@ -2585,8 +2622,8 @@ $$;
 -- barber (null: any), while the queue is open (see queue_status) and the
 -- barber asked for is in. One place at a time across every shop, as
 -- someone can only sit in one chair; none at a shop where they have a
--- booking still to come today, as they have a time; and no more than
--- max_queue_waiting waiting.
+-- booking still to come today, as they have a time; no more than
+-- max_queue_waiting waiting; and a few times a day at one shop.
 create function public.join_queue(p_service_id uuid, p_barber_id uuid default null)
 returns public.queue_entries
 language plpgsql
@@ -2658,6 +2695,11 @@ begin
   elsif v_other is not null then
     raise exception 'You''re already in another shop''s queue. Leave it to join this one.' using errcode = 'P0001';
   end if;
+  if (select count(*) from queue_entries where customer_id = v_uid and day = v_day and shop_id = v_shop.id)
+     >= public.max_queue_joins_a_day() then
+    raise exception 'You can join this queue % times a day. Book a time instead.', public.max_queue_joins_a_day()
+      using errcode = 'P0001';
+  end if;
 
   if (select count(*) from queue_entries where shop_id = v_shop.id and day = v_day and state = 'waiting')
      >= public.max_queue_waiting() then
@@ -2679,7 +2721,7 @@ language sql
 security definer
 set search_path = public
 as $$
-  update queue_entries set state = 'gone', gone_reason = 'left'
+  update queue_entries set state = 'gone', gone_reason = 'left', gone_at = now()
   where id = p_id and customer_id = (select auth.uid()) and state <> 'gone';
 $$;
 
@@ -2766,7 +2808,7 @@ security definer
 set search_path = public
 as $$
   update queue_entries e
-  set state = 'gone', gone_reason = case when e.state = 'called' then 'not_here' else 'removed' end
+  set state = 'gone', gone_reason = case when e.state = 'called' then 'not_here' else 'removed' end, gone_at = now()
   from shops s
   where e.id = p_id and s.id = e.shop_id and s.owner_id = (select auth.uid()) and e.state <> 'gone';
 $$;
@@ -2775,9 +2817,10 @@ $$;
 -- takes them, from now (to the minute) for the service's length, so it
 -- counts in takings, the customer list, reviews and the chairs like any
 -- other. The service is theirs unless the shop picks another, and the
--- barber must be in now and free until the cut would end: a booking in the
--- way is named, so the shop can pick someone else. Its start time is the
--- error's detail, for the app to say in the customer's own clock.
+-- barber must be working today (in now, or not: past closing time the shop
+-- still serves who is left) and free until the cut would end: a booking in
+-- the way is named, so the shop can pick someone else. Its start time is
+-- the error's detail, for the app to say in the customer's own clock.
 create function public.start_from_queue(p_id uuid, p_barber_id uuid, p_service_id uuid default null)
 returns public.bookings
 language plpgsql
@@ -2817,9 +2860,9 @@ begin
   if not exists (select 1 from barbers where id = p_barber_id and shop_id = v_shop.id) then
     raise exception 'Barber not found.' using errcode = 'P0002';
   end if;
-  select * into v_barber from public.barbers_in_now(v_shop.id, v_shop.time_zone) b where b.id = p_barber_id;
+  select * into v_barber from public.barbers_in_now(v_shop.id, v_shop.time_zone, true) b where b.id = p_barber_id;
   if not found then
-    raise exception 'That barber isn''t working now. Pick another barber.' using errcode = 'P0001';
+    raise exception 'That barber isn''t working today. Pick another barber.' using errcode = 'P0001';
   end if;
 
   v_ends := v_starts + make_interval(mins => v_service.duration_min);
@@ -2851,7 +2894,7 @@ begin
   )
   returning * into v_booking;
 
-  update queue_entries set state = 'gone', gone_reason = 'served', booking_id = v_booking.id
+  update queue_entries set state = 'gone', gone_reason = 'served', gone_at = now(), booking_id = v_booking.id
   where id = v_entry.id;
   return v_booking;
 end;
@@ -2893,9 +2936,10 @@ $$;
 
 -- The customer's place in a queue today, if they are in one (at most one,
 -- see join_queue), with its shop, what they asked for, and their place and
--- wait as queue_status works them out. My bookings asks every 30 seconds
--- while they wait: one lookup of their own entries for today. plpgsql, as
--- shop_queue is.
+-- wait as queue_status works them out; also a place the shop took off in
+-- the last hour, gone, as queue_status gives it. My bookings asks every 30
+-- seconds while they wait: one lookup of their own entries for today, then
+-- queue_status for that shop. plpgsql, as shop_queue is.
 create function public.my_queue()
 returns jsonb
 language plpgsql
@@ -2906,19 +2950,26 @@ as $$
 begin
   return (
   select coalesce(jsonb_agg(
-           (public.queue_status(e.shop_id) -> 'mine') || jsonb_build_object(
+           q.mine || jsonb_build_object(
              'shop_id', s.id, 'service_name', v.name, 'barber_name', b.name,
              'shop', jsonb_build_object('name', s.name, 'slug', s.slug, 'time_zone', s.time_zone,
-                                        'phone', s.phone, 'address', s.address))
-           order by e.created_at, e.id), '[]'::jsonb)
-  from queue_entries e
-  join shops s on s.id = e.shop_id
-  left join services v on v.id = e.service_id
-  left join barbers b on b.id = e.barber_id
-  where e.customer_id = (select auth.uid())
-    and e.day between current_date - 1 and current_date + 1
-    and e.day = (now() at time zone s.time_zone)::date
-    and e.state <> 'gone');
+                                        'phone', s.phone, 'address', s.address, 'area', s.area,
+                                        'latitude', s.latitude, 'longitude', s.longitude))
+           order by (q.mine ->> 'created_at')::timestamptz, q.mine ->> 'id'), '[]'::jsonb)
+  from (
+    select distinct e.shop_id
+    from queue_entries e
+    join shops s on s.id = e.shop_id
+    where e.customer_id = (select auth.uid())
+      and e.day between current_date - 1 and current_date + 1
+      and e.day = (now() at time zone s.time_zone)::date
+      and (e.state <> 'gone' or e.gone_reason in ('removed', 'not_here') and e.gone_at > now() - public.queue_taken_off_shown())
+  ) mine
+  join shops s on s.id = mine.shop_id
+  cross join lateral (select public.queue_status(s.id) -> 'mine' as mine) q
+  left join services v on v.id = (q.mine ->> 'service_id')::uuid
+  left join barbers b on b.id = (q.mine ->> 'barber_id')::uuid
+  where jsonb_typeof(q.mine) = 'object');
 end;
 $$;
 
@@ -3261,7 +3312,9 @@ grant execute on function public.shop_waitlist(date) to authenticated;
 revoke execute on function public.my_waitlist() from public, anon;
 grant execute on function public.my_waitlist() to authenticated;
 revoke execute on function public.max_queue_waiting() from public, anon, authenticated;
-revoke execute on function public.barbers_in_now(uuid, text) from public, anon, authenticated;
+revoke execute on function public.max_queue_joins_a_day() from public, anon, authenticated;
+revoke execute on function public.queue_taken_off_shown() from public, anon, authenticated;
+revoke execute on function public.barbers_in_now(uuid, text, boolean) from public, anon, authenticated;
 revoke execute on function public.queue_estimate(bigint, int) from public, anon, authenticated;
 revoke execute on function public.join_queue(uuid, uuid) from public, anon;
 grant execute on function public.join_queue(uuid, uuid) to authenticated;

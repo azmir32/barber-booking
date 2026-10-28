@@ -131,14 +131,16 @@ where extract(dow from current_date + d) = 6;
 update public.shops set queue_enabled = true
 where id in (select md5('shop' || i)::uuid from generate_series(3, :shops, 3) i);
 
-insert into public.queue_entries (shop_id, day, customer_id, guest_name, service_id, state, gone_reason, created_at)
+insert into public.queue_entries (shop_id, day, customer_id, guest_name, service_id, state, gone_reason,
+                                  created_at, gone_at)
 select md5('shop' || i)::uuid, current_date + d,
        case when n % 3 = 0 then md5('customer' || (1 + (i * 31 + n * 7 + (d + 60) * 13) % :customers))::uuid end,
        case when n % 3 <> 0 then 'Walk-in ' || n end,
        md5('service' || i || '-' || (1 + n % 5))::uuid,
        'gone',
        (array['served', 'served', 'served', 'served', 'served', 'served', 'left', 'removed', 'not_here'])[1 + n % 9],
-       ((current_date + d) + time '10:00' + n * interval '18 minutes') at time zone 'Asia/Kuala_Lumpur'
+       ((current_date + d) + time '10:00' + n * interval '18 minutes') at time zone 'Asia/Kuala_Lumpur',
+       ((current_date + d) + time '10:40' + n * interval '18 minutes') at time zone 'Asia/Kuala_Lumpur'
 from generate_series(3, :shops, 3) i, generate_series(-60, -1) d, generate_series(0, 29) n
 where extract(dow from current_date + d) <> 0;
 
