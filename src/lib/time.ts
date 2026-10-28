@@ -118,7 +118,8 @@ export function clockParts(hour: number, minute: number): { clock: string; perio
     const period = hour < 12 ? 'pagi' : hour < 14 ? 'tengah hari' : hour < 19 ? 'petang' : 'malam';
     return { clock: `${hour12}.${mm}`, period };
   }
-  return { clock: `${hour12}:${mm}`, period: hour < 12 ? 'am' : 'pm' };
+  // A shop open until 24:00 closes at midnight: 12:00 am, the start of the next day.
+  return { clock: `${hour12}:${mm}`, period: hour % 24 < 12 ? 'am' : 'pm' };
 }
 
 /** "10:30 am" in the shop's zone. */

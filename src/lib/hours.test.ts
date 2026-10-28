@@ -22,6 +22,22 @@ test('formatClock', () => {
   assert.equal(formatClock('20:15'), '8:15 pm');
 });
 
+test('a shop open until midnight closes at 12:00 am, or 12.00 malam', () => {
+  // Tue 6 Oct in Kajang at 9 pm, open from 10 am to midnight.
+  const at = new Date('2026-10-06T21:00:00+08:00');
+  assert.equal(formatClock('24:00'), '12:00 am');
+  assert.equal(formatClock('24:00:00'), '12:00 am');
+  assert.equal(openStatus('10:00:00', '24:00:00', at, 'Asia/Kuala_Lumpur').label, 'Open now · until 12:00 am');
+  assert.equal(summarizeWeek([range(1, '10:00', '24:00')]), 'Mon · 10:00 am–12:00 am');
+  setCurrentLang('ms');
+  try {
+    assert.equal(formatClock('24:00'), '12.00 malam');
+    assert.equal(openStatus('10:00:00', '24:00:00', at, 'Asia/Kuala_Lumpur').label, 'Buka sekarang · hingga 12.00 malam');
+  } finally {
+    setCurrentLang('en');
+  }
+});
+
 test('summarizeWeek reads Monday first, in am/pm', () => {
   const monSat = [1, 2, 3, 4, 5, 6].map((d) => range(d, '10:00', '20:00'));
   assert.equal(summarizeWeek(monSat), 'Mon–Sat · 10:00 am–8:00 pm');
