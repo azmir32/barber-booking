@@ -1232,10 +1232,10 @@ export const ms: Record<string, string> = {
   'Couldn’t load the queue. {reason}': 'Tidak dapat memuatkan barisan. {reason}',
   'On a break until {time}. Join the queue then.': 'Rehat hingga {time}. Sertai barisan selepas itu.',
   'The shop took you off the queue. Message them if you’re on your way.':
-    'Kedai telah keluarkan anda daripada barisan. Hantar mesej kepada mereka jika anda dalam perjalanan.',
+    'Kedai telah keluarkan anda daripada barisan. Mesej kedai jika anda dalam perjalanan.',
   'Hi {shop}, this is {name}. I was in your walk-in queue today.':
     'Hai {shop}, saya {name}. Saya dalam barisan walk-in anda hari ini.',
   'Directions to {shop}': 'Arah ke {shop}',
-  'In from {time}': 'Masuk {time}',
+  'In from {time}': 'Masuk jam {time}',
   'Nobody is working today.': 'Tiada sesiapa bekerja hari ini.',
 };

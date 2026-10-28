@@ -417,7 +417,8 @@ function MyBookings() {
                       icon="logo-whatsapp"
                       iconColor={theme.success}
                       variant="secondary"
-                      style={big ? styles.wholeAction : styles.action}
+                      // The one thing to do now, so across the card: half as wide, the icon pushed its words onto two lines.
+                      style={styles.wholeAction}
                       onPress={() =>
                         Linking.openURL(
                           whatsappUrl(
