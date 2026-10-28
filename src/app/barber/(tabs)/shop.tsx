@@ -12,6 +12,7 @@ import { QueueSwitchCard } from '@/components/queue-switch-card';
 import { ReadyCard } from '@/components/ready-card';
 import { ReviewsCard } from '@/components/reviews-card';
 import { ShopForm } from '@/components/shop-form';
+import { ShopPhotosCard } from '@/components/shop-photos-card';
 import { TakingsCard } from '@/components/takings-card';
 import { Badge, Button, Card, ErrorText, Row, Screen, ScreenTitle, Section, StaleNote, T } from '@/components/ui';
 import { bookingLink } from '@/constants/brand';
@@ -23,6 +24,7 @@ import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { barberWithoutHours, goLiveGap, type GoLiveGap, type ShopSetup, type StepId } from '@/lib/ready';
 import { useShopCards } from '@/lib/shop-cards';
+import { useShopPhotos } from '@/lib/shop-photos';
 import { useShopReady } from '@/lib/shop-ready';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay } from '@/lib/time';
@@ -56,6 +58,8 @@ export default function MyShop() {
   const cards = useShopCards(shop);
   // A new shop's steps to its first booking, and what Go live still needs.
   const ready = useShopReady(shop, now);
+  // Photos of the shop's cuts: last time's at once, then the server's.
+  const photos = useShopPhotos(shop?.id);
   // The shop itself is asked for once when the app opens. If that failed, last visit's
   // status and details stay, so it is asked for again on coming here and with Try again.
   const [askingShop, setAskingShop] = useState(false);
@@ -75,7 +79,9 @@ export default function MyShop() {
     }, [askShop]),
   );
   // Any part kept from last visit and not refreshed: said once, with the oldest time.
-  const stale = [cards.staleSince, shopStaleSince, ready.staleSince].filter((at): at is number => at != null);
+  const stale = [cards.staleSince, shopStaleSince, ready.staleSince, photos.staleSince].filter(
+    (at): at is number => at != null,
+  );
   const staleSince = stale.length ? Math.min(...stale) : null;
   const theme = useTheme();
   const [busy, setBusy] = useState(false);
@@ -204,7 +210,10 @@ export default function MyShop() {
 
   return (
     <Screen scrollRef={scroll}>
-      <ScreenTitle title={t('My shop')} refreshing={cards.refreshing || askingShop || ready.refreshing} />
+      <ScreenTitle
+        title={t('My shop')}
+        refreshing={cards.refreshing || askingShop || ready.refreshing || photos.refreshing}
+      />
       {staleSince ? (
         <StaleNote
           savedAt={staleSince}
@@ -212,8 +221,9 @@ export default function MyShop() {
             cards.reload();
             if (shopStaleSince != null) askShop();
             if (ready.staleSince != null) ready.reload();
+            if (photos.staleSince != null) photos.reload();
           }}
-          retrying={cards.loading || askingShop || ready.loading}
+          retrying={cards.loading || askingShop || ready.loading || photos.loading}
           timeZone={shop.time_zone}
         />
       ) : null}
@@ -297,6 +307,14 @@ export default function MyShop() {
       <ClosedDaysCard days={cards.closures} loadError={cards.error} savedAt={cards.savedAt} reload={cards.reload} />
 
       <QueueSwitchCard shop={shop} onChanged={reload} />
+
+      <ShopPhotosCard
+        shopId={shop.id}
+        photos={photos.photos}
+        change={photos.change}
+        loadError={photos.error}
+        reload={photos.reload}
+      />
 
       <View ref={linkRef}>
         <Card>

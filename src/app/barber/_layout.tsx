@@ -63,6 +63,7 @@ function BarberStack() {
       <Stack.Screen name="move-booking" options={{ title: t('Change time') }} />
       <Stack.Screen name="close-days" options={{ title: t('Close for a few days') }} />
       <Stack.Screen name="poster" options={{ title: t('Shop poster') }} />
+      <Stack.Screen name="photo" options={{ title: t('Photo of a cut') }} />
       <Stack.Screen name="summary" options={{ title: t('Takings') }} />
       <Stack.Screen name="customers" options={{ title: t('Customers') }} />
       <Stack.Screen name="reviews" options={{ title: t('Reviews') }} />

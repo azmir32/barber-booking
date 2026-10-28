@@ -47,6 +47,7 @@ const DYNAMIC_KEYS = [
   'Kids cut',
   'Add the customer\'s name.',
   'Barber not found.',
+  'Your shop has 24 photos, the most it can have. Remove one to add another.',
   'Booking not found.',
   'Closing time must be after opening time.',
   'Not signed in.',

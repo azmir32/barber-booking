@@ -32,6 +32,14 @@ export const supabase = createClient(
   },
 );
 
+/**
+ * A file's link in a public Storage bucket, as Supabase's CDN serves it,
+ * or the demo's own (see src/demo/files.ts).
+ */
+export function publicFileUrl(bucket: string, path: string): string {
+  return demo ? demo.demoFileUrl(bucket, path) : supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+}
+
 // Only refresh the session while the app is in the foreground.
 if (Platform.OS !== 'web') {
   AppState.addEventListener('change', (state) => {

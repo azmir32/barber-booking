@@ -6,6 +6,7 @@ import { DayPicker } from '@/components/day-picker';
 import { Distance } from '@/components/distance';
 import { ShopQueueCard } from '@/components/queue-card';
 import { RatingSummary } from '@/components/reviews';
+import { BarberPhotosButton, PhotoStrip, PhotoViewer } from '@/components/shop-photos';
 import { ShopReviews } from '@/components/shop-reviews';
 import { Bone, Button, Card, Chip, Empty, ErrorText, Field, Row, Screen, Section, Skeleton, T } from '@/components/ui';
 import { APP_NAME, bookingLink } from '@/constants/brand';
@@ -23,6 +24,7 @@ import { kmBetween, shopPoint } from '@/lib/distance';
 import { t } from '@/lib/lang';
 import { directionsUrl } from '@/lib/maps';
 import { nearMePosition } from '@/lib/near-me';
+import { MAX_PHOTOS, PHOTO_COLUMNS, type ShopPhoto } from '@/lib/photos';
 import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
@@ -57,6 +59,22 @@ const DAYS_AHEAD = 14;
 /** "Fri, 9 Oct" for a YYYY-MM-DD date. */
 const dayText = (date: string) => formatDay(`${date}T00:00:00Z`, 'UTC');
 
+// Photos of the shop's cuts --------------------------------------------------
+// Asked for on their own, beside the services and barbers, until the shop
+// page's requests become one (shop_page): then this select moves into it as
+// a `photos` list, same columns, order and limit, and this function goes.
+// Without them the page still works, so a failure here only leaves them out.
+function loadShopPhotos(shopId: string) {
+  return supabase
+    .from('shop_photos')
+    .select(PHOTO_COLUMNS)
+    .eq('shop_id', shopId)
+    .order('sort_order')
+    .order('created_at')
+    .order('id')
+    .limit(MAX_PHOTOS);
+}
+
 /** "Ali", "Ali or Danial", "Ali, Danial or Hafiz". */
 const orList = (names: string[]) =>
   names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} ${t('or')} ${names.at(-1)}`;
@@ -88,6 +106,11 @@ export default function ShopPage() {
   const [hidden, setHidden] = useState<HiddenShop | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [barbers, setBarbers] = useState<BarberWithHours[]>([]);
+  const [photos, setPhotos] = useState<ShopPhoto[]>([]);
+  // The photo viewer, open on these photos (all, or one barber's) at `start`.
+  const [viewer, setViewer] = useState<{ photos: ShopPhoto[]; start: number } | null>(null);
+  // A barber picked from a photo's Book button, before any service: the barber step shows for it.
+  const [barberFromPhoto, setBarberFromPhoto] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -234,7 +257,7 @@ export default function ShopPage() {
         setLoading(false);
         return;
       }
-      const [svc, brb, mv] = await Promise.all([
+      const [svc, brb, mv, pics] = await Promise.all([
         supabase.from('services').select('*').eq('shop_id', shopRow.id).eq('is_active', true).order('sort_order').order('name'),
         supabase
           .from('barbers')
@@ -244,6 +267,7 @@ export default function ShopPage() {
           .order('sort_order')
           .order('name'),
         moveUser ? supabase.from('bookings').select('*').eq('id', params.move!).maybeSingle() : null,
+        loadShopPhotos(shopRow.id),
       ]);
       // Without these the page would wrongly say the shop isn't taking bookings.
       if (svc.error || brb.error || mv?.error) {
@@ -256,6 +280,7 @@ export default function ShopPage() {
       setShop(shopRow as Shop);
       setServices(activeServices);
       setBarbers(activeBarbers);
+      setPhotos(pics.error ? [] : ((pics.data ?? []) as ShopPhoto[]));
       // Book again: start from the last visit's picks if the shop still offers them.
       if (activeBarbers.some((b) => b.id === params.barber)) setBarberId(params.barber!);
       if (activeServices.some((s) => s.id === params.service)) {
@@ -352,11 +377,20 @@ export default function ShopPage() {
   const pickService = (id: string) => {
     setServiceId(id);
     pickTime(null);
-    scrollToStep(barbers.length > 1 ? 'barber' : 'time');
+    // A barber picked from their photo is already chosen, so on to the times.
+    scrollToStep(barbers.length > 1 && !(barberFromPhoto && barberId) ? 'barber' : 'time');
   };
   const pickBarber = (id: string | null) => {
     setBarberId(id);
     pickTime(null);
+  };
+  /** Book from a photo: that barber picked in the steps, and the page at the barber step. */
+  const bookFromPhoto = (id: string) => {
+    setViewer(null);
+    setBarberFromPhoto(true);
+    pickBarber(id);
+    if (barbers.length > 1) scrollToStep('barber');
+    else if (serviceId) scrollToStep('time');
   };
   const pickDay = (d: string) => {
     setPickedDay(d);
@@ -890,6 +924,20 @@ export default function ShopPage() {
         onReviews={scrollToReviews}
       />
 
+      {/* Their work, before the steps: often what decides between two barbers. */}
+      {!moving && photos.length ? (
+        <PhotoStrip photos={photos} barbers={barbers} onOpen={(start) => setViewer({ photos, start })} />
+      ) : null}
+      {viewer ? (
+        <PhotoViewer
+          photos={viewer.photos}
+          start={viewer.start}
+          barbers={barbers}
+          onBook={services.length && barbers.length ? bookFromPhoto : null}
+          onClose={() => setViewer(null)}
+        />
+      ) : null}
+
       {services.length === 0 || barbers.length === 0 ? (
         <Empty title={t('Not taking online bookings yet')} body={t('Message the shop to book for now.')} />
       ) : (
@@ -931,7 +979,7 @@ export default function ShopPage() {
             </>
           )}
 
-          {serviceId ? (
+          {serviceId || (barberFromPhoto && barberId) ? (
             <>
               {barbers.length > 1 ? (
                 <View onLayout={(e) => onStepLayout('barber', e)}>
@@ -947,152 +995,188 @@ export default function ShopPage() {
                         <T variant="label">{t('Any barber')}</T>
                         <T variant="small">{t('Whoever is free at the time you pick')}</T>
                       </Card>
-                      {barbers.map((b) => (
-                        <Card
-                          key={b.id}
-                          role="radio"
-                          selected={barberId === b.id}
-                          onPress={() => pickBarber(b.id)}
-                          accessibilityLabel={barberLabel(b)}
-                          style={{ paddingVertical: Spacing.md, gap: 2 }}>
-                          <Row style={{ justifyContent: 'space-between', flexWrap: 'nowrap', alignItems: 'flex-start' }}>
-                            <T variant="label" style={{ flexShrink: 1 }}>
-                              {b.name}
-                            </T>
-                            <RatingSummary average={barberAverage(b)} count={b.rating_count} />
-                          </Row>
-                          {b.about ? <T variant="small">{b.about}</T> : null}
-                        </Card>
-                      ))}
+                      {barbers.map((b) => {
+                        const theirs = photos.filter((p) => p.barber_id === b.id);
+                        const choice = (
+                          <>
+                            <Row style={{ justifyContent: 'space-between', flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+                              <T variant="label" style={{ flexShrink: 1 }}>
+                                {b.name}
+                              </T>
+                              <RatingSummary average={barberAverage(b)} count={b.rating_count} />
+                            </Row>
+                            {b.about ? <T variant="small">{b.about}</T> : null}
+                          </>
+                        );
+                        return theirs.length === 0 ? (
+                          <Card
+                            key={b.id}
+                            role="radio"
+                            selected={barberId === b.id}
+                            onPress={() => pickBarber(b.id)}
+                            accessibilityLabel={barberLabel(b)}
+                            style={{ paddingVertical: Spacing.md, gap: 2 }}>
+                            {choice}
+                          </Card>
+                        ) : (
+                          // Their photos are a button of their own beside the choice, not inside it.
+                          <Card key={b.id} selected={barberId === b.id} style={{ padding: 0, gap: 0 }}>
+                            <Card
+                              role="radio"
+                              selected={barberId === b.id}
+                              onPress={() => pickBarber(b.id)}
+                              accessibilityLabel={barberLabel(b)}
+                              style={{ borderWidth: 0, paddingVertical: Spacing.md, paddingBottom: Spacing.xs, gap: 2 }}>
+                              {choice}
+                            </Card>
+                            <View style={{ paddingHorizontal: Spacing.lg, paddingBottom: Spacing.sm }}>
+                              <BarberPhotosButton
+                                name={b.name}
+                                photos={theirs}
+                                onPress={() => setViewer({ photos: theirs, start: 0 })}
+                              />
+                            </View>
+                          </Card>
+                        );
+                      })}
                     </View>
+                    {serviceId ? null : (
+                      <T variant="small">
+                        {t('Pick a service above to see {name}’s free times.', {
+                          name: barbers.find((b) => b.id === barberId)?.name ?? '',
+                        })}
+                      </T>
+                    )}
                   </Section>
                 </View>
               ) : null}
 
-              <View onLayout={(e) => onStepLayout('time', e)}>
-                <Section title={timeTitle}>
-                  <DayPicker
-                    days={days}
-                    selected={day}
-                    onSelect={pickDay}
-                    closed={closedDays}
-                    closedLabel={barberId ? t('Off') : t('Closed')}
-                  />
-                  {autoPicked && skipToday && day ? (
-                    <T variant="small">{t('No times left today. Showing {day}.', { day: dayText(day) })}</T>
-                  ) : null}
-                  {slotsLoading ? (
-                    <Skeleton label={t('Loading free times')} style={{ gap: Spacing.md }}>
-                      <Row>
-                        {[0, 1, 2].map((i) => (
-                          <Bone key={i} width={92} height={48} style={{ borderRadius: Radius.md }} />
-                        ))}
-                      </Row>
-                      <Row>
-                        {[0, 1, 2, 3, 4, 5].map((i) => (
-                          <Bone key={i} width={72} height={48} style={{ borderRadius: Radius.md }} />
-                        ))}
-                      </Row>
-                    </Skeleton>
-                  ) : slotsError ? (
-                    <>
-                      <ErrorText message={`${t('Couldn’t load free times.')} ${slotsError}`} />
-                      <Button title={t('Try again')} variant="secondary" onPress={() => setSlotsVersion((v) => v + 1)} />
-                    </>
-                  ) : freeCount === 0 ? (
-                    <>
-                      <T variant="muted">
-                        {barberId
-                          ? t('No free times this day. Try another day or any barber.')
-                          : t('No free times this day. Try another day.')}
-                      </T>
-                      {canWait ? (
-                        <Card>
-                          {/* Joining and leaving keep the button pressed where it was (it becomes Leave, or back),
-                              so a screen reader stays on it and hears this line change. */}
-                          {refusal ? null : (
-                            <T variant={waitingHere ? 'label' : 'small'} role="status" accessibilityLiveRegion="polite">
-                              {waitingHere
-                                ? t('You’re on the waiting list for {day}', { day: noBreak(dayText(waitingHere.day)) })
-                                : t('If someone cancels, the shop can WhatsApp you. They decide who gets the time.')}
-                            </T>
-                          )}
-                          {waitingHere ? (
-                            <T variant="small">
-                              {t('{service}. If a time frees up, the shop may WhatsApp you.', {
-                                service: requestService(waitingHere),
-                              })}
-                            </T>
-                          ) : null}
-                          {waitingHere ? (
-                            <Button
-                              title={t('Leave')}
-                              accessibilityLabel={t('Leave the waiting list for {day}', { day: dayText(waitingHere.day) })}
-                              variant="secondary"
-                              tone="danger"
-                              loading={waitBusy}
-                              onPress={() => leaveWaitlist(waitingHere)}
-                            />
-                          ) : refusal ? null : (
-                            <Button
-                              title={t('Tell the shop I’d take a cancellation')}
-                              variant="secondary"
-                              loading={waitBusy}
-                              onPress={joinWaitlist}
-                            />
-                          )}
-                          <ErrorText message={refusal ?? waitError} />
-                        </Card>
-                      ) : null}
-                      {nextOpen ? (
-                        <Button
-                          title={t('See {day}', { day: dayText(nextOpen.date) })}
-                          variant="secondary"
-                          onPress={() => pickDay(nextOpen.date)}
-                        />
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      <Row role="radiogroup" accessibilityLabel={t('Part of the day')}>
-                        {timeGroups.map(([p, list]) => (
-                          <Chip
-                            key={p}
-                            label={t(p)}
-                            sublabel={t('{count} free', { count: list.filter((time) => !isCurrent(time)).length })}
-                            selected={p === shownPart}
-                            onPress={() => setPart(p)}
+              {serviceId ? (
+                <View onLayout={(e) => onStepLayout('time', e)}>
+                  <Section title={timeTitle}>
+                    <DayPicker
+                      days={days}
+                      selected={day}
+                      onSelect={pickDay}
+                      closed={closedDays}
+                      closedLabel={barberId ? t('Off') : t('Closed')}
+                    />
+                    {autoPicked && skipToday && day ? (
+                      <T variant="small">{t('No times left today. Showing {day}.', { day: dayText(day) })}</T>
+                    ) : null}
+                    {slotsLoading ? (
+                      <Skeleton label={t('Loading free times')} style={{ gap: Spacing.md }}>
+                        <Row>
+                          {[0, 1, 2].map((i) => (
+                            <Bone key={i} width={92} height={48} style={{ borderRadius: Radius.md }} />
+                          ))}
+                        </Row>
+                        <Row>
+                          {[0, 1, 2, 3, 4, 5].map((i) => (
+                            <Bone key={i} width={72} height={48} style={{ borderRadius: Radius.md }} />
+                          ))}
+                        </Row>
+                      </Skeleton>
+                    ) : slotsError ? (
+                      <>
+                        <ErrorText message={`${t('Couldn’t load free times.')} ${slotsError}`} />
+                        <Button title={t('Try again')} variant="secondary" onPress={() => setSlotsVersion((v) => v + 1)} />
+                      </>
+                    ) : freeCount === 0 ? (
+                      <>
+                        <T variant="muted">
+                          {barberId
+                            ? t('No free times this day. Try another day or any barber.')
+                            : t('No free times this day. Try another day.')}
+                        </T>
+                        {canWait ? (
+                          <Card>
+                            {/* Joining and leaving keep the button pressed where it was (it becomes Leave, or back),
+                                so a screen reader stays on it and hears this line change. */}
+                            {refusal ? null : (
+                              <T variant={waitingHere ? 'label' : 'small'} role="status" accessibilityLiveRegion="polite">
+                                {waitingHere
+                                  ? t('You’re on the waiting list for {day}', { day: noBreak(dayText(waitingHere.day)) })
+                                  : t('If someone cancels, the shop can WhatsApp you. They decide who gets the time.')}
+                              </T>
+                            )}
+                            {waitingHere ? (
+                              <T variant="small">
+                                {t('{service}. If a time frees up, the shop may WhatsApp you.', {
+                                  service: requestService(waitingHere),
+                                })}
+                              </T>
+                            ) : null}
+                            {waitingHere ? (
+                              <Button
+                                title={t('Leave')}
+                                accessibilityLabel={t('Leave the waiting list for {day}', { day: dayText(waitingHere.day) })}
+                                variant="secondary"
+                                tone="danger"
+                                loading={waitBusy}
+                                onPress={() => leaveWaitlist(waitingHere)}
+                              />
+                            ) : refusal ? null : (
+                              <Button
+                                title={t('Tell the shop I’d take a cancellation')}
+                                variant="secondary"
+                                loading={waitBusy}
+                                onPress={joinWaitlist}
+                              />
+                            )}
+                            <ErrorText message={refusal ?? waitError} />
+                          </Card>
+                        ) : null}
+                        {nextOpen ? (
+                          <Button
+                            title={t('See {day}', { day: dayText(nextOpen.date) })}
+                            variant="secondary"
+                            onPress={() => pickDay(nextOpen.date)}
                           />
-                        ))}
-                      </Row>
-                      <Row role="radiogroup" accessibilityLabel={t('Free times')}>
-                        {shownTimes.map((time) => {
-                          // The booking's own time stays in view, so the customer sees where it sits.
-                          const current = isCurrent(time);
-                          return (
-                            // The tab above says am or pm, so the chip shows only the clock and three or
-                            // more fit a row in Malay too; screen readers still hear the whole time.
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <Row role="radiogroup" accessibilityLabel={t('Part of the day')}>
+                          {timeGroups.map(([p, list]) => (
                             <Chip
-                              key={time}
-                              label={formatClockOnly(time, tz)}
-                              sublabel={current ? t('Your time') : undefined}
-                              accessibilityLabel={
-                                current
-                                  ? t('{time}, your current time', { time: formatTime(time, tz) })
-                                  : formatTime(time, tz)
-                              }
-                              selected={startsAt === time}
-                              disabled={current}
-                              current={current}
-                              onPress={() => pickTime(time)}
+                              key={p}
+                              label={t(p)}
+                              sublabel={t('{count} free', { count: list.filter((time) => !isCurrent(time)).length })}
+                              selected={p === shownPart}
+                              onPress={() => setPart(p)}
                             />
-                          );
-                        })}
-                      </Row>
-                    </>
-                  )}
-                </Section>
-              </View>
+                          ))}
+                        </Row>
+                        <Row role="radiogroup" accessibilityLabel={t('Free times')}>
+                          {shownTimes.map((time) => {
+                            // The booking's own time stays in view, so the customer sees where it sits.
+                            const current = isCurrent(time);
+                            return (
+                              // The tab above says am or pm, so the chip shows only the clock and three or
+                              // more fit a row in Malay too; screen readers still hear the whole time.
+                              <Chip
+                                key={time}
+                                label={formatClockOnly(time, tz)}
+                                sublabel={current ? t('Your time') : undefined}
+                                accessibilityLabel={
+                                  current
+                                    ? t('{time}, your current time', { time: formatTime(time, tz) })
+                                    : formatTime(time, tz)
+                                }
+                                selected={startsAt === time}
+                                disabled={current}
+                                current={current}
+                                onPress={() => pickTime(time)}
+                              />
+                            );
+                          })}
+                        </Row>
+                      </>
+                    )}
+                  </Section>
+                </View>
+              ) : null}
             </>
           ) : null}
 

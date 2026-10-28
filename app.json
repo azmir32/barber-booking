@@ -36,6 +36,14 @@
         }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to open your photos, so you can add photos of your cuts to your shop page.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-location",
         {
           "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to show barbers near you, and to set where your shop is. Only while you use the app.",
