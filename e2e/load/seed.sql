@@ -158,7 +158,7 @@ select md5('shop' || i)::uuid, (now() at time zone 'Asia/Kuala_Lumpur')::date,
 from generate_series(3, :shops, 3) i, generate_series(0, 5) n;
 
 \echo › photos of cuts
--- Two shops in three show photos of their cuts, from 4 to 24 each, most
+-- Two shops in three show photos of their cuts, from 5 to 24 each, most
 -- tagged with the barber who did it. Only the rows: the files would be in
 -- Supabase Storage, which the load test doesn't reach.
 insert into public.shop_photos (shop_id, barber_id, caption, path, thumb_path, width, height)
