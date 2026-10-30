@@ -113,9 +113,10 @@ export function cutCard(cut: SampleCut, width: number, height: number): string {
   const look = LOOKS[cut.look];
   const { width: w, height: h } = sampleSize(cut);
   // The drawing sits in the square middle of a tall card, so a square thumbnail still shows the name.
-  const art = cut.square ? { scale: 0.72, x: 168, y: 70 } : { scale: 0.9, x: 60, y: 110 };
+  const art = cut.square ? { scale: 0.72, x: 168, y: 70 } : { scale: 0.84, x: 96, y: 146 };
   const figure = cut.kid ? 'translate(84 168) scale(0.86)' : '';
-  const nameY = cut.square ? 1060 : 1290;
+  // About the same height up the square either way; a tall card's square is y 150 to 1350.
+  const nameY = cut.square ? 1076 : 1256;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${w} ${h}">
   <defs>
     <linearGradient id="fade" x1="0" y1="${cut.hair === 'taper' ? 500 : 380}" x2="0" y2="${cut.hair === 'taper' ? 650 : 620}" gradientUnits="userSpaceOnUse">
@@ -131,7 +132,7 @@ export function cutCard(cut: SampleCut, width: number, height: number): string {
   <rect x="${cut.square ? 48 : 60}" y="${cut.square ? 40 : 170}" width="250" height="60" rx="30" fill="${look.pill}"/>
   <text x="${(cut.square ? 48 : 60) + 125}" y="${cut.square ? 81 : 211}" font-family="${FONT}" font-size="30" font-weight="700" letter-spacing="5" text-anchor="middle" fill="${look.pillText}">SAMPLE</text>
   <text x="600" y="${nameY}" font-family="${FONT}" font-size="80" font-weight="700" text-anchor="middle" fill="${look.ink}">${cut.name}</text>
-  <text x="600" y="${nameY + 64}" font-family="${FONT}" font-size="34" text-anchor="middle" fill="${look.muted}">Sample illustration · Ilustrasi contoh</text>
+  <text x="600" y="${nameY + 58}" font-family="${FONT}" font-size="34" text-anchor="middle" fill="${look.muted}">Sample illustration · Ilustrasi contoh</text>
 </svg>`;
 }
 
