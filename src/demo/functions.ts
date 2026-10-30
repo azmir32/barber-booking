@@ -1893,6 +1893,12 @@ export function shopPage(c: Caller, slug: unknown) {
     closed_days: shopClosedDays(c, shop.id, today, addDays(today, 13)),
     hours_today: shopHoursToday(c, shop.id)[0],
     queue: shop.queue_enabled ? queueStatus(c, shop.id) : null,
+    photos: selectAs(c, 'shop_photos', {
+      select: 'id,barber_id,caption,path,thumb_path,width,height,sort_order',
+      ...forShop,
+      order: 'sort_order,created_at,id',
+      limit: '24',
+    }),
     reviews: reviews.slice(0, 3),
     more_reviews: reviews.length > 3,
   };
