@@ -1,0 +1,781 @@
+// Small set of shared building blocks so every screen looks the same.
+
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { router } from 'expo-router';
+import { HeaderBackButton } from 'expo-router/react-navigation';
+import { useEffect, useId, useState, type ComponentProps, type ReactNode, type Ref } from 'react';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Animated,
+  Easing,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type ColorValue,
+  type TextInputProps,
+  type TextProps,
+  type DimensionValue,
+  type TextStyle,
+  type ViewStyle,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { Fonts, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
+import { useNow } from '@/hooks/use-now';
+import { useReduceMotion } from '@/hooks/use-reduce-motion';
+import { useTheme } from '@/hooks/use-theme';
+import { staleLine } from '@/lib/cache';
+import { t } from '@/lib/lang';
+import { fitText, scaleText } from '@/lib/text-size';
+import { useTextFit, useTextScale } from '@/lib/text-size-provider';
+
+export function Screen({
+  children,
+  scroll = true,
+  edges = ['top'],
+  onRefresh,
+  footer,
+  overlay,
+  scrollRef,
+  onScroll,
+}: {
+  children: ReactNode;
+  scroll?: boolean;
+  edges?: ('top' | 'bottom')[];
+  /** Enables pull to refresh. */
+  onRefresh?: () => Promise<unknown>;
+  /** Stays at the bottom of the screen while the content scrolls, e.g. a confirm bar. */
+  footer?: ReactNode;
+  /** Floats over the content, e.g. an undo bar or an add button. Position it absolutely. */
+  overlay?: ReactNode;
+  scrollRef?: Ref<ScrollView>;
+  /** How far the content has scrolled, e.g. to show a floating button only once its inline twin is out of view. */
+  onScroll?: (y: number) => void;
+}) {
+  const theme = useTheme();
+  const [refreshing, setRefreshing] = useState(false);
+  const inner = <View style={styles.content}>{children}</View>;
+  const refreshControl = onRefresh ? (
+    <RefreshControl
+      refreshing={refreshing}
+      tintColor={theme.tint}
+      colors={[theme.tint]}
+      onRefresh={async () => {
+        setRefreshing(true);
+        try {
+          await onRefresh();
+        } finally {
+          setRefreshing(false);
+        }
+      }}
+    />
+  ) : undefined;
+  return (
+    <SafeAreaView
+      edges={footer ? edges.filter((e) => e !== 'bottom') : edges}
+      style={[styles.screen, { backgroundColor: theme.background }]}>
+      {scroll ? (
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          onScroll={onScroll && ((e) => onScroll(e.nativeEvent.contentOffset.y))}
+          scrollEventThrottle={onScroll ? 100 : undefined}
+          refreshControl={refreshControl}>
+          {inner}
+        </ScrollView>
+      ) : (
+        inner
+      )}
+      {footer ? (
+        <SafeAreaView edges={['bottom']} style={[styles.footer, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={styles.footerInner}>{footer}</View>
+        </SafeAreaView>
+      ) : null}
+      {overlay}
+    </SafeAreaView>
+  );
+}
+
+type Variant = 'title' | 'heading' | 'body' | 'muted' | 'small' | 'label';
+
+export function T({
+  variant = 'body',
+  style,
+  maxScale,
+  ...rest
+}: TextProps & {
+  variant?: Variant;
+  /**
+   * The most this text may grow, the phone's text size and the app's
+   * together, where wrapping would break the layout (a booking's block in
+   * the chairs). Without it, it grows as much as asked.
+   */
+  maxScale?: number;
+}) {
+  const theme = useTheme();
+  const fit = fitText(useTextScale(), maxScale);
+  const color = variant === 'muted' || variant === 'small' ? theme.textSecondary : theme.text;
+  // Titles and headings are headings to screen readers too (h1/h2 on the web).
+  const heading =
+    variant === 'title' || variant === 'heading'
+      ? ({ role: 'heading', 'aria-level': variant === 'title' ? 1 : 2 } as TextProps)
+      : null;
+  // Font size and line height grow together, so bigger lines never overlap.
+  const sized =
+    fit.scale === 1 ? [textStyles[variant], style] : scaleText(StyleSheet.flatten([textStyles[variant], style]), fit.scale);
+  return (
+    <Text
+      {...heading}
+      maxFontSizeMultiplier={fit.maxFontSizeMultiplier}
+      style={[{ color, fontFamily: Fonts?.sans }, sized]}
+      {...rest}
+    />
+  );
+}
+
+/**
+ * primary: the one main action (solid brand red). secondary: other actions
+ * (outlined). danger: destructive actions (soft red, so Cancel never looks
+ * like Confirm). ghost: quiet text actions; tone="danger" makes a ghost or
+ * secondary button's text red for destructive ones.
+ */
+export function Button({
+  title,
+  onPress,
+  variant = 'primary',
+  tone,
+  disabled,
+  loading,
+  style,
+  accessibilityLabel,
+  icon,
+  iconColor,
+}: {
+  title: string;
+  onPress?: () => void;
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  tone?: 'danger';
+  disabled?: boolean;
+  loading?: boolean;
+  style?: ViewStyle;
+  /** When the title alone is ambiguous, e.g. one "Reopen" per row: "Reopen Fri, 20 Mar". */
+  accessibilityLabel?: string;
+  /** Shown before the title, e.g. the WhatsApp logo on a button that opens WhatsApp. */
+  icon?: ComponentProps<typeof Ionicons>['name'];
+  /** The icon's colour when it isn't the text's, e.g. WhatsApp green. */
+  iconColor?: string;
+}) {
+  const theme = useTheme();
+  const text = scaleText(styles.buttonText, useTextScale());
+  const bg =
+    variant === 'primary'
+      ? theme.accent
+      : variant === 'danger'
+        ? theme.dangerSoft
+        : variant === 'secondary'
+          ? theme.card
+          : 'transparent';
+  const border = variant === 'danger' ? theme.danger : variant === 'secondary' ? theme.inputBorder : 'transparent';
+  const fg =
+    variant === 'primary' ? theme.accentText : variant === 'danger' || tone === 'danger' ? theme.danger : theme.text;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? title}
+      aria-busy={loading}
+      aria-disabled={disabled}
+      // While loading the button keeps its size, name and focus; presses are ignored.
+      onPress={loading ? undefined : onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.button,
+        { backgroundColor: bg, borderColor: border, opacity: disabled ? 0.5 : pressed ? 0.8 : 1 },
+        style,
+      ]}>
+      {icon ? (
+        <View style={[styles.buttonInner, { opacity: loading ? 0 : 1 }]}>
+          <Ionicons aria-hidden name={icon} size={20} color={iconColor ?? fg} />
+          <Text style={[text, styles.buttonTextBesideIcon, { color: fg }]}>{title}</Text>
+        </View>
+      ) : (
+        <Text style={[text, { color: fg, opacity: loading ? 0 : 1 }]}>{title}</Text>
+      )}
+      {loading ? <ActivityIndicator color={fg} style={StyleSheet.absoluteFill} /> : null}
+    </Pressable>
+  );
+}
+
+export function Field({
+  label,
+  hint,
+  error,
+  ref,
+  ...props
+}: TextInputProps & {
+  label: string;
+  hint?: string;
+  /** Shown under the field in red, and read out, when what was typed is not right. */
+  error?: string | null;
+  /** To focus the field from elsewhere: a button that jumps to it, or to bring it into view with its error. */
+  ref?: Ref<TextInput>;
+}) {
+  const theme = useTheme();
+  const scale = useTextScale();
+  const [focused, setFocused] = useState(false);
+  const below = useId();
+  return (
+    <View style={styles.field}>
+      <T variant="label">{label}</T>
+      <TextInput
+        ref={ref}
+        accessibilityLabel={label}
+        // Read on reaching the field, after its name: what is wrong with it, or else the hint.
+        accessibilityHint={error || hint}
+        aria-describedby={error || hint ? below : undefined}
+        aria-invalid={Boolean(error)}
+        placeholderTextColor={theme.textSecondary}
+        {...props}
+        onFocus={(e) => {
+          setFocused(true);
+          props.onFocus?.(e);
+        }}
+        onBlur={(e) => {
+          setFocused(false);
+          props.onBlur?.(e);
+        }}
+        style={[
+          scaleText(styles.input, scale),
+          {
+            color: theme.text,
+            backgroundColor: theme.card,
+            borderColor: error ? theme.danger : focused ? theme.tint : theme.inputBorder,
+            borderWidth: focused || error ? 2 : 1,
+          },
+          // The coloured border shows focus, so the browser's own outline is not needed.
+          Platform.OS === 'web' && ({ outlineStyle: 'none' } as unknown as TextStyle),
+          props.multiline && { minHeight: 88 * scale, textAlignVertical: 'top' },
+          props.style,
+        ]}
+      />
+      {error ? (
+        <ErrorText id={below} message={error} />
+      ) : hint ? (
+        <T variant="small" id={below}>
+          {hint}
+        </T>
+      ) : null}
+    </View>
+  );
+}
+
+export function Card({
+  children,
+  onPress,
+  style,
+  role = 'button',
+  selected,
+  accessibilityLabel,
+}: {
+  children: ReactNode;
+  onPress?: () => void;
+  style?: ViewStyle;
+  /** What a tappable card is to a screen reader: a button, a link to another page, or one choice of several. */
+  role?: 'button' | 'link' | 'radio';
+  /** For role="radio": whether this card is the one picked. */
+  selected?: boolean;
+  accessibilityLabel?: string;
+}) {
+  const theme = useTheme();
+  const cardStyle = [
+    styles.card,
+    { backgroundColor: theme.card, borderColor: theme.border },
+    selected && { borderColor: theme.tint, borderWidth: 2 },
+    style,
+  ];
+  if (!onPress) return <View style={cardStyle}>{children}</View>;
+  return (
+    <Pressable
+      role={role}
+      aria-checked={role === 'radio' ? Boolean(selected) : undefined}
+      accessibilityState={role === 'radio' ? { checked: Boolean(selected) } : undefined}
+      accessibilityLabel={accessibilityLabel}
+      onPress={onPress}
+      style={({ pressed }) => [...cardStyle, pressed && { opacity: 0.8 }]}>
+      {children}
+    </Pressable>
+  );
+}
+
+/** A card that opens another screen: an icon, a title, a line on what is there, and a chevron. */
+export function LinkCard({
+  icon,
+  title,
+  summary,
+  onPress,
+}: {
+  icon: ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  summary: string;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  return (
+    <Card role="link" onPress={onPress} accessibilityLabel={`${title}: ${summary}`}>
+      <View style={styles.linkRow}>
+        <Ionicons aria-hidden name={icon} size={24} color={theme.tint} />
+        <View style={styles.linkInfo}>
+          <T variant="heading">{title}</T>
+          <T variant="muted">{summary}</T>
+        </View>
+        <Ionicons aria-hidden name="chevron-forward" size={22} color={theme.textSecondary} />
+      </View>
+    </Card>
+  );
+}
+
+/**
+ * A choice. With `selected` set it is one option of a set (a radio button to
+ * screen readers, or an on/off switch with mode="toggle"); without it, it is
+ * a plain button such as a suggestion.
+ */
+export function Chip({
+  label,
+  sublabel,
+  selected,
+  disabled,
+  current,
+  mode = 'radio',
+  accessibilityLabel,
+  onPress,
+  style,
+  icon,
+}: {
+  label: string;
+  sublabel?: string;
+  /** Shown before the label, e.g. a pin on Near me so it reads as more than one more area. */
+  icon?: ComponentProps<typeof Ionicons>['name'];
+  selected?: boolean;
+  /**
+   * Can't be tapped, e.g. a day the shop is closed: unfilled with a dashed
+   * edge, its words still readable so it is clear why.
+   */
+  disabled?: boolean;
+  /** What is already in place, e.g. a booking's own time while moving it: outlined in the brand colour. */
+  current?: boolean;
+  mode?: 'radio' | 'toggle';
+  accessibilityLabel?: string;
+  onPress?: () => void;
+  /** E.g. flex: 1, for chips that share a row evenly like a segmented control. */
+  style?: ViewStyle;
+}) {
+  const theme = useTheme();
+  const scale = useTextScale();
+  const text = scaleText(styles.chipText, scale);
+  const choice = selected !== undefined;
+  const look = selected
+    ? { box: { backgroundColor: theme.accent, borderColor: theme.accent }, text: theme.accentText, sub: theme.accentText }
+    : current
+      ? { box: [styles.chipCurrent, { borderColor: theme.tint }], text: theme.text, sub: theme.tint }
+      : disabled
+        ? { box: [styles.chipDisabled, { borderColor: theme.inputBorder }], text: theme.textSecondary, sub: theme.textSecondary }
+        : { box: { backgroundColor: theme.chip, borderColor: theme.inputBorder }, text: theme.text, sub: theme.textSecondary };
+  // react-native-web only passes aria-* props to the page, so set both kinds.
+  const state = choice
+    ? mode === 'toggle'
+      ? ({ 'aria-pressed': selected } as object)
+      : { 'aria-checked': selected }
+    : null;
+  return (
+    <Pressable
+      role={choice && mode === 'radio' ? 'radio' : 'button'}
+      {...state}
+      aria-disabled={disabled}
+      accessibilityState={{ checked: choice && mode === 'radio' ? selected : undefined, selected, disabled }}
+      // An icon's glyph would otherwise be read as part of the name.
+      accessibilityLabel={accessibilityLabel ?? (icon ? label : undefined)}
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.chip, look.box, style]}>
+      {icon ? (
+        <View style={styles.buttonInner}>
+          <Ionicons aria-hidden name={icon} size={18} color={look.text} />
+          <Text style={[text, { color: look.text }]}>{label}</Text>
+        </View>
+      ) : (
+        <Text style={[text, { color: look.text }]}>{label}</Text>
+      )}
+      {sublabel ? <Text style={[scaleText(styles.chipSub, scale), { color: look.sub }]}>{sublabel}</Text> : null}
+    </Pressable>
+  );
+}
+
+/** A square button with just an icon, as big as a regular button so it is easy to hit. */
+export function IconButton({
+  icon,
+  label,
+  onPress,
+  variant = 'secondary',
+  color,
+}: {
+  icon: ComponentProps<typeof Ionicons>['name'];
+  /** Read out by screen readers, since there is no visible text. */
+  label: string;
+  onPress?: () => void;
+  variant?: 'primary' | 'secondary' | 'ghost';
+  color?: string;
+}) {
+  const theme = useTheme();
+  const bg = variant === 'primary' ? theme.accent : variant === 'secondary' ? theme.card : 'transparent';
+  const border = variant === 'secondary' ? theme.inputBorder : 'transparent';
+  const fg = color ?? (variant === 'primary' ? theme.accentText : theme.text);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      hitSlop={4}
+      style={({ pressed }) => [styles.iconButton, { backgroundColor: bg, borderColor: border, opacity: pressed ? 0.8 : 1 }]}>
+      <Ionicons aria-hidden name={icon} size={22} color={fg} />
+    </Pressable>
+  );
+}
+
+export function Badge({ label, tone = 'neutral' }: { label: string; tone?: 'neutral' | 'success' | 'warning' | 'danger' }) {
+  const theme = useTheme();
+  const text = scaleText(styles.badgeText, useTextScale());
+  const color =
+    tone === 'success' ? theme.success : tone === 'warning' ? theme.warning : tone === 'danger' ? theme.danger : theme.textSecondary;
+  return (
+    <View style={[styles.badge, { borderColor: color }]}>
+      <Text style={[text, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+export function Row({
+  children,
+  style,
+  role,
+  accessibilityLabel,
+}: {
+  children: ReactNode;
+  style?: ViewStyle;
+  /** "radiogroup" around a set of chips where one is picked, with a label saying what is being picked. */
+  role?: 'radiogroup' | 'group';
+  accessibilityLabel?: string;
+}) {
+  return (
+    <View role={role} accessibilityLabel={accessibilityLabel} style={[styles.row, style]}>
+      {children}
+    </View>
+  );
+}
+
+export function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <View style={styles.section}>
+      <Row style={{ justifyContent: 'space-between' }}>
+        <T variant="heading">{title}</T>
+        {action}
+      </Row>
+      {children}
+    </View>
+  );
+}
+
+export function Loading() {
+  const theme = useTheme();
+  return (
+    <View style={[styles.center, { backgroundColor: theme.background }]}>
+      <ActivityIndicator color={theme.tint} />
+    </View>
+  );
+}
+
+/**
+ * The shape of what is coming, for a first load with nothing to show yet:
+ * grey Bones laid out like the content. It pulses gently, and keeps still
+ * when the phone asks for less motion. Screen readers hear the label, busy.
+ */
+export function Skeleton({ label, children, style }: { label: string; children: ReactNode; style?: ViewStyle }) {
+  const reduceMotion = useReduceMotion();
+  const [pulse] = useState(() => new Animated.Value(1));
+  useEffect(() => {
+    pulse.setValue(1);
+    if (reduceMotion) return;
+    const step = (toValue: number) =>
+      Animated.timing(pulse, {
+        toValue,
+        duration: 800,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: Platform.OS !== 'web',
+      });
+    const loop = Animated.loop(Animated.sequence([step(0.55), step(1)]));
+    loop.start();
+    return () => loop.stop();
+  }, [pulse, reduceMotion]);
+  return (
+    <Animated.View
+      accessible
+      role="progressbar"
+      aria-busy
+      aria-label={label}
+      accessibilityLabel={label}
+      accessibilityState={{ busy: true }}
+      style={[styles.skeleton, style, { opacity: pulse }]}>
+      {children}
+    </Animated.View>
+  );
+}
+
+/** One grey shape in a Skeleton: a line of text (as tall as the text), a button or a chip. */
+export function Bone({ width = '100%', height = 14, style }: { width?: DimensionValue; height?: number; style?: ViewStyle }) {
+  const theme = useTheme();
+  return <View style={[styles.bone, { width, height, backgroundColor: theme.skeleton }, style]} />;
+}
+
+/**
+ * A screen's title. While what it shows is from last time and the server's
+ * answer is on its way, a small spinner sits at the end, in room kept for it
+ * so nothing moves when it comes and goes.
+ */
+export function ScreenTitle({ title, refreshing }: { title: string; refreshing?: boolean }) {
+  const theme = useTheme();
+  return (
+    <View style={styles.titleRow}>
+      <T variant="title" style={styles.titleText}>
+        {title}
+      </T>
+      <View style={styles.titleSpinner}>
+        {refreshing ? (
+          <ActivityIndicator size="small" color={theme.textSecondary} accessibilityLabel={t('Refreshing')} />
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+/**
+ * A stack's back button on the web (headerLeft). React Navigation's own is
+ * read as "Go back" in English but "Kembali, back" in Malay; this one says
+ * Go back in the app's language and looks the same. Phones keep their own.
+ */
+export const webBackButton =
+  Platform.OS === 'web'
+    ? ({ canGoBack, tintColor, href }: { canGoBack?: boolean; tintColor?: ColorValue; href?: string }) =>
+        canGoBack ? (
+          <HeaderBackButton
+            tintColor={tintColor}
+            href={href}
+            accessibilityLabel={t('Go back')}
+            onPress={() => router.back()}
+          />
+        ) : null
+    : undefined;
+
+/**
+ * When asking the server again failed: what is on screen stays, with one
+ * line saying when it is from, and Try again.
+ */
+export function StaleNote({
+  savedAt,
+  onRetry,
+  retrying,
+  timeZone,
+}: {
+  /** When the server gave what is on screen, in ms. */
+  savedAt: number;
+  onRetry: () => void;
+  retrying?: boolean;
+  timeZone?: string;
+}) {
+  const theme = useTheme();
+  // "Yesterday" once midnight passes with the line still up.
+  const now = useNow();
+  // With big text, Try again goes on a line of its own rather than squeezing the line into a sliver.
+  const grow = Math.max(1, useTextFit().total);
+  return (
+    <View
+      role="status"
+      accessibilityLiveRegion="polite"
+      style={[styles.staleNote, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <Ionicons aria-hidden name="cloud-offline-outline" size={20} color={theme.warning} />
+      <T variant="small" style={[styles.staleText, { flexBasis: 140 * grow }, grow > 1 && styles.staleTextWrapping]}>
+        {staleLine(savedAt, now, timeZone)}
+      </T>
+      <Button title={t('Try again')} variant="ghost" loading={retrying} onPress={onRetry} style={styles.staleButton} />
+    </View>
+  );
+}
+
+export function ErrorText({ message, id }: { message: string | null; id?: string }) {
+  const theme = useTheme();
+  const scale = useTextScale();
+  useEffect(() => {
+    // iOS has no live regions, so VoiceOver is told a new error out loud.
+    if (message && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(message);
+  }, [message]);
+  if (!message) return null;
+  return (
+    <Text
+      id={id}
+      role="alert"
+      accessibilityLiveRegion="polite"
+      // Text's own size, 14, grown with the rest.
+      style={[{ color: theme.danger }, scale === 1 ? null : { fontSize: 14 * scale }]}>
+      {message}
+    </Text>
+  );
+}
+
+export function Empty({ title, body, children }: { title: string; body?: string; children?: ReactNode }) {
+  return (
+    <View style={styles.empty}>
+      <T variant="heading" style={{ textAlign: 'center' }}>
+        {title}
+      </T>
+      {body ? (
+        <T variant="muted" style={{ textAlign: 'center' }}>
+          {body}
+        </T>
+      ) : null}
+      {children}
+    </View>
+  );
+}
+
+const textStyles = StyleSheet.create({
+  title: { fontSize: 28, lineHeight: 34, fontWeight: '700' },
+  heading: { fontSize: 18, lineHeight: 24, fontWeight: '700' },
+  body: { fontSize: 16, lineHeight: 22 },
+  muted: { fontSize: 15, lineHeight: 21 },
+  small: { fontSize: 13, lineHeight: 18 },
+  label: { fontSize: 14, lineHeight: 18, fontWeight: '600' },
+});
+
+const styles = StyleSheet.create({
+  screen: { flex: 1 },
+  scroll: { flexGrow: 1 },
+  content: {
+    flex: 1,
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    alignSelf: 'center',
+    padding: Spacing.lg,
+    gap: Spacing.lg,
+  },
+  button: {
+    minHeight: 48,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.lg,
+    // Room above and below a label that wraps to more lines than the height holds, at large text.
+    paddingVertical: Spacing.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // No wider than what holds it: in a row that wraps, a long label at large text wraps inside the button instead of running off the screen.
+    maxWidth: '100%',
+  },
+  buttonInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
+  // Centred, so a label that wraps in a narrow button still sits in the middle.
+  buttonText: { fontSize: 16, fontWeight: '600', textAlign: 'center' },
+  buttonTextBesideIcon: { flexShrink: 1, textAlign: 'center' },
+  field: { gap: Spacing.xs },
+  input: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    fontSize: 16,
+  },
+  card: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  linkInfo: { flex: 1, gap: 2 },
+  chip: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 64,
+    minHeight: 48,
+    // Like a button: a long name (a service, a barber) wraps inside the chip instead of running off the screen.
+    maxWidth: '100%',
+  },
+  chipDisabled: { backgroundColor: 'transparent', borderStyle: 'dashed' },
+  // A thicker edge, with the padding trimmed to match, so it stays the size of its neighbours.
+  chipCurrent: {
+    backgroundColor: 'transparent',
+    borderWidth: 2,
+    paddingHorizontal: Spacing.md - 1,
+    paddingVertical: Spacing.sm - 1,
+  },
+  iconButton: {
+    minWidth: 48,
+    minHeight: 48,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  footer: { borderTopWidth: StyleSheet.hairlineWidth },
+  footerInner: {
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    alignSelf: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.sm,
+  },
+  // Shrinks beside an icon, so a long label wraps rather than pushing the chip wider than the screen.
+  chipText: { fontSize: 15, fontWeight: '600', textAlign: 'center', flexShrink: 1 },
+  chipSub: { fontSize: 12, textAlign: 'center' },
+  badge: {
+    borderWidth: 1,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    alignSelf: 'flex-start',
+    // A long badge (often in Malay) wraps inside its card instead of running past it.
+    flexShrink: 1,
+    maxWidth: '100%',
+  },
+  badgeText: { fontSize: 12, fontWeight: '600' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexWrap: 'wrap' },
+  section: { gap: Spacing.md },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  skeleton: { gap: Spacing.lg },
+  bone: { borderRadius: Radius.sm },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  titleText: { flexShrink: 1 },
+  titleSpinner: { width: 24, height: 24, marginLeft: 'auto', alignItems: 'center', justifyContent: 'center' },
+  staleNote: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingLeft: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  staleText: { flexGrow: 1, flexShrink: 1, paddingVertical: Spacing.xs },
+  // Off the edge, which it can reach once Try again is on the next line.
+  staleTextWrapping: { paddingRight: Spacing.md },
+  staleButton: { paddingHorizontal: Spacing.md, marginLeft: 'auto' },
+  empty: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xxl },
+});
