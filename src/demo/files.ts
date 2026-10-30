@@ -6,10 +6,13 @@
 // there. The app shows a file by its public link, which here is a blob: or
 // data: link, as the demo page lets images come only from those.
 
-import { nowIso, newId, tables } from './db.ts';
+import { MAX_SHOP_PHOTOS, nowIso, newId, tables } from './db.ts';
 import { missingFile, sampleFile } from './sample-photos.ts';
 
 export const PHOTO_BUCKET = 'shop-photos';
+
+/** The most files a shop's folder holds, as the migration's insert policy allows: two a photo, and a few more. */
+export const MAX_FOLDER_FILES = 2 * MAX_SHOP_PHOTOS + 8;
 
 /** Each bucket's limits, as the migration sets them. */
 const BUCKETS: Record<string, { maxBytes: number; types: string[] }> = {
@@ -77,6 +80,27 @@ function inOwnFolder(path: string, uid: string | null): boolean {
   return shop != null && parts.length > 1 && parts[0] === shop.id;
 }
 
+/**
+ * A shop's files, by name within its folder: those added in
+ * the demo, and the sample photos' while the shop lists them.
+ */
+type Listed = { name: string; id: string | null; created_at: string; size: number; type: string };
+
+function folderFiles(bucket: string, shopId: string): Listed[] {
+  const prefix = keyOf(bucket, `${shopId}/`);
+  const found: Listed[] = [...files.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, f]) => ({ name: key.slice(prefix.length), id: f.id, created_at: f.created_at, size: f.bytes.length, type: f.type }));
+  for (const p of tables().shop_photos) {
+    if (p.shop_id !== shopId) continue;
+    for (const path of [String(p.path), String(p.thumb_path)]) {
+      if (sample(bucket, path) == null) continue;
+      found.push({ name: path.slice(shopId.length + 1), id: null, created_at: String(p.created_at), size: 0, type: 'image/svg+xml' });
+    }
+  }
+  return found;
+}
+
 /** The file in a request: raw bytes with their type in the header, or a form with one file in it. */
 async function fileFrom(body: unknown, headers: Headers): Promise<{ bytes: Uint8Array; type: string } | null> {
   if (typeof FormData !== 'undefined' && body instanceof FormData) {
@@ -105,6 +129,7 @@ export async function handleStorage(
   uid: string | null,
 ): Promise<Reply | Response> {
   const [first, ...rest] = route.split('/');
+  if (first === 'list' && method === 'POST') return listFolder(rest.join('/'), body, uid);
   const isPublic = first === 'public' && method === 'GET';
   const bucket = isPublic ? rest[0] : first;
   const path = (isPublic ? rest.slice(1) : rest).join('/');
@@ -132,6 +157,7 @@ export async function handleStorage(
     if (file.bytes.length > limits.maxBytes) {
       return storageError(413, 'Payload too large', 'The object exceeded the maximum allowed size');
     }
+    if (folderFiles(bucket, path.split('/')[0]).length >= MAX_FOLDER_FILES) return notAllowed();
     const key = keyOf(bucket, path);
     if (files.has(key) || sample(bucket, path) != null) {
       // Writing over a file needs an update policy, and owners have none.
@@ -171,6 +197,29 @@ export async function handleStorage(
   }
 
   return storageError(400, 'InvalidRequest', `The demo can't do ${method} ${route} yet.`);
+}
+
+/**
+ * list/<bucket>: the files in a folder, by name, as Storage lists them. The
+ * owner sees only their own shop's (the select policy); anyone else, none.
+ */
+function listFolder(bucket: string, body: unknown, uid: string | null): Reply {
+  if (!BUCKETS[bucket]) return storageError(404, 'Bucket not found', 'Bucket not found');
+  const { prefix, limit, offset } = (body ?? {}) as { prefix?: unknown; limit?: unknown; offset?: unknown };
+  const folder = String(prefix ?? '').replace(/\/+$/, '');
+  if (!inOwnFolder(`${folder}/x`, uid) || folder.includes('/')) return { status: 200, body: [] };
+  const from = Number(offset) || 0;
+  const listed = folderFiles(bucket, folder)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .slice(from, from + (Number(limit) || 100))
+    .map((f) => ({
+      name: f.name,
+      id: f.id,
+      created_at: f.created_at,
+      updated_at: f.created_at,
+      metadata: { size: f.size, mimetype: f.type },
+    }));
+  return { status: 200, body: listed };
 }
 
 /** Whether the demo holds a file (tests). */

@@ -3654,9 +3654,38 @@ grant execute on function public.shop_page(text) to anon, authenticated;
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('shop-photos', 'shop-photos', true, 2 * 1024 * 1024, array['image/jpeg', 'image/png', 'image/webp']);
 
+-- How many files the signed-in owner's shop folder holds, for the cap on
+-- adding more: the 24 photos stop at rows, and without this a barber (with a
+-- hidden shop, say) could fill the public bucket with files no photo lists.
+-- Counted in a function, as a policy on storage.objects can't read that
+-- table itself, and as a range of names ("<shop id>/" up to "<shop id>0",
+-- '0' coming straight after '/' byte by byte) so it reads Supabase's index
+-- on (bucket_id, name collate "C") for just that folder.
+create function public.my_shop_photo_file_count()
+returns int
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select count(*)::int
+  from storage.objects o, (select public.my_shop_id()::text as id) shop
+  where o.bucket_id = 'shop-photos'
+    and o.name collate "C" >= shop.id || '/'
+    and o.name collate "C" < shop.id || '0';
+$$;
+revoke execute on function public.my_shop_photo_file_count() from public, anon;
+grant execute on function public.my_shop_photo_file_count() to authenticated;
+
+-- At most 56 files: two for each of the 24 photos, and a few more for photos
+-- on their way or files waiting to be cleared (scripts/clean-photos.mjs).
 create policy "owners add photos to their shop's folder" on storage.objects
   for insert to authenticated
-  with check (bucket_id = 'shop-photos' and (storage.foldername(name))[1] = (select public.my_shop_id())::text);
+  with check (
+    bucket_id = 'shop-photos'
+    and (storage.foldername(name))[1] = (select public.my_shop_id())::text
+    and (select public.my_shop_photo_file_count()) < 2 * 24 + 8
+  );
 -- Supabase Storage reads the file's row before removing it, so the owner
 -- needs to see their own; everyone else gets the files from the CDN.
 create policy "owners see their shop's photo files" on storage.objects

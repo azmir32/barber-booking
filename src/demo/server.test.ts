@@ -4306,6 +4306,27 @@ test('a shop keeps at most 24 photos, and removing one makes room', async () => 
   })).error, null);
 });
 
+test('a shop’s folder holds at most 56 files, so files no photo lists can’t fill the bucket', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const files = ali.storage.from('shop-photos');
+  // The 7 sample photos are 14 files; the rest are uploads no photo lists, as a phone that lost signal leaves.
+  for (let i = 14; i < 56; i++) assert.equal((await files.upload(`${shop.id}/stray${i}.jpg`, jpeg(), PHOTO_UPLOAD)).error, null);
+  const listed = await files.list(String(shop.id), { limit: 100 });
+  assert.equal(listed.error, null);
+  assert.equal(listed.data!.length, 56);
+  assert.ok(listed.data!.some((f) => f.name === 'sample-skin-fade.svg'));
+  const refused = await files.upload(`${shop.id}/one-more.jpg`, jpeg(), PHOTO_UPLOAD);
+  assert.equal((refused.error as { statusCode?: string }).statusCode, '403');
+  // Removing one makes room again.
+  assert.equal((await files.remove([`${shop.id}/stray14.jpg`])).data?.length, 1);
+  assert.equal((await files.upload(`${shop.id}/one-more.jpg`, jpeg(), PHOTO_UPLOAD)).error, null);
+  // Another shop's folder has its own count, and nobody else can list Ali's.
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  assert.deepEqual((await hakim.storage.from('shop-photos').list(String(shop.id))).data, []);
+  assert.deepEqual((await client().storage.from('shop-photos').list(String(shop.id))).data, []);
+});
+
 test('a paused shop’s photos are its owner’s alone, and a deleted barber or shop takes theirs along', async () => {
   const ali = await signedIn(DEMO_BARBER_EMAIL);
   const shop = await shopBySlug(ali, 'ali-barber');

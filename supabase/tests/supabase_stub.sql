@@ -50,6 +50,8 @@ create table storage.objects (
   created_at timestamptz default now(),
   unique (bucket_id, name)
 );
+-- Supabase's own index for listing a folder's files in name order.
+create index idx_objects_bucket_id_name on storage.objects (bucket_id, name collate "C");
 alter table storage.objects enable row level security;
 
 -- As Supabase has it: a file's folders, without its own name.

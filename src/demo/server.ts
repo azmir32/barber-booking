@@ -239,7 +239,10 @@ export async function demoFetch(input: RequestInfo | URL, init: RequestInit = {}
   if (url.pathname.startsWith('/storage/v1/object/')) {
     let body: unknown = init.body;
     try {
-      if (typeof body === 'string' && method === 'DELETE') body = JSON.parse(body);
+      // Removing and listing send JSON; uploads send the file as it is.
+      if (typeof body === 'string' && (method === 'DELETE' || url.pathname.startsWith('/storage/v1/object/list/'))) {
+        body = JSON.parse(body);
+      }
     } catch {
       body = undefined;
     }

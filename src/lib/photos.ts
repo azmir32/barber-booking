@@ -6,6 +6,11 @@ import { t } from './lang.ts';
 
 /** The most photos a shop keeps, as the database allows. */
 export const MAX_PHOTOS = 24;
+/**
+ * The most files a shop's folder holds, as Storage's policy allows: two for
+ * each photo, and a few more for photos on their way or files not yet cleared.
+ */
+export const MAX_PHOTO_FILES = 2 * MAX_PHOTOS + 8;
 /** Longest caption, as the database allows. */
 export const CAPTION_MAX_LENGTH = 60;
 /** The Storage bucket the files are in. */
@@ -132,13 +137,21 @@ export function base64Bytes(base64: string): Uint8Array {
   return bytes;
 }
 
+/** Storage's status code for a refused file, as text ('403'), or ''. */
+const statusOf = (error: unknown) => {
+  const e = (error ?? {}) as { statusCode?: unknown; status?: unknown };
+  return String(e.statusCode ?? e.status ?? '');
+};
+
+/** Whether Storage refused a file by its policies: not the owner's folder, or the folder full. */
+export const refusedUpload = (error: unknown) => statusOf(error) === '403';
+
 /**
  * Why a file didn't go, from Storage's answer, in words a barber can act on;
  * null for anything else (errorMessage then says it).
  */
 export function uploadProblem(error: unknown): string | null {
-  const e = (error ?? {}) as { statusCode?: unknown; status?: unknown };
-  const code = String(e.statusCode ?? e.status ?? '');
+  const code = statusOf(error);
   if (code === '413') return t('This photo is too big to send, even made smaller. Try another one.');
   if (code === '415') return t('This file isn’t a photo the app can use. Try a JPEG or PNG.');
   if (code === '403' || code === '401') return t('Only the shop’s owner can add its photos. Sign in again and retry.');

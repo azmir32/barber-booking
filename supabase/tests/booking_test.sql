@@ -5076,7 +5076,69 @@ do $$ begin
   raise exception 'guests can''t list leftover files';
 exception when insufficient_privilege then null;
 end $$;
+
+-- At most 56 files in a shop's folder, whatever its photos: two for each of
+-- 24 and a few on their way, so a barber can't fill the public bucket with
+-- files no photo lists. Counted by folder: another shop's files, a folder
+-- whose name starts the same and a loose file beside it don't count.
 reset role;
+delete from shop_photos;
+delete from storage.objects;
+insert into storage.objects (bucket_id, name)
+select 'shop-photos', current_setting('test.shop') || '/old' || n || '.jpg' from generate_series(1, 55) n;
+insert into storage.objects (bucket_id, name) values
+  ('shop-photos', '00000000-0000-0000-0000-00000000005b/theirs.jpg'),
+  ('shop-photos', current_setting('test.shop') || '0/near.jpg'),
+  ('shop-photos', current_setting('test.shop') || '.jpg');
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+set role authenticated;
+do $$ begin
+  assert public.my_shop_photo_file_count() = 55, 'only the folder''s own: ' || public.my_shop_photo_file_count();
+end $$;
+insert into storage.objects (bucket_id, name) values ('shop-photos', current_setting('test.shop') || '/56th.jpg');
+do $$ begin
+  insert into storage.objects (bucket_id, name) values ('shop-photos', current_setting('test.shop') || '/57th.jpg');
+  raise exception 'a shop''s folder holds at most 56 files';
+exception when insufficient_privilege then null;
+end $$;
+-- Removing one makes room again.
+delete from storage.objects where name = current_setting('test.shop') || '/old1.jpg';
+insert into storage.objects (bucket_id, name) values ('shop-photos', current_setting('test.shop') || '/57th.jpg');
+-- Another shop's folder has its own count.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+insert into storage.objects (bucket_id, name) values ('shop-photos', '00000000-0000-0000-0000-00000000005b/more.jpg');
+do $$ begin
+  assert public.my_shop_photo_file_count() = 2, 'Rahman''s shop has two files';
+end $$;
+-- Someone with no shop has no folder to count.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert public.my_shop_photo_file_count() = 0, 'a customer has no shop folder';
+end $$;
+set role anon;
+do $$ begin
+  perform public.my_shop_photo_file_count();
+  raise exception 'guests can''t count a shop''s files';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+do $$
+declare
+  line text;
+  plan text := '';
+begin
+  -- my_shop_photo_file_count()'s count: just the folder's names off the
+  -- index, never every file in the bucket (seq scans off, as this test's
+  -- table is too small to need the index).
+  set local enable_seqscan = off;
+  for line in execute 'explain select count(*) from storage.objects o where o.bucket_id = ''shop-photos''
+                         and o.name collate "C" >= ''x/'' and o.name collate "C" < ''x0''' loop
+    plan := plan || line || E'\n';
+  end loop;
+  assert plan like '%Index Only Scan using idx_objects_bucket_id_name%'
+     and plan like '%Index Cond: ((bucket_id = %) AND (name >= %) AND (name < %))%',
+    'reads the (bucket_id, name collate "C") index for the folder''s range: ' || plan;
+end $$;
 rollback;
 
 -- Deleting an account ------------------------------------------------------

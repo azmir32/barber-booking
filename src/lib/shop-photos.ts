@@ -16,12 +16,14 @@ import { cacheKey } from '@/lib/cache';
 import { t } from '@/lib/lang';
 import {
   base64Bytes,
+  MAX_PHOTO_FILES,
   MAX_PHOTOS,
   PHOTO_BUCKET,
   PHOTO_COLUMNS,
   PHOTO_QUALITY,
   PHOTO_UPLOAD,
   photoPaths,
+  refusedUpload,
   resizeTarget,
   THUMB_QUALITY,
   thumbTarget,
@@ -118,7 +120,12 @@ export async function addPhoto(
     : await bucket.upload(thumb_path, files.thumb.bytes.buffer as ArrayBuffer, PHOTO_UPLOAD);
   const failed = sent.error ?? thumbSent?.error;
   if (failed) {
+    // Refused to the owner too once the folder is full: told apart by counting it, before the photo's file goes.
+    const full = refusedUpload(failed) && (await folderFull(shopId));
     if (!sent.error) bucket.remove([path]);
+    if (full) {
+      return { error: t('Your shop has too many photo files waiting to be cleared away. Remove a photo to make room, or try again tomorrow.') };
+    }
     return { error: uploadProblem(failed) ?? errorMessage(failed) };
   }
   step(2 / 3);
@@ -134,6 +141,12 @@ export async function addPhoto(
   }
   step(1);
   return { photo: data as unknown as OwnPhoto };
+}
+
+/** Whether the shop's folder holds as many files as Storage lets it (MAX_PHOTO_FILES). */
+async function folderFull(shopId: string) {
+  const { data } = await supabase.storage.from(PHOTO_BUCKET).list(shopId, { limit: MAX_PHOTO_FILES });
+  return (data?.length ?? 0) >= MAX_PHOTO_FILES;
 }
 
 /** Removes a photo from the shop, then its files; resolves to why it couldn't, or null. */

@@ -8,10 +8,12 @@ import {
   firstPlace,
   gridLayout,
   inShownOrder,
+  MAX_PHOTO_FILES,
   photoCaption,
   photoCounts,
   photoLabel,
   photoPaths,
+  refusedUpload,
   resizeTarget,
   stripTileSize,
   thumbTarget,
@@ -115,4 +117,13 @@ test('a file Storage turns down says why in plain words', () => {
   assert.match(uploadProblem({ statusCode: '403' })!, /owner/);
   assert.equal(uploadProblem({ statusCode: '500' }), null);
   assert.equal(uploadProblem(null), null);
+});
+
+test('a shop’s folder holds two files for each of its 24 photos and a few more, as Storage’s policy allows', () => {
+  // The migration's "owners add photos to their shop's folder": my_shop_photo_file_count() < 2 * 24 + 8.
+  assert.equal(MAX_PHOTO_FILES, 56);
+  // Refused by a policy: worth counting the folder to say which.
+  assert.equal(refusedUpload({ statusCode: '403' }), true);
+  assert.equal(refusedUpload({ statusCode: '413' }), false);
+  assert.equal(refusedUpload(null), false);
 });

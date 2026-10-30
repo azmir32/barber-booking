@@ -1305,4 +1305,6 @@ export const ms: Record<string, string> = {
   'Photos of {name}’s cuts ({count})': 'Foto potongan {name} ({count})',
   'Pick a service above to see {name}’s free times.': 'Pilih servis di atas untuk melihat masa kosong {name}.',
   'Pick a service above to see free times.': 'Pilih servis di atas untuk melihat masa kosong.',
+  'Your shop has too many photo files waiting to be cleared away. Remove a photo to make room, or try again tomorrow.':
+    'Kedai anda ada terlalu banyak fail foto yang menunggu untuk dibuang. Buang satu foto untuk memberi ruang, atau cuba lagi esok.',
 };
