@@ -2100,8 +2100,17 @@ test('Ali adds a photo of a cut, names Danial and moves it first, and Hakim book
   await expect(viewer.getByRole('img', { name: 'Mid fade for Raya, cut by Danial' }).first()).toBeVisible();
   await expect(button(viewer, 'Previous photo')).toBeDisabled();
   await snap(page, 'demo-photos-04-viewer');
+  // The counter is read out as it changes, so it goes straight to the next photo, not back and forth on the way.
+  const counter = viewer.getByRole('status');
+  await counter.evaluate((el) => {
+    const said: string[] = [];
+    (window as unknown as { said: string[] }).said = said;
+    new MutationObserver(() => said.push(el.textContent ?? '')).observe(el, { childList: true, characterData: true, subtree: true });
+  });
   await button(viewer, 'Next photo').click();
   await expect(viewer.getByText('2 of 8', { exact: true })).toBeVisible();
+  await page.waitForTimeout(1000);
+  expect(await counter.evaluate(() => (window as unknown as { said: string[] }).said)).toEqual(['2 of 8']);
   await expect(viewer.getByText('Cut by Ali', { exact: true })).toBeVisible();
   await expect(button(viewer, 'Book Ali')).toBeVisible();
   await button(viewer, 'Previous photo').click();

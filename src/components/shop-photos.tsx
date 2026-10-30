@@ -187,6 +187,9 @@ export function PhotoViewer({
   const pages = useRef<ScrollView>(null);
   const close = useRef<View>(null);
   const placed = useRef(false);
+  // The photo Previous or Next is scrolling to. On the way the pages pass the
+  // ones in between, which mustn't change the counter, a live region, as they go.
+  const heading = useRef<number | null>(null);
 
   useEffect(() => {
     // After the dialog has taken focus for itself, as it does on the web.
@@ -196,6 +199,8 @@ export function PhotoViewer({
 
   const go = (next: number) => {
     const to = Math.max(0, Math.min(photos.length - 1, next));
+    if (to === index) return;
+    heading.current = to;
     setIndex(to);
     pages.current?.scrollTo({ x: to * width, animated: true });
   };
@@ -232,9 +237,18 @@ export function PhotoViewer({
             pages.current?.scrollTo({ x: start * width, animated: false });
           }}
           onScroll={(e) => {
-            const at = Math.round(e.nativeEvent.contentOffset.x / width);
+            const x = e.nativeEvent.contentOffset.x;
+            const at = Math.round(x / width);
+            if (heading.current != null) {
+              // Arrived; or stopped on another photo, as when a swipe on the web took over.
+              const onPage = Math.abs(x - at * width) < 0.5;
+              if (at !== heading.current && !onPage) return;
+              heading.current = null;
+            }
             if (placed.current && at !== index && at >= 0 && at < photos.length) setIndex(at);
           }}
+          // A swipe takes over from Previous and Next.
+          onScrollBeginDrag={() => (heading.current = null)}
           scrollEventThrottle={50}
           style={{ flex: 1 }}>
           {photos.map((p, i) => (
