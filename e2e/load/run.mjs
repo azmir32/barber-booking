@@ -130,11 +130,22 @@ const SCENARIOS = {
   'My shop': async () => {
     const i = pick(SHOPS);
     const c = owner(i);
-    await must(c.from('shops').select('*').eq('owner_id', idOf(`owner${i}`)).maybeSingle());
+    const shop = await must(c.from('shops').select('*').eq('owner_id', idOf(`owner${i}`)).maybeSingle());
     const week = thisWeek();
     return Promise.all([
       must(c.rpc('shop_cards', { p_from: week.from, p_to: week.to })),
       must(c.rpc('shop_setup')),
+      // The owner's photos of their cuts, each with who did it, asked for on every visit.
+      must(
+        c
+          .from('shop_photos')
+          .select('id, barber_id, caption, path, thumb_path, width, height, sort_order, barber:barbers(name)')
+          .eq('shop_id', shop.data.id)
+          .order('sort_order')
+          .order('created_at')
+          .order('id')
+          .limit(24),
+      ),
     ]);
   },
   'Book a cut': async () => {
