@@ -470,7 +470,14 @@ export default function Explore() {
                     contentFit="cover"
                     accessible={false}
                     recyclingKey={shop.id}
-                    style={{ width: 64, height: 64, borderRadius: Radius.sm, backgroundColor: theme.skeleton }}
+                    style={{
+                      width: 64,
+                      height: 64,
+                      borderRadius: Radius.sm,
+                      borderWidth: 1,
+                      borderColor: theme.border,
+                      backgroundColor: theme.skeleton,
+                    }}
                   />
                 ) : null}
                 <View style={{ flex: 1, gap: Spacing.sm }}>

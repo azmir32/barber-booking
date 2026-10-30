@@ -70,7 +70,8 @@ export function PhotoStrip({
                 contentFit="cover"
                 accessible={false}
                 recyclingKey={item.id}
-                style={[styles.tile, { width: size, height: size, backgroundColor: theme.skeleton }]}
+                // The edge keeps a pale photo from running into the page.
+                style={[styles.tile, { width: size, height: size, backgroundColor: theme.skeleton, borderColor: theme.border }]}
               />
               {/* Who did it, so the strip already says whose work is whose. */}
               <T variant="small" numberOfLines={1}>
@@ -277,7 +278,7 @@ export function PhotoViewer({
 }
 
 const styles = StyleSheet.create({
-  tile: { borderRadius: Radius.md },
+  tile: { borderRadius: Radius.md, borderWidth: 1 },
   barberPhotos: {
     flexDirection: 'row',
     alignItems: 'center',

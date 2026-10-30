@@ -117,7 +117,7 @@ export function ShopPhotosCard({
                   source={{ uri: photoUrl(photo.thumb_path) }}
                   contentFit="cover"
                   accessible={false}
-                  style={[styles.tile, { width: grid.size, height: grid.size, backgroundColor: theme.skeleton }]}
+                  style={[styles.tile, { width: grid.size, height: grid.size, backgroundColor: theme.skeleton, borderColor: theme.border }]}
                 />
                 <T variant="small" numberOfLines={1}>
                   {photo.barber?.name ?? ' '}
@@ -175,7 +175,7 @@ export function ShopPhotosCard({
 
 const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  tile: { borderRadius: Radius.sm },
+  tile: { borderRadius: Radius.sm, borderWidth: 1 },
   track: { height: 6, borderRadius: 3, overflow: 'hidden' },
   fill: { height: 6, borderRadius: 3 },
 });
