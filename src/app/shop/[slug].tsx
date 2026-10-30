@@ -50,7 +50,7 @@ import {
 import { WEEKDAYS, type Barber, type Booking, type Service, type Shop, type Slot, type WorkingHours } from '@/lib/types';
 
 type BarberWithHours = Barber & { working_hours: Pick<WorkingHours, 'weekday' | 'opens_at' | 'closes_at'>[] };
-type Step = 'move' | 'barber' | 'time' | 'note';
+type Step = 'move' | 'service' | 'barber' | 'time' | 'note';
 /** A shop that exists but is hidden from customers (paused, or its trial ended). */
 type HiddenShop = { name: string; phone: string | null; is_live: boolean };
 /**
@@ -393,14 +393,28 @@ export default function ShopPage() {
     setBarberId(id);
     pickTime(null);
   };
-  /** Book from a photo: that barber picked in the steps, and the page at the barber step. */
+  /**
+   * Book from a photo: that barber picked in the steps, and the page at the
+   * barber step; with one barber, at the times, or at the services until one
+   * is picked.
+   */
   const bookFromPhoto = (id: string) => {
     setViewer(null);
     setBarberFromPhoto(true);
     pickBarber(id);
-    if (barbers.length > 1) scrollToStep('barber');
-    else if (serviceId) scrollToStep('time');
+    afterViewer.current = barbers.length > 1 ? 'barber' : serviceId ? 'time' : 'service';
   };
+  // Closing the viewer gives focus back to the photo tapped, which would undo a
+  // scroll made before it had gone; so Book's scroll waits until then.
+  const afterViewer = useRef<Step | null>(null);
+  const scrollAfterViewer = useEffectEvent(() => {
+    const step = afterViewer.current;
+    afterViewer.current = null;
+    if (step) scrollToStep(step);
+  });
+  useEffect(() => {
+    if (!viewer) scrollAfterViewer();
+  }, [viewer]);
   const pickDay = (d: string) => {
     setPickedDay(d);
     pickTime(null);
@@ -975,17 +989,25 @@ export default function ShopPage() {
                 now={now}
                 first={firstQueue}
               />
-              <Section title={t('1. Pick a service')}>
-                {services.map((s) => (
-                  <Card key={s.id} role="radio" selected={s.id === serviceId} onPress={() => pickService(s.id)}>
-                    <Row style={{ justifyContent: 'space-between' }}>
-                      <T variant="label">{s.name}</T>
-                      <T variant="label">{formatPrice(s.price)}</T>
-                    </Row>
-                    <T variant="small">{formatDuration(s.duration_min)}</T>
-                  </Card>
-                ))}
-              </Section>
+              <View onLayout={(e) => onStepLayout('service', e)}>
+                <Section title={t('1. Pick a service')}>
+                  {services.map((s) => (
+                    <Card key={s.id} role="radio" selected={s.id === serviceId} onPress={() => pickService(s.id)}>
+                      <Row style={{ justifyContent: 'space-between' }}>
+                        <T variant="label">{s.name}</T>
+                        <T variant="label">{formatPrice(s.price)}</T>
+                      </Row>
+                      <T variant="small">{formatDuration(s.duration_min)}</T>
+                    </Card>
+                  ))}
+                  {/* Booked from a photo with no barber step to show it: what comes next. */}
+                  {barbers.length === 1 && barberFromPhoto && !serviceId ? (
+                    <T variant="small">
+                      {t('Pick a service above to see {name}’s free times.', { name: barbers[0].name })}
+                    </T>
+                  ) : null}
+                </Section>
+              </View>
             </>
           )}
 

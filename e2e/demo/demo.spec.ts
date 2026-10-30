@@ -2136,6 +2136,32 @@ test('Ali adds a photo of a cut, names Danial and moves it first, and Hakim book
   await expect(app.getByRole('link').filter({ has: listed(app, 'Kemas Barber Kajang') }).last().locator('img')).toHaveCount(0);
 });
 
+test('in a one-barber shop, Book from a photo goes to the services and says what comes next', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  // With Danial away, Ali Barber Sungai Chua has one barber taking bookings.
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+  await button(app, 'Mark away').last().click();
+  await app.getByRole('alertdialog').getByRole('button', { name: 'Mark away', exact: true }).click();
+  await expect(button(app, 'Back at work')).toBeVisible();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await button(app, 'See the customer side').click();
+  await listed(app, 'Ali Barber Sungai Chua').last().click();
+
+  await button(app, 'Skin fade with a hard part, cut by Ali').click();
+  const viewer = app.getByRole('dialog', { name: 'Photos of their cuts' });
+  await button(viewer, 'Book Ali').click();
+  await expect(viewer).toBeHidden();
+  // No barber step to land on: the services, with what picking one does.
+  await expect(app.getByRole('heading', { name: '1. Pick a service' })).toBeInViewport();
+  await expect(app.getByText('Pick a service above to see Ali’s free times.')).toBeInViewport();
+  await expect(app.getByRole('heading', { name: '2. Pick a barber' })).toHaveCount(0);
+  await snap(page, 'demo-photos-07-one-barber-book');
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await expect(app.getByRole('heading', { name: '2. Pick a time' })).toBeVisible();
+  await expect(app.getByText('Pick a service above to see Ali’s free times.')).toHaveCount(0);
+});
+
 test('with the largest text on a small phone, the photos, their viewer and the barber step’s photos fit', async ({
   page,
 }) => {
