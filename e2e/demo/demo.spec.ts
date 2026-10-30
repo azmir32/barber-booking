@@ -1982,10 +1982,15 @@ test('Ali adds a photo of a cut, names Danial and moves it first, and Hakim book
   await expect(app.getByText('8 of 24', { exact: true })).toBeVisible();
   await snap(page, 'demo-photos-01-added');
   await added.click();
+  // The thumbnail stands in while the photo loads, so for a moment there are two.
   const shown = app.getByRole('img', { name: 'Photo 8 of 8', exact: true });
-  await expect(shown).toBeVisible();
+  await expect(shown.first()).toBeVisible();
   // At most 1600 px on its long side: the 2000 by 2500 fixture comes back 1280 by 1600.
-  await expect.poll(() => shown.evaluate((img) => [(img as HTMLImageElement).naturalWidth, (img as HTMLImageElement).naturalHeight])).toEqual([1280, 1600]);
+  await expect
+    .poll(() =>
+      shown.evaluateAll((imgs) => imgs.map((img) => `${(img as HTMLImageElement).naturalWidth}x${(img as HTMLImageElement).naturalHeight}`)),
+    )
+    .toContain('1280x1600');
   await app.getByRole('radiogroup', { name: 'Who did this cut?' }).getByRole('radio', { name: 'Danial', exact: true }).click();
   await app.getByRole('textbox', { name: 'Caption (optional)' }).fill('Mid fade for Raya');
   await snap(page, 'demo-photos-02-edit');
@@ -2010,7 +2015,7 @@ test('Ali adds a photo of a cut, names Danial and moves it first, and Hakim book
   await expect(viewer.getByText('1 of 8', { exact: true })).toBeVisible();
   await expect(viewer.getByText('Mid fade for Raya', { exact: true })).toBeVisible();
   await expect(viewer.getByText('Cut by Danial', { exact: true })).toBeVisible();
-  await expect(viewer.getByRole('img', { name: 'Mid fade for Raya, cut by Danial' })).toBeVisible();
+  await expect(viewer.getByRole('img', { name: 'Mid fade for Raya, cut by Danial' }).first()).toBeVisible();
   await expect(button(viewer, 'Previous photo')).toBeDisabled();
   await snap(page, 'demo-photos-04-viewer');
   await button(viewer, 'Next photo').click();
