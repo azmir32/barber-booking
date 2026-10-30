@@ -118,7 +118,7 @@ export default function ShopPage() {
   const [photos, setPhotos] = useState<ShopPhoto[]>([]);
   // The photo viewer, open on these photos (all, or one barber's) at `start`.
   const [viewer, setViewer] = useState<{ photos: ShopPhoto[]; start: number } | null>(null);
-  // A barber picked from a photo's Book button, before any service: the barber step shows for it.
+  // Booked from a photo before any service: the barber step shows from then on, whoever is picked in it.
   const [barberFromPhoto, setBarberFromPhoto] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1011,7 +1011,7 @@ export default function ShopPage() {
             </>
           )}
 
-          {serviceId || (barberFromPhoto && barberId) ? (
+          {serviceId || barberFromPhoto ? (
             <>
               {barbers.length > 1 ? (
                 <View onLayout={(e) => onStepLayout('barber', e)}>
@@ -1074,9 +1074,11 @@ export default function ShopPage() {
                     </View>
                     {serviceId ? null : (
                       <T variant="small">
-                        {t('Pick a service above to see {name}’s free times.', {
-                          name: barbers.find((b) => b.id === barberId)?.name ?? '',
-                        })}
+                        {barberId
+                          ? t('Pick a service above to see {name}’s free times.', {
+                              name: barbers.find((b) => b.id === barberId)?.name ?? '',
+                            })
+                          : t('Pick a service above to see free times.')}
                       </T>
                     )}
                   </Section>

@@ -1304,4 +1304,5 @@ export const ms: Record<string, string> = {
   'Photos ({count})': 'Foto ({count})',
   'Photos of {name}’s cuts ({count})': 'Foto potongan {name} ({count})',
   'Pick a service above to see {name}’s free times.': 'Pilih servis di atas untuk melihat masa kosong {name}.',
+  'Pick a service above to see free times.': 'Pilih servis di atas untuk melihat masa kosong.',
 };

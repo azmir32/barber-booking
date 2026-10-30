@@ -2116,6 +2116,14 @@ test('Ali adds a photo of a cut, names Danial and moves it first, and Hakim book
   await expect(app.getByRole('heading', { name: '2. Pick a barber' })).toBeInViewport();
   await expect(app.getByText('Pick a service above to see Danial’s free times.')).toBeVisible();
   await snap(page, 'demo-photos-05-book-danial');
+  // Changing their mind to anyone keeps the step, and the hint follows.
+  const anyBarber = barbers.getByRole('radio', { name: /^Any barber\. / });
+  await anyBarber.click();
+  await expect(anyBarber).toBeChecked();
+  await expect(app.getByRole('heading', { name: '2. Pick a barber' })).toBeVisible();
+  await expect(app.getByText('Pick a service above to see free times.')).toBeVisible();
+  await snap(page, 'demo-photos-06-any-barber');
+  await danial.click();
   // Each barber's own photos open from their card.
   await button(app, 'Photos of Danial’s cuts (4)').click();
   await expect(viewer.getByText('1 of 4', { exact: true })).toBeVisible();
