@@ -5,7 +5,7 @@
 //   /auth/v1/*   sign up, sign in, refresh, sign out, user, password reset
 //   /rest/v1/*   tables and booking functions (postgrest.ts, functions.ts)
 
-import { insertRow, newId, now, PgError, resetTables, tables, transaction, type Row } from './db.ts';
+import { insertRow, newId, now, PgError, resetTables, setClock, tables, transaction, type Row } from './db.ts';
 import { callFunction } from './functions.ts';
 import { handleRest, type Caller } from './postgrest.ts';
 import { DEMO_BARBER_EMAIL, DEMO_CUSTOMER_EMAIL, DEMO_PASSWORD } from './seed.ts';
@@ -183,15 +183,17 @@ function handleAuth(method: string, route: string, url: URL, headers: Headers, b
 /**
  * A slow or lost connection, for trying what the app shows then (e2e/demo):
  * `{"delayMs": 3000}` answers every request 3 seconds late, `{"offline": true}`
- * fails them the way a phone with no signal does, and `{"log": true}` adds
- * each request's path to DEMO_REQUESTS_KEY, to count what a screen asks for.
+ * fails them the way a phone with no signal does, `{"log": true}` adds
+ * each request's path to DEMO_REQUESTS_KEY, to count what a screen asks for,
+ * and `{"clockMs": -180000}` sets the pretend server's clock 3 minutes behind
+ * the phone's, as for a phone whose clock is 3 minutes fast.
  * Read on each request, so it can change while the page is open and holds
  * across a reload.
  */
 export const DEMO_NETWORK_KEY = 'potongku.demo.network';
 export const DEMO_REQUESTS_KEY = 'potongku.demo.requests';
 
-function network(): { delayMs?: number; offline?: boolean; log?: boolean } {
+function network(): { delayMs?: number; offline?: boolean; log?: boolean; clockMs?: number } {
   try {
     const saved = typeof localStorage === 'undefined' ? null : localStorage.getItem(DEMO_NETWORK_KEY);
     return saved ? JSON.parse(saved) : {};
@@ -209,6 +211,9 @@ function logRequest(path: string) {
   }
 }
 
+/** Whether the pretend server's clock was last set apart from the phone's. */
+let serverClockOff = false;
+
 /** In the browser, pause briefly like a real network so loading states show. */
 const latency = (delayMs?: number) =>
   new Promise((resolve) =>
@@ -221,6 +226,12 @@ export async function demoFetch(input: RequestInfo | URL, init: RequestInit = {}
   const headers = new Headers(init.headers);
   const net = network();
   if (net.log) logRequest(url.pathname);
+  // Only while asked for, so the tests' own setClock stands otherwise.
+  if (net.clockMs || serverClockOff) {
+    const off = net.clockMs ?? 0;
+    setClock(() => Date.now() + off);
+    serverClockOff = off !== 0;
+  }
   await latency(net.delayMs);
   if (net.offline) throw new TypeError('Failed to fetch');
   let body: unknown;

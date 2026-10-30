@@ -18,6 +18,7 @@ import { useAuth } from '@/lib/auth';
 import { barberAverage, barberLabel } from '@/lib/barbers';
 import { cacheKey } from '@/lib/cache';
 import { bookingEvent } from '@/lib/calendar';
+import { stripToAsk } from '@/lib/closures';
 import { confirmAction } from '@/lib/confirm';
 import { kmBetween, shopPoint } from '@/lib/distance';
 import { t } from '@/lib/lang';
@@ -255,14 +256,24 @@ export default function ShopPage() {
         setLoading(false);
         return;
       }
+      // The days on the strip, by the phone's clock. With it a few minutes off around midnight they
+      // start a day before or after the answer's, so those are asked for, as the page did before.
+      const strip = upcomingDays(DAYS_AHEAD, shopRow.time_zone);
+      const ask = stripToAsk(page.today, strip);
+      let closedDays = page.closed_days;
+      if (ask) {
+        const again = await supabase.rpc('shop_closed_days', { p_shop_id: shopRow.id, p_from: ask.from, p_to: ask.to });
+        // Without it, the answer's days still mark all but the strip's first or last.
+        if (!again.error && again.data) closedDays = again.data as ShopPageAnswer['closed_days'];
+      }
       const activeServices = page.services;
       const activeBarbers = page.barbers;
       setShop(shopRow);
       setServices(activeServices);
       setBarbers(activeBarbers);
       setShutDays({
-        shop: new Set(page.closed_days.filter((d) => !d.barber_id).map((d) => d.day)),
-        barbers: new Set(page.closed_days.filter((d) => d.barber_id).map((d) => `${d.day}|${d.barber_id}`)),
+        shop: new Set(closedDays.filter((d) => !d.barber_id).map((d) => d.day)),
+        barbers: new Set(closedDays.filter((d) => d.barber_id).map((d) => `${d.day}|${d.barber_id}`)),
       });
       if (page.hours_today) {
         setHoursToday({ date: page.today, opens: page.hours_today.opens_today, closes: page.hours_today.closes_today });
@@ -276,7 +287,7 @@ export default function ShopPage() {
         scrollAfterLayout.current = 'time';
       }
       // A day waited for, to see whether a time has freed up.
-      if (params.day && upcomingDays(DAYS_AHEAD, shopRow.time_zone).some((d) => d.date === params.day)) {
+      if (params.day && strip.some((d) => d.date === params.day)) {
         setPickedDay(params.day);
       }
       // Change time: only the customer's own upcoming booking here, for a service the shop still offers.
@@ -297,7 +308,7 @@ export default function ShopPage() {
         scrollAfterLayout.current = 'move';
         // Open on the booking's own day and part of the day, so its time shows among the free ones.
         const bookedDay = localDateString(new Date(move.starts_at), shopRow.time_zone);
-        if (upcomingDays(DAYS_AHEAD, shopRow.time_zone).some((d) => d.date === bookedDay)) setPickedDay(bookedDay);
+        if (strip.some((d) => d.date === bookedDay)) setPickedDay(bookedDay);
         setPart(partOfDay(Number(localClock(move.starts_at, shopRow.time_zone).slice(0, 2))));
       }
       setLoading(false);

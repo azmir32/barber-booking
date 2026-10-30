@@ -1078,7 +1078,7 @@ test('framed by another site that doesn’t share location, Near me and the shop
  * Slows the demo's server down, or cuts it off, the way a weak signal does
  * (see DEMO_NETWORK_KEY in src/demo/server.ts); null puts it back.
  */
-const network = (page: Page, value: { delayMs?: number; offline?: boolean; log?: boolean } | null) =>
+const network = (page: Page, value: { delayMs?: number; offline?: boolean; log?: boolean; clockMs?: number } | null) =>
   page.evaluate(
     (value) =>
       value
@@ -1239,6 +1239,38 @@ test('a shop’s page opens with one request, and the barber’s day with one ea
   await expect(app.getByText('“Same as last time”')).toBeVisible();
   await page.waitForTimeout(500);
   expect(await askedAll(page)).toEqual(['/rest/v1/rpc/shop_day']);
+  await network(page, null);
+});
+
+test('a phone a few minutes fast after midnight still sees the last day on the strip closed', async ({ page }) => {
+  // Just past midnight on the phone, while the server (3 minutes behind) is still on yesterday:
+  // the page's one answer counts its 14 days from yesterday, the strip from today.
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+  await page.clock.install({ time: new Date(`${today}T00:01:00+08:00`) });
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  // The owner closes the 14th day from today, the strip's last.
+  await button(app, 'Close for a few days').click();
+  await app.getByRole('radiogroup', { name: 'Day', exact: true }).getByRole('radio').nth(13).click();
+  await app.getByLabel('Reason (optional)', { exact: true }).fill('Kenduri');
+  await button(app, 'Close for 1 day').click();
+  await expect(app.getByText('Kenduri', { exact: true })).toBeVisible();
+
+  await network(page, { clockMs: -180_000, log: true });
+  await clearAsked(page);
+  await button(app, 'See the customer side').click();
+  await listed(app, 'Ali Barber Sungai Chua').click();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  const strip = app.getByRole('radiogroup', { name: 'Day', exact: true }).getByRole('radio');
+  await expect(strip).toHaveCount(14);
+  await expect(strip.last()).toHaveAccessibleName(/Closed/);
+  await expect(strip.last()).toBeDisabled();
+  await expect(strip.nth(12)).not.toHaveAccessibleName(/Closed/);
+  // The strip's own days were asked for once, alongside the page's answer.
+  const sent = await askedAll(page);
+  expect(sent.filter((p) => p === '/rest/v1/rpc/shop_page')).toHaveLength(1);
+  expect(sent.filter((p) => p === '/rest/v1/rpc/shop_closed_days')).toHaveLength(1);
   await network(page, null);
 });
 

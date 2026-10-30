@@ -25,6 +25,19 @@ export function groupClosures(days: ClosedDay[]): Closure[] {
   return runs;
 }
 
+/**
+ * The days a shop's page still has to ask shop_closed_days for. Its one
+ * request (shop_page) counts the 14 days from the server's date, and the day
+ * strip counts them from the phone's: they agree, and nothing more is asked,
+ * unless the phone's clock is a few minutes off around midnight. Then the
+ * strip's own days are asked for, so neither end of it loses its closed days
+ * and barbers off.
+ */
+export function stripToAsk(answeredFrom: string, strip: { date: string }[]): { from: string; to: string } | null {
+  if (strip.length === 0 || strip[0].date === answeredFrom) return null;
+  return { from: strip[0].date, to: strip[strip.length - 1].date };
+}
+
 /** "Fri, 20 Mar" or "Fri, 20 Mar – Sun, 22 Mar" for YYYY-MM-DD dates. */
 export function dateRange(from: string, to: string): string {
   const day = (d: string) => formatDay(`${d}T12:00:00Z`, 'UTC');
