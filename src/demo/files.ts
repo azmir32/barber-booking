@@ -16,7 +16,7 @@ const BUCKETS: Record<string, { maxBytes: number; types: string[] }> = {
   [PHOTO_BUCKET]: { maxBytes: 2 * 1024 * 1024, types: ['image/jpeg', 'image/png', 'image/webp'] },
 };
 
-type StoredFile = { id: string; bytes: Uint8Array; type: string; created_at: string; url?: string };
+type StoredFile = { id: string; bytes: Uint8Array; type: string; cacheControl: string; created_at: string; url?: string };
 
 const files = new Map<string, StoredFile>();
 /** Sample files their shop removed, until the demo is reset. */
@@ -117,7 +117,8 @@ export async function handleStorage(
     if (!file && svg == null) return storageError(404, 'not_found', 'Object not found');
     return new Response(file ? (file.bytes as BodyInit) : svg, {
       status: 200,
-      headers: { 'content-type': file ? file.type : 'image/svg+xml', 'cache-control': 'max-age=31536000' },
+      // As Storage serves a file: with the cache time it was sent with.
+      headers: { 'content-type': file ? file.type : 'image/svg+xml', 'cache-control': file ? file.cacheControl : 'max-age=86400' },
     });
   }
 
@@ -136,7 +137,14 @@ export async function handleStorage(
       // Writing over a file needs an update policy, and owners have none.
       return headers.get('x-upsert') === 'true' ? notAllowed() : storageError(409, 'Duplicate', 'The resource already exists');
     }
-    const stored: StoredFile = { id: newId(), bytes: file.bytes, type: file.type, created_at: nowIso() };
+    const stored: StoredFile = {
+      id: newId(),
+      bytes: file.bytes,
+      type: file.type,
+      // Storage's own default is an hour.
+      cacheControl: headers.get('cache-control') ?? 'max-age=3600',
+      created_at: nowIso(),
+    };
     files.set(key, stored);
     return { status: 200, body: { Id: stored.id, Key: key } };
   }

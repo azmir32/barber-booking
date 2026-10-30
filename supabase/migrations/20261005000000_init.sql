@@ -3649,7 +3649,8 @@ grant execute on function public.shop_page(text) to anon, authenticated;
 -- lists, and their names are random. Raster images up to 2 MB (the app sends
 -- JPEGs of a few hundred KB; no SVG, which can carry scripts). A shop's
 -- owner writes only into its own folder, "<shop id>/...", and never over a
--- file: each photo is a new name, so the CDN and phones keep them for a year.
+-- file: each photo is a new name. The app sends each with a day's cache time,
+-- as the free plan's CDN keeps a removed file until that runs out.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('shop-photos', 'shop-photos', true, 2 * 1024 * 1024, array['image/jpeg', 'image/png', 'image/webp']);
 

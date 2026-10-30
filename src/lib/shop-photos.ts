@@ -20,6 +20,7 @@ import {
   PHOTO_BUCKET,
   PHOTO_COLUMNS,
   PHOTO_QUALITY,
+  PHOTO_UPLOAD,
   photoPaths,
   resizeTarget,
   THUMB_QUALITY,
@@ -92,8 +93,6 @@ async function resizePhoto(asset: ImagePickerAsset): Promise<{ photo: Saved; thu
   }
 }
 
-const UPLOAD = { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false };
-
 /**
  * Adds one picked photo to the shop: resized, both files sent, then listed
  * last. `step` says how far it got, for the progress bar. Files sent for a
@@ -113,8 +112,10 @@ export async function addPhoto(
   step(1 / 3);
   const { path, thumb_path } = photoPaths(shopId);
   const bucket = supabase.storage.from(PHOTO_BUCKET);
-  const sent = await bucket.upload(path, files.photo.bytes.buffer as ArrayBuffer, UPLOAD);
-  const thumbSent = sent.error ? null : await bucket.upload(thumb_path, files.thumb.bytes.buffer as ArrayBuffer, UPLOAD);
+  const sent = await bucket.upload(path, files.photo.bytes.buffer as ArrayBuffer, PHOTO_UPLOAD);
+  const thumbSent = sent.error
+    ? null
+    : await bucket.upload(thumb_path, files.thumb.bytes.buffer as ArrayBuffer, PHOTO_UPLOAD);
   const failed = sent.error ?? thumbSent?.error;
   if (failed) {
     if (!sent.error) bucket.remove([path]);

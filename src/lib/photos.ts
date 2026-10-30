@@ -18,6 +18,14 @@ export const THUMB_SHORT_SIDE = 400;
 export const PHOTO_QUALITY = 0.8;
 export const THUMB_QUALITY = 0.7;
 
+/**
+ * How each file is sent. Never over another (each photo is a new name), and
+ * kept by browsers and Supabase's CDN for a day: on the free plan the CDN
+ * isn't cleared when a file is removed, so a removed photo can still be
+ * reached by its link for up to that long.
+ */
+export const PHOTO_UPLOAD = { contentType: 'image/jpeg', cacheControl: '86400', upsert: false };
+
 /** What the app reads of a photo, in the order shops show them. */
 export const PHOTO_COLUMNS = 'id, barber_id, caption, path, thumb_path, width, height, sort_order';
 

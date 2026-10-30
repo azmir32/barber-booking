@@ -7,6 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import { distanceText, kmBetween } from '../lib/distance.ts';
 import { firstName } from '../lib/reviews.ts';
 import type { MyShops } from '../lib/my-shops.ts';
+import { PHOTO_UPLOAD } from '../lib/photos.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import { insertRow, now as demoNow, reloadTables, save, setClock, tables, updateRows, type Row } from './db.ts';
@@ -4131,9 +4132,8 @@ async function photosOf(c: ReturnType<typeof client>, shopId: unknown) {
 /** What the app does to add one: both files, then the row. */
 async function addPhoto(c: ReturnType<typeof client>, shopId: unknown, name: string, row: Row = {}) {
   const files = c.storage.from('shop-photos');
-  const options = { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false };
-  assert.equal((await files.upload(`${shopId}/${name}.jpg`, jpeg(), options)).error, null);
-  assert.equal((await files.upload(`${shopId}/${name}-thumb.jpg`, jpeg(16), options)).error, null);
+  assert.equal((await files.upload(`${shopId}/${name}.jpg`, jpeg(), PHOTO_UPLOAD)).error, null);
+  assert.equal((await files.upload(`${shopId}/${name}-thumb.jpg`, jpeg(16), PHOTO_UPLOAD)).error, null);
   return c
     .from('shop_photos')
     .insert({ shop_id: shopId, path: `${shopId}/${name}.jpg`, thumb_path: `${shopId}/${name}-thumb.jpg`, width: 1200, height: 1600, ...row })
@@ -4187,6 +4187,8 @@ test('the owner adds photos to their shop’s folder, tags the barber, writes a 
   assert.equal(added.data!.barber_id, null);
   const res = await publicFile(`${shop.id}/fresh.jpg`);
   assert.equal(res.headers.get('content-type'), 'image/jpeg');
+  // Kept a day, so a removed photo's link stops working within a day.
+  assert.equal(res.headers.get('cache-control'), 'max-age=86400');
   assert.deepEqual(new Uint8Array(await res.arrayBuffer()), jpeg());
   assert.ok(/^(blob:|data:image\/jpeg)/.test(demoFileUrl('shop-photos', `${shop.id}/fresh-thumb.jpg`)));
 
