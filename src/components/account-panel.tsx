@@ -10,6 +10,7 @@ import { confirmAction } from '@/lib/confirm';
 import { useLanguage } from '@/lib/i18n';
 import { LANGUAGES, t } from '@/lib/lang';
 import { demo, errorMessage, supabase } from '@/lib/supabase';
+import { removeAllShopPhotos } from '@/lib/shop-photos';
 import { TEXT_SIZES } from '@/lib/text-size';
 import { useTextSize } from '@/lib/text-size-provider';
 import type { Profile } from '@/lib/types';
@@ -126,6 +127,12 @@ function AccountForm({ email, profile }: { email: string; profile: Profile }) {
     );
     if (!ok) return;
     setBusy(true);
+    // The shop's photo files first: deleting the account takes their rows, but only the owner can remove the files.
+    const photosLeft = profile.role === 'barber' ? await removeAllShopPhotos(profile.id) : null;
+    if (photosLeft) {
+      setBusy(false);
+      return setError(photosLeft);
+    }
     const { error } = await supabase.rpc('delete_my_account');
     setBusy(false);
     if (error) return setError(errorMessage(error));

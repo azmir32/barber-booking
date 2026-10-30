@@ -7,6 +7,7 @@ import { WALK_IN } from '../lib/customers.ts';
 import { firstName } from '../lib/reviews.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 import { findById, HISTORY_ID, insertRow, now, setSeed, tables, type Row } from './db.ts';
+import { SAMPLE_CUTS, samplePaths, sampleSize } from './sample-photos.ts';
 
 export const DEMO_PASSWORD = 'demo1234';
 export const DEMO_CUSTOMER_EMAIL = 'hakim@demo.potongku.my';
@@ -691,6 +692,22 @@ function seed() {
   queued(['Encik Hisham', '012-667 4410'], haircut, null, 22);
   queued(jason, fade, aliChair, 14);
   queued('Adik Faris', kids, danial, 6);
+
+  // Photos of Ali's cuts, by Ali and Danial, added over the last few weeks:
+  // drawn sample cards (sample-photos.ts), as the demo has no photos of real
+  // customers to show. Their own ids, so every id above stays as it was.
+  const team = { Ali: aliChair.row, Danial: danial.row };
+  SAMPLE_CUTS.forEach((cut, i) =>
+    insertRow('shop_photos', {
+      id: `d0000000-0000-4000-b000-${String(i + 1).padStart(12, '0')}`,
+      shop_id: sa.id,
+      barber_id: team[cut.barber].id,
+      caption: cut.caption,
+      ...samplePaths(String(sa.id), cut),
+      ...sampleSize(cut),
+      created_at: new Date(now() - (30 - i * 4) * DAY).toISOString(),
+    }),
+  );
 }
 
 setSeed(seed);

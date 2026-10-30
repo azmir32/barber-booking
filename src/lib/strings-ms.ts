@@ -1238,4 +1238,70 @@ export const ms: Record<string, string> = {
   'Directions to {shop}': 'Arah ke {shop}',
   'In from {time}': 'Masuk jam {time}',
   'Nobody is working today.': 'Tiada sesiapa bekerja hari ini.',
+
+  // Round 14, photos of the shop's cuts (My shop's photos and a photo's own
+  // screen, the shop page's strip, viewer and barber step, Find a barber)
+  // My shop.
+  'Photos of your cuts': 'Foto potongan anda',
+  '{count} of {max}': '{count} daripada {max}',
+  'Couldn’t load your photos. {reason}': 'Tidak dapat memuatkan foto anda. {reason}',
+  'Loading your photos': 'Memuatkan foto anda',
+  'Customers see these on your shop page and pick a barber by their work. Add your best fades, beards and kids’ cuts.':
+    'Pelanggan melihat foto ini di halaman kedai anda dan memilih barber melalui hasil kerjanya. Tambah fade, janggut dan potongan kanak-kanak terbaik anda.',
+  'Name the barber, write a caption, move it first or remove it':
+    'Namakan barber, tulis kapsyen, alihkan ke depan atau buang',
+  '+ Add photos': '+ Tambah foto',
+  'Add photos': 'Tambah foto',
+  'Adding photo {n} of {total}…': 'Menambah foto {n} daripada {total}…',
+  'Adding photos': 'Menambah foto',
+  '{count} of {total} photos couldn’t be added. {reason}': '{count} daripada {total} foto tidak dapat ditambah. {reason}',
+  'Only {count} more fit, so the rest weren’t added.': 'Hanya muat {count} lagi, jadi selebihnya tidak ditambah.',
+  '{app} can’t open your photos. Allow photo access in Settings, then tap Add photos again.':
+    '{app} tidak dapat membuka foto anda. Benarkan akses foto dalam Tetapan, kemudian tekan Tambah foto sekali lagi.',
+  '{app} needs to open your photos to add them. Tap Add photos and allow it.':
+    '{app} perlu membuka foto anda untuk menambahnya. Tekan Tambah foto dan benarkan.',
+  '24 photos is the most a shop can have. Remove one to add another.':
+    'Sebuah kedai boleh ada 24 foto sahaja. Buang satu untuk menambah yang lain.',
+  'Couldn’t read this photo. Try another one.': 'Tidak dapat membaca foto ini. Cuba foto lain.',
+  'This photo is too big to send, even made smaller. Try another one.':
+    'Foto ini terlalu besar untuk dihantar, walaupun sudah dikecilkan. Cuba foto lain.',
+  'This file isn’t a photo the app can use. Try a JPEG or PNG.':
+    'Fail ini bukan foto yang boleh digunakan oleh aplikasi. Cuba JPEG atau PNG.',
+  'Only the shop’s owner can add its photos. Sign in again and retry.':
+    'Hanya pemilik kedai boleh menambah fotonya. Log masuk semula dan cuba lagi.',
+  // The database's own words.
+  'Your shop has 24 photos, the most it can have. Remove one to add another.':
+    'Kedai anda sudah ada 24 foto, iaitu had maksimum. Buang satu untuk menambah yang lain.',
+  // A photo's own screen.
+  'Photo of a cut': 'Foto potongan',
+  'Couldn’t load this photo': 'Tidak dapat memuatkan foto ini',
+  'Loading the photo': 'Memuatkan foto',
+  'This photo has been removed': 'Foto ini telah dibuang',
+  'Back to My shop': 'Kembali ke Kedai saya',
+  'Customers see this photo first.': 'Pelanggan melihat foto ini dahulu.',
+  'Photo {n} of {total} on your shop page.': 'Foto {n} daripada {total} di halaman kedai anda.',
+  'Who did this cut?': 'Siapa yang potong?',
+  'Not named': 'Tidak dinamakan',
+  'Customers can book this barber straight from the photo.': 'Pelanggan boleh tempah barber ini terus dari foto.',
+  'Caption (optional)': 'Kapsyen (pilihan)',
+  'e.g. Skin fade with a hard part': 'cth. Skin fade dengan garis belahan',
+  'One short line, shown under the photo.': 'Satu baris pendek, dipaparkan di bawah foto.',
+  'Save and move to first': 'Simpan dan alih ke depan',
+  'Remove photo': 'Buang foto',
+  'Remove this photo?': 'Buang foto ini?',
+  'Customers won’t see it on your shop page any more. This can’t be undone.':
+    'Pelanggan tidak akan melihatnya lagi di halaman kedai anda. Ini tidak boleh dibatalkan.',
+  // The shop's page.
+  'Photos of their cuts': 'Foto potongan mereka',
+  'Opens the photo full screen': 'Membuka foto dalam skrin penuh',
+  'Photo {n} of {total}': 'Foto {n} daripada {total}',
+  '{photo}, cut by {barber}': '{photo}, dipotong oleh {barber}',
+  '{n} of {total}': '{n} daripada {total}',
+  'Cut by {name}': 'Dipotong oleh {name}',
+  'Book {name}': 'Tempah {name}',
+  'Previous photo': 'Foto sebelumnya',
+  'Next photo': 'Foto seterusnya',
+  'Photos ({count})': 'Foto ({count})',
+  'Photos of {name}’s cuts ({count})': 'Foto potongan {name} ({count})',
+  'Pick a service above to see {name}’s free times.': 'Pilih servis di atas untuk melihat masa kosong {name}.',
 };

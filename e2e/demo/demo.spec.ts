@@ -1,5 +1,6 @@
 import { devices, expect, test, type FrameLocator, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
+import path from 'node:path';
 
 // The demo build runs the whole app in the page, with sample Kajang shops.
 // Here it runs in a sandboxed iframe under a strict Content-Security-Policy,
@@ -2038,6 +2039,140 @@ test('with the largest text on a small phone, the walk-in queue fits on both sid
   await expect(queueSwitch).toBeChecked();
   await expectWhole(queueSwitch);
   await expectWhole(app.getByText('While you’re open, customers join from your page and you call them in order from Bookings.'));
+});
+
+/** Ali adds the fixture photo from My shop's photos card, as a phone's or browser's file picker would hand it over. */
+async function addFixturePhoto(page: Page, app: FrameLocator) {
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), button(app, 'Add photos').click()]);
+  expect(chooser.isMultiple()).toBe(true);
+  await chooser.setFiles(path.join(__dirname, 'fixtures', 'cut.jpg'));
+}
+
+test('Ali adds a photo of a cut, names Danial and moves it first, and Hakim books Danial from it', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  // The sample shop's drawn cards, each named for its cut and barber.
+  await expect(app.getByRole('heading', { name: 'Photos of your cuts' })).toBeVisible();
+  await expect(app.getByText('7 of 24', { exact: true })).toBeVisible();
+  await expect(app.getByRole('link', { name: 'Skin fade with a hard part, cut by Ali', exact: true })).toBeVisible();
+
+  await addFixturePhoto(page, app);
+  // Resized on the way in and listed last, with nobody named yet.
+  const added = app.getByRole('link', { name: 'Photo 8 of 8', exact: true });
+  await expect(added).toBeVisible();
+  await expect(app.getByText('8 of 24', { exact: true })).toBeVisible();
+  await snap(page, 'demo-photos-01-added');
+  await added.click();
+  // The thumbnail stands in while the photo loads, so for a moment there are two.
+  const shown = app.getByRole('img', { name: 'Photo 8 of 8', exact: true });
+  await expect(shown.first()).toBeVisible();
+  // At most 1600 px on its long side: the 2000 by 2500 fixture comes back 1280 by 1600.
+  await expect
+    .poll(() =>
+      shown.evaluateAll((imgs) => imgs.map((img) => `${(img as HTMLImageElement).naturalWidth}x${(img as HTMLImageElement).naturalHeight}`)),
+    )
+    .toContain('1280x1600');
+  await app.getByRole('radiogroup', { name: 'Who did this cut?' }).getByRole('radio', { name: 'Danial', exact: true }).click();
+  await app.getByRole('textbox', { name: 'Caption (optional)' }).fill('Mid fade for Raya');
+  await snap(page, 'demo-photos-02-edit');
+  await button(app, 'Save and move to first').click();
+  // Back on My shop, first in the grid.
+  const grid = app.getByRole('link', { name: /, cut by (Ali|Danial)$/ });
+  await expect(grid.first()).toHaveAccessibleName('Mid fade for Raya, cut by Danial');
+  await expect(grid).toHaveCount(8);
+
+  // Hakim sees it first on Ali's page, under the heading and above the steps.
+  await button(app, 'See the customer side').click();
+  await listed(app, 'Ali Barber Sungai Chua').last().click();
+  const strip = app.getByRole('button', { name: /, cut by (Ali|Danial)$/ });
+  await expect(strip.first()).toHaveAccessibleName('Mid fade for Raya, cut by Danial');
+  await snap(page, 'demo-photos-03-shop');
+  await strip.first().click();
+
+  // A dialog that starts on Close, with Previous and Next besides swiping.
+  const viewer = app.getByRole('dialog', { name: 'Photos of their cuts' });
+  await expect(viewer).toBeVisible();
+  await expect(viewer.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
+  await expect(viewer.getByText('1 of 8', { exact: true })).toBeVisible();
+  await expect(viewer.getByText('Mid fade for Raya', { exact: true })).toBeVisible();
+  await expect(viewer.getByText('Cut by Danial', { exact: true })).toBeVisible();
+  await expect(viewer.getByRole('img', { name: 'Mid fade for Raya, cut by Danial' }).first()).toBeVisible();
+  await expect(button(viewer, 'Previous photo')).toBeDisabled();
+  await snap(page, 'demo-photos-04-viewer');
+  await button(viewer, 'Next photo').click();
+  await expect(viewer.getByText('2 of 8', { exact: true })).toBeVisible();
+  await expect(viewer.getByText('Cut by Ali', { exact: true })).toBeVisible();
+  await expect(button(viewer, 'Book Ali')).toBeVisible();
+  await button(viewer, 'Previous photo').click();
+  await expect(viewer.getByText('1 of 8', { exact: true })).toBeVisible();
+  await button(viewer, 'Book Danial').click();
+
+  // On the barber step, with Danial picked, before any service.
+  await expect(viewer).toBeHidden();
+  const barbers = app.getByRole('radiogroup', { name: 'Barber' });
+  const danial = barbers.getByRole('radio', { name: /^Danial\. / });
+  await expect(danial).toBeChecked();
+  await expect(app.getByRole('heading', { name: '2. Pick a barber' })).toBeInViewport();
+  await expect(app.getByText('Pick a service above to see Danial’s free times.')).toBeVisible();
+  await snap(page, 'demo-photos-05-book-danial');
+  // Each barber's own photos open from their card.
+  await button(app, 'Photos of Danial’s cuts (4)').click();
+  await expect(viewer.getByText('1 of 4', { exact: true })).toBeVisible();
+  await button(viewer, 'Next photo').click();
+  await expect(viewer.getByText('Cut by Danial', { exact: true })).toBeVisible();
+  await button(viewer, 'Close').click();
+  await expect(viewer).toBeHidden();
+  // Picking a service keeps Danial and goes on to his times.
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await expect(danial).toBeChecked();
+  await expect(app.getByRole('heading', { name: '3. Pick a time' })).toBeVisible();
+
+  // Find a barber shows the shop's first photo: the one just moved, kept in this page's memory.
+  await app.getByLabel('Go back').click();
+  const card = app.getByRole('link').filter({ has: listed(app, 'Ali Barber Sungai Chua') }).last();
+  await expect(card.locator('img').first()).toHaveAttribute('src', /^blob:/);
+  // Shops without photos have none.
+  await expect(app.getByRole('link').filter({ has: listed(app, 'Kemas Barber Kajang') }).last().locator('img')).toHaveCount(0);
+});
+
+test('with the largest text on a small phone, the photos, their viewer and the barber step’s photos fit', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const app = await open(page);
+  await app.getByRole('radiogroup', { name: 'Text size' }).getByRole('radio', { name: 'Largest', exact: true }).click();
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await expectWhole(app.getByRole('heading', { name: 'Photos of your cuts' }));
+  await expectWhole(app.getByText('7 of 24', { exact: true }));
+  await expectWhole(button(app, 'Add photos'));
+  await app.getByRole('link', { name: 'First proper haircut, neat side part, cut by Danial', exact: true }).click();
+  await expectWhole(app.getByRole('heading', { name: 'Who did this cut?' }));
+  await expectWhole(app.getByRole('radio', { name: 'Danial', exact: true }));
+  await expectWhole(app.getByRole('textbox', { name: 'Caption (optional)' }));
+  await expectWhole(button(app, 'Save and move to first'));
+  await expectWhole(button(app, 'Remove photo'));
+  await snap(page, 'demo-largest-photos-01-edit');
+
+  await app.getByLabel('Go back').click();
+  await button(app, 'See the customer side').click();
+  await listed(app, 'Ali Barber Sungai Chua').last().click();
+  await expectWhole(app.getByRole('heading', { name: 'Photos of their cuts' }));
+  const first = app.getByRole('button', { name: 'Skin fade with a hard part, cut by Ali', exact: true });
+  await expectWhole(first.getByText('Ali', { exact: true }));
+  await snap(page, 'demo-largest-photos-02-strip');
+  await first.click();
+  const viewer = app.getByRole('dialog', { name: 'Photos of their cuts' });
+  await expectWhole(viewer.getByText('Skin fade with a hard part', { exact: true }));
+  await expectWhole(viewer.getByText('Cut by Ali', { exact: true }));
+  await expectWhole(button(viewer, 'Book Ali'));
+  await expectWhole(button(viewer, 'Next photo'));
+  await snap(page, 'demo-largest-photos-03-viewer');
+  await button(viewer, 'Book Ali').click();
+  await expectWhole(button(app, 'Photos of Ali’s cuts (4)'));
+  await expectWhole(app.getByText('Pick a service above to see Ali’s free times.'));
+  await snap(page, 'demo-largest-photos-04-barber-step');
 });
 
 test.describe('on an iPhone', () => {

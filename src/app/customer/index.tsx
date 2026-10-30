@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Image } from 'expo-image';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
 import { Linking, Platform, RefreshControl, ScrollView, View } from 'react-native';
@@ -9,7 +10,7 @@ import { RatingSummary } from '@/components/reviews';
 import { ReturningCards } from '@/components/returning-cards';
 import { Bone, Button, Card, Chip, Empty, Field, Row, ScreenTitle, Skeleton, StaleNote, T } from '@/components/ui';
 import { APP_NAME } from '@/constants/brand';
-import { MaxContentWidth, Spacing } from '@/constants/theme';
+import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
 import { appCache } from '@/lib/app-cache';
@@ -28,6 +29,7 @@ import {
   type LocateProblem,
 } from '@/lib/near-me';
 import { queueCount } from '@/lib/queue';
+import { photoUrl } from '@/lib/shop-photos';
 import { rememberShop } from '@/lib/shop-preview';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatPrice, localDateString } from '@/lib/time';
@@ -48,6 +50,8 @@ type ShopListing = Pick<Shop, 'id' | 'name' | 'slug' | 'area' | 'address' | 'abo
   distance_km: number | null;
   /** How many wait in its walk-in queue today; null (or missing, in a list kept from before) without one. */
   queue_waiting?: number | null;
+  /** Its first photo's thumbnail, in the shop-photos bucket; null (or missing, in a list kept from before) without photos. */
+  photo_thumb?: string | null;
 };
 type Area = { area: string; shops: number };
 /**
@@ -459,13 +463,34 @@ export default function Explore() {
                 router.push({ pathname: '/shop/[slug]', params: { slug: shop.slug, name: shop.name } });
               }}>
               <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
-                <T variant="heading" style={{ flex: 1 }}>
-                  {shop.name}
-                </T>
-                {/* Level with the name's first line. */}
-                {shop.distance_km != null ? <Distance km={Number(shop.distance_km)} style={{ marginTop: 3 }} /> : null}
+                {/* Their first photo, a taste of their work; the card's name says the rest. */}
+                {shop.photo_thumb ? (
+                  <Image
+                    source={{ uri: photoUrl(shop.photo_thumb) }}
+                    contentFit="cover"
+                    accessible={false}
+                    recyclingKey={shop.id}
+                    style={{
+                      width: 64,
+                      height: 64,
+                      borderRadius: Radius.sm,
+                      borderWidth: 1,
+                      borderColor: theme.border,
+                      backgroundColor: theme.skeleton,
+                    }}
+                  />
+                ) : null}
+                <View style={{ flex: 1, gap: Spacing.sm }}>
+                  <Row style={{ flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+                    <T variant="heading" style={{ flex: 1 }}>
+                      {shop.name}
+                    </T>
+                    {/* Level with the name's first line. */}
+                    {shop.distance_km != null ? <Distance km={Number(shop.distance_km)} style={{ marginTop: 3 }} /> : null}
+                  </Row>
+                  <T variant="muted">{shop.address || shop.area}</T>
+                </View>
               </Row>
-              <T variant="muted">{shop.address || shop.area}</T>
               {shop.about ? (
                 <T numberOfLines={2} variant="small">
                   {shop.about}

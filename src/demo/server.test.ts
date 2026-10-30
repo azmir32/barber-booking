@@ -20,6 +20,7 @@ import {
   DEMO_RESET_CODE,
   DEMO_URL,
   demoFetch,
+  demoFileUrl,
   resetDemo,
 } from './server.ts';
 
@@ -3135,7 +3136,7 @@ test('customers wait for a time on a day they could book, and only the shop sees
   assert.equal((await hakim.rpc('leave_waitlist', { p_id: atKemas.id })).error, null);
   assert.equal((await hakim.rpc('leave_waitlist', { p_id: atKemas.id })).error, null);
   assert.equal((await mine(hakim)).length, 2);
-  assert.equal((await join(hakim, haircut.id, day(7))).error, null);
+  assert.equal((await join(hakim, haircut.id, day(8))).error, null);
   assert.deepEqual((await mine(jason)).map((w) => w.day), [day(5)]);
   await jason.rpc('leave_waitlist', { p_id: anyBarber.data.id });
   assert.equal((await mine(hakim)).length, 3);
@@ -3206,11 +3207,11 @@ test('customers wait for a time on a day they could book, and only the shop sees
   // Booking that day ends the request, and so does moving a booking into it, by the customer or the shop.
   const booked = await hakim.rpc('book_appointment', { p_service_id: haircut.id, p_starts_at: kajang(30, '11:00') });
   assert.equal(booked.error, null);
-  assert.deepEqual((await mine(hakim)).map((w) => w.day), [day(1), day(7)]);
+  assert.deepEqual((await mine(hakim)).map((w) => w.day), [day(1), day(8)]);
   await hakim.rpc('reschedule_booking', { p_booking_id: booked.data.id, p_starts_at: kajang(31, '11:00') });
-  assert.deepEqual((await mine(hakim)).map((w) => w.day), [day(7)]);
+  assert.deepEqual((await mine(hakim)).map((w) => w.day), [day(8)]);
   assert.equal(
-    (await ali.rpc('reschedule_booking', { p_booking_id: booked.data.id, p_starts_at: kajang(37, '09:00') })).error,
+    (await ali.rpc('reschedule_booking', { p_booking_id: booked.data.id, p_starts_at: kajang(38, '09:00') })).error,
     null,
   );
   assert.deepEqual(await mine(hakim), []);
@@ -3847,6 +3848,14 @@ async function shopPageBefore(c: Client, slug: string) {
       .order('booking_id')
       .range(0, 3),
   ]);
+  const photos = await c
+    .from('shop_photos')
+    .select('id, barber_id, caption, path, thumb_path, width, height, sort_order')
+    .eq('shop_id', shop.id)
+    .order('sort_order')
+    .order('created_at')
+    .order('id')
+    .limit(24);
   return {
     shop,
     services: services.data,
@@ -3855,6 +3864,7 @@ async function shopPageBefore(c: Client, slug: string) {
     closed_days: closed.data,
     hours_today: (hours.data as Row[])[0],
     queue: queue ? queue.data : null,
+    photos: photos.data,
     reviews: reviews.data!.slice(0, 3),
     more_reviews: reviews.data!.length > 3,
   };
@@ -3914,6 +3924,8 @@ test('a shop’s page comes in one answer, part for part what its requests gave 
       assert.equal(page.shop.name, 'Ali Barber Sungai Chua');
       assert.equal(page.reviews.length, 3);
       assert.equal(page.more_reviews, true);
+      assert.ok(page.photos.length > 0);
+      assert.equal(page.photos.length, tables().shop_photos.filter((p) => p.shop_id === shop.id).length);
       assert.ok(page.barbers.every((b: Row) => (b.working_hours as Row[]).length > 0));
       assert.ok(page.queue.waiting >= 3, when);
       assert.equal(page.queue.mine, null);
@@ -4096,4 +4108,252 @@ test('the barber’s day comes in one answer, part for part what the Bookings ta
   assert.deepEqual([notOwner.error?.code, notOwner.error?.message], ['P0002', 'Set up your shop first.']);
   assert.equal((await client().rpc('shop_day', { p_day: today() })).error?.code, '42501');
   setClock(() => Date.now());
+});
+
+// Photos of the shop's cuts ---------------------------------------------------
+
+const PHOTO_COLUMNS = 'id, barber_id, caption, path, thumb_path, width, height, sort_order';
+const jpeg = (size = 64) => Uint8Array.from({ length: size }, (_, i) => (i < 3 ? [0xff, 0xd8, 0xff][i] : i % 251));
+
+async function photosOf(c: ReturnType<typeof client>, shopId: unknown) {
+  const { data, error } = await c
+    .from('shop_photos')
+    .select(PHOTO_COLUMNS)
+    .eq('shop_id', shopId)
+    .order('sort_order')
+    .order('created_at')
+    .order('id')
+    .limit(24);
+  assert.equal(error, null);
+  return data as Row[];
+}
+
+/** What the app does to add one: both files, then the row. */
+async function addPhoto(c: ReturnType<typeof client>, shopId: unknown, name: string, row: Row = {}) {
+  const files = c.storage.from('shop-photos');
+  const options = { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false };
+  assert.equal((await files.upload(`${shopId}/${name}.jpg`, jpeg(), options)).error, null);
+  assert.equal((await files.upload(`${shopId}/${name}-thumb.jpg`, jpeg(16), options)).error, null);
+  return c
+    .from('shop_photos')
+    .insert({ shop_id: shopId, path: `${shopId}/${name}.jpg`, thumb_path: `${shopId}/${name}-thumb.jpg`, width: 1200, height: 1600, ...row })
+    .select(PHOTO_COLUMNS)
+    .single();
+}
+
+const publicFile = (path: string) => demoFetch(`${DEMO_URL}/storage/v1/object/public/shop-photos/${path}`);
+
+test('Ali’s sample shop has drawn photos of his and Danial’s cuts, which anyone can look through', async () => {
+  const guest = client();
+  const shop = await shopBySlug(guest, 'ali-barber');
+  const photos = await photosOf(guest, shop.id);
+  assert.equal(photos.length, 7);
+  assert.deepEqual(photos.map((p) => p.sort_order), [0, 1, 2, 3, 4, 5, 6]);
+  const names = new Map(tables().barbers.map((b) => [b.id, b.name]));
+  assert.deepEqual(
+    photos.map((p) => names.get(p.barber_id)),
+    ['Ali', 'Danial', 'Ali', 'Danial', 'Ali', 'Danial', 'Ali'],
+  );
+  assert.equal(photos[0].caption, 'Skin fade with a hard part');
+  for (const p of photos) {
+    assert.ok(String(p.path).startsWith(`${shop.id}/sample-`));
+    assert.ok(Number(p.width) <= 1600 && Number(p.height) <= 1600);
+    // Each file is there, as Supabase's public link gives it.
+    for (const path of [p.path, p.thumb_path]) {
+      const res = await publicFile(String(path));
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'image/svg+xml');
+      assert.match(await res.text(), /Sample illustration/);
+    }
+  }
+  // The app shows them by a data: link, as the demo page lets images come only from data: and blob:.
+  assert.match(demoFileUrl('shop-photos', String(photos[0].thumb_path)), /^data:image\/svg\+xml/);
+  assert.equal((await publicFile(`${shop.id}/nope.jpg`)).status, 404);
+
+  // Find a barber shows each shop's first photo, and nothing for a shop without any.
+  const found = (await guest.rpc('find_shops', {})).data as Row[];
+  assert.equal(found.find((s) => s.slug === 'ali-barber')!.photo_thumb, photos[0].thumb_path);
+  assert.ok(found.filter((s) => s.slug !== 'ali-barber').every((s) => s.photo_thumb === null));
+});
+
+test('the owner adds photos to their shop’s folder, tags the barber, writes a caption and moves one first', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const danial = barberNamed('ali-barber', 'Danial');
+
+  const added = await addPhoto(ali, shop.id, 'fresh');
+  assert.equal(added.error, null);
+  assert.equal(added.data!.sort_order, 7, 'a new photo goes last');
+  assert.equal(added.data!.barber_id, null);
+  const res = await publicFile(`${shop.id}/fresh.jpg`);
+  assert.equal(res.headers.get('content-type'), 'image/jpeg');
+  assert.deepEqual(new Uint8Array(await res.arrayBuffer()), jpeg());
+  assert.ok(/^(blob:|data:image\/jpeg)/.test(demoFileUrl('shop-photos', `${shop.id}/fresh-thumb.jpg`)));
+
+  // Who did it and what it is, then first in the list.
+  const id = added.data!.id;
+  const first = Math.min(...(await photosOf(ali, shop.id)).map((p) => Number(p.sort_order))) - 1;
+  const edit = await ali
+    .from('shop_photos')
+    .update({ barber_id: danial.id, caption: 'Mid fade for Raya', sort_order: first })
+    .eq('id', id)
+    .select(PHOTO_COLUMNS)
+    .single();
+  assert.equal(edit.error, null);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const seen = await photosOf(hakim, shop.id);
+  assert.equal(seen[0].id, id);
+  assert.deepEqual([seen[0].barber_id, seen[0].caption], [danial.id, 'Mid fade for Raya']);
+  const found = (await hakim.rpc('find_shops', {})).data as Row[];
+  assert.equal(found.find((s) => s.slug === 'ali-barber')!.photo_thumb, `${shop.id}/fresh-thumb.jpg`);
+
+  // Removing it takes the row and both files.
+  assert.equal((await ali.from('shop_photos').delete().eq('id', id)).error, null);
+  const removed = await ali.storage.from('shop-photos').remove([`${shop.id}/fresh.jpg`, `${shop.id}/fresh-thumb.jpg`]);
+  assert.equal(removed.error, null);
+  assert.equal(removed.data!.length, 2);
+  assert.equal((await publicFile(`${shop.id}/fresh.jpg`)).status, 404);
+  assert.equal((await photosOf(hakim, shop.id)).length, 7);
+
+  // A sample photo goes the same way.
+  const sample = (await photosOf(ali, shop.id))[0];
+  assert.equal((await ali.from('shop_photos').delete().eq('id', sample.id)).error, null);
+  assert.equal((await ali.storage.from('shop-photos').remove([String(sample.path), String(sample.thumb_path)])).data!.length, 2);
+  assert.equal((await publicFile(String(sample.path))).status, 404);
+  assert.match(decodeURIComponent(demoFileUrl('shop-photos', String(sample.path))), /Photo not kept/);
+  // And a reset brings it back.
+  resetDemo();
+  assert.equal((await publicFile(String(sample.path))).status, 200);
+});
+
+test('only the owner writes their shop’s photos and files, within the bucket’s limits', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const other = await shopBySlug(client(), 'the-fade-room');
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const guest = client();
+  const options = { contentType: 'image/jpeg', upsert: false };
+
+  // Files: only into the owner's own shop's folder, as JPEG, PNG or WebP of up to 2 MB, never over another.
+  for (const [c, path] of [
+    [hakim, `${shop.id}/x.jpg`],
+    [guest, `${shop.id}/x.jpg`],
+    [ali, `${other.id}/x.jpg`],
+    [ali, 'x.jpg'],
+  ] as const) {
+    const { error } = await c.storage.from('shop-photos').upload(path, jpeg(), options);
+    assert.equal((error as { statusCode?: string } | null)?.statusCode, '403', path);
+  }
+  const files = ali.storage.from('shop-photos');
+  const gif = await files.upload(`${shop.id}/x.gif`, jpeg(), { contentType: 'image/gif' });
+  assert.equal((gif.error as { statusCode?: string }).statusCode, '415');
+  const svg = await files.upload(`${shop.id}/x.svg`, '<svg/>', { contentType: 'image/svg+xml' });
+  assert.equal((svg.error as { statusCode?: string }).statusCode, '415');
+  const big = await files.upload(`${shop.id}/big.jpg`, new Uint8Array(2 * 1024 * 1024 + 1), options);
+  assert.equal((big.error as { statusCode?: string }).statusCode, '413');
+  assert.equal((await files.upload(`${shop.id}/x.jpg`, jpeg(), options)).error, null);
+  const again = await files.upload(`${shop.id}/x.jpg`, jpeg(), options);
+  assert.equal((again.error as { statusCode?: string }).statusCode, '409');
+  assert.equal((await files.upload(`${shop.id}/x.jpg`, jpeg(), { ...options, upsert: true })).error?.message,
+    'new row violates row-level security policy');
+  // Others' files are left alone, without a word, as Storage does.
+  const theirs = await hakim.storage.from('shop-photos').remove([`${shop.id}/x.jpg`]);
+  assert.deepEqual(theirs.data, []);
+  assert.equal((await publicFile(`${shop.id}/x.jpg`)).status, 200);
+
+  // Rows: only the owner adds, changes or removes them.
+  const row = { shop_id: shop.id, path: `${shop.id}/y.jpg`, thumb_path: `${shop.id}/y-thumb.jpg`, width: 800, height: 600 };
+  assert.equal((await hakim.from('shop_photos').insert(row)).error?.code, '42501');
+  assert.equal((await guest.from('shop_photos').insert(row)).error?.code, '42501');
+  const [mine] = await photosOf(ali, shop.id);
+  await hakim.from('shop_photos').update({ caption: 'Mine now' }).eq('id', mine.id);
+  await hakim.from('shop_photos').delete().eq('id', mine.id);
+  assert.equal(tables().shop_photos.find((p) => p.id === mine.id)!.caption, 'Skin fade with a hard part');
+  // A photo's files, shop and place on the way in are the database's.
+  assert.equal((await ali.from('shop_photos').update({ path: `${shop.id}/z.jpg` }).eq('id', mine.id)).error?.code, '42501');
+  assert.equal((await ali.from('shop_photos').update({ shop_id: other.id }).eq('id', mine.id)).error?.code, '42501');
+  assert.equal((await ali.from('shop_photos').insert({ ...row, sort_order: -5 })).error?.code, '42501');
+
+  // What a photo may be.
+  const bad = async (patch: Row) => (await ali.from('shop_photos').insert({ ...row, ...patch })).error;
+  assert.equal((await bad({ caption: 'x'.repeat(61) }))?.code, '23514');
+  assert.equal((await bad({ caption: '   ' }))?.code, '23514');
+  assert.equal((await bad({ caption: 'Two\nlines' }))?.code, '23514');
+  assert.equal((await bad({ width: 2400 }))?.code, '23514');
+  assert.equal((await bad({ path: `${other.id}/y.jpg` }))?.code, '23514');
+  assert.equal((await bad({ path: `${shop.id}/a/y.jpg` }))?.code, '23514');
+  assert.equal((await bad({ thumb_path: row.path }))?.code, '23514');
+  assert.equal((await bad({ path: String(mine.path) }))?.code, '23505');
+  const kemas = tables().barbers.find((b) => b.shop_id !== shop.id)!;
+  assert.equal((await bad({ barber_id: kemas.id }))?.message, 'Barber not found.');
+  assert.equal((await ali.from('shop_photos').update({ barber_id: kemas.id }).eq('id', mine.id)).error?.message, 'Barber not found.');
+  assert.equal((await ali.from('shop_photos').insert({ ...row, caption: 'Fine' }).select('sort_order').single()).data?.sort_order, 7);
+});
+
+test('a shop keeps at most 24 photos, and removing one makes room', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  for (let i = 7; i < 24; i++) assert.equal((await addPhoto(ali, shop.id, `p${i}`)).error, null);
+  const full = await addPhoto(ali, shop.id, 'p24');
+  assert.equal(full.error?.message, 'Your shop has 24 photos, the most it can have. Remove one to add another.');
+  assert.equal(tables().shop_photos.filter((p) => p.shop_id === shop.id).length, 24);
+  const [first] = await photosOf(ali, shop.id);
+  await ali.from('shop_photos').delete().eq('id', first.id);
+  assert.equal((await ali.from('shop_photos').insert({
+    shop_id: shop.id, path: `${shop.id}/p24.jpg`, thumb_path: `${shop.id}/p24-thumb.jpg`, width: 1200, height: 1600,
+  })).error, null);
+});
+
+test('a paused shop’s photos are its owner’s alone, and a deleted barber or shop takes theirs along', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const guest = client();
+  await ali.from('shops').update({ is_published: false }).eq('id', shop.id);
+  assert.deepEqual(await photosOf(guest, shop.id), []);
+  assert.deepEqual(await photosOf(await signedIn(DEMO_CUSTOMER_EMAIL), shop.id), []);
+  assert.equal((await photosOf(ali, shop.id)).length, 7);
+  await ali.from('shops').update({ is_published: true }).eq('id', shop.id);
+
+  // Danial leaves: his photos stay, without a name.
+  const danial = barberNamed('ali-barber', 'Danial');
+  tables().bookings = tables().bookings.filter((b) => b.barber_id !== danial.id);
+  tables().reviews = tables().reviews.filter((r) => r.barber_id !== danial.id);
+  assert.equal((await ali.from('barbers').delete().eq('id', danial.id)).error, null);
+  const left = await photosOf(guest, shop.id);
+  assert.equal(left.length, 7);
+  assert.equal(left.filter((p) => p.barber_id === null).length, 3);
+
+  // Ali deletes his account: the shop's photos go with it.
+  assert.equal((await ali.rpc('delete_my_account')).error, null);
+  assert.equal(tables().shop_photos.length, 0);
+});
+
+test('a demo saved before shops had photos gets the sample ones, without a barber it no longer has', () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  try {
+    resetDemo();
+    const sample = tables().shop_photos.map((p) => ({ ...p }));
+    const [key, json] = [...saved.entries()][0];
+    const old = JSON.parse(json);
+    delete old.tables.shop_photos;
+    const danial = old.tables.barbers.find((b: Row) => b.name === 'Danial');
+    old.tables.barbers = old.tables.barbers.filter((b: Row) => b !== danial);
+    saved.set(key, JSON.stringify(old));
+    reloadTables();
+    assert.equal(tables().shop_photos.length, 7);
+    assert.deepEqual(
+      tables().shop_photos.map((p) => p.barber_id),
+      sample.map((p) => (p.barber_id === danial.id ? null : p.barber_id)),
+    );
+    assert.ok(Array.isArray(JSON.parse(saved.get(key)!).tables.shop_photos), 'saved with them');
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
 });

@@ -99,7 +99,8 @@ const SCENARIOS = {
     must(anon.rpc('find_shops', { p_search: AREAS[pick(AREAS.length) - 1], p_area: null, p_limit: 20, p_offset: 0 })),
   // Everything the page shows on opening, in one request (shop_page): the shop, its services, barbers
   // with their hours, intros and stars, closed days, today's hours, the walk-in queue at the one shop in
-  // three that runs one, and the newest reviews. Another day's free times and more reviews come later.
+  // three that runs one, photos of the shop's cuts (two shops in three have some) and the newest reviews.
+  // Another day's free times and more reviews come later.
   'Shop page': async () => must(anon.rpc('shop_page', { p_slug: `kedai-gunting-${pick(SHOPS)}` })),
   'Free times for a day': async () =>
     must(

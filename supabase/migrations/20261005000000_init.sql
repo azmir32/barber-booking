@@ -413,6 +413,78 @@ create index queue_entries_customer_day_idx on public.queue_entries (customer_id
 create index queue_entries_booking_idx on public.queue_entries (booking_id)
   where booking_id is not null;
 
+-- Photos of the shop's cuts, which customers look through on its page to
+-- pick a barber by their work. The files are in the shop-photos bucket (at
+-- the end of this file), in a folder named after the shop: path is the
+-- photo, at most 1600 px on its long side, and thumb_path a copy about 400
+-- px across for strips and grids, so nothing has to resize them on the way
+-- out. barber_id is who did the cut, when the owner says. Shown by
+-- sort_order, lowest first: a new photo goes last, and Move to first gives
+-- one a lower number than the rest. The owner writes the table straight,
+-- under the policies and grants below; shop_photos_check keeps a shop to
+-- 24. Removing a photo's row doesn't remove its files: the app does that
+-- through Supabase Storage (see README, "Photos of the shop's cuts").
+create table public.shop_photos (
+  id uuid primary key default gen_random_uuid(),
+  shop_id uuid not null references public.shops (id) on delete cascade,
+  barber_id uuid references public.barbers (id) on delete set null,
+  -- One short line, like a barber's: "Skin fade with a hard part".
+  caption text constraint shop_photos_caption_check
+    check (length(caption) <= 60 and btrim(caption) <> '' and caption !~ '[[:cntrl:]]'),
+  path text not null unique,
+  thumb_path text not null unique,
+  width int not null check (width between 1 and 1600),
+  height int not null check (height between 1 and 1600),
+  sort_order int not null default 0,
+  created_at timestamptz not null default now(),
+  -- Both files in the shop's own folder, the only one its owner can write to.
+  constraint shop_photos_in_shop_folder check (
+    split_part(path, '/', 1) = shop_id::text and path ~ '^[^/]+/[A-Za-z0-9_.-]+$'
+    and split_part(thumb_path, '/', 1) = shop_id::text and thumb_path ~ '^[^/]+/[A-Za-z0-9_.-]+$'
+    and thumb_path <> path
+  )
+);
+-- A shop's photos in order, and Find a barber's first one for each shop:
+-- one index lookup however many shops there are.
+create index shop_photos_shop_order_idx on public.shop_photos (shop_id, sort_order, created_at, id);
+-- Deleting a barber clears the photos tagged with them.
+create index shop_photos_barber_idx on public.shop_photos (barber_id) where barber_id is not null;
+
+-- The most photos a shop keeps: two dozen fill a page without slowing it.
+create function public.max_shop_photos() returns int language sql immutable as $$ select 24 $$;
+
+-- A photo's barber works at its shop, a shop keeps at most 24 photos, and a
+-- new one goes last. Under a lock per shop, so two phones adding the 24th
+-- at once can't both get in.
+create function public.shop_photos_check()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.barber_id is not null
+     and not exists (select 1 from barbers b where b.id = new.barber_id and b.shop_id = new.shop_id) then
+    raise exception 'Barber not found.' using errcode = 'P0001';
+  end if;
+  if tg_op = 'INSERT' then
+    perform pg_advisory_xact_lock(hashtextextended('shop-photos:' || new.shop_id, 0));
+    if (select count(*) from shop_photos p where p.shop_id = new.shop_id) >= public.max_shop_photos() then
+      raise exception 'Your shop has 24 photos, the most it can have. Remove one to add another.'
+        using errcode = 'P0001';
+    end if;
+    new.sort_order := coalesce((select max(p.sort_order) + 1 from shop_photos p where p.shop_id = new.shop_id), 0);
+  end if;
+  return new;
+end;
+$$;
+revoke execute on function public.shop_photos_check() from public, anon, authenticated;
+revoke execute on function public.max_shop_photos() from public, anon, authenticated;
+
+create trigger shop_photos_check
+  before insert or update of barber_id on public.shop_photos
+  for each row execute function public.shop_photos_check();
+
 -- Keeps shops.rating_count and rating_sum in step with the shop's reviews,
 -- and each barber's with the reviews of their cuts, also when a review
 -- moves to another barber. Runs as the tables' owner, since nobody else may
@@ -485,6 +557,7 @@ alter table public.shop_closures enable row level security;
 alter table public.reviews enable row level security;
 alter table public.waitlist enable row level security;
 alter table public.queue_entries enable row level security;
+alter table public.shop_photos enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -547,6 +620,14 @@ create policy "read reviews of visible shops, and your own" on public.reviews
     coalesce((select true from public.shops s where s.id = shop_id), false) or customer_id = (select auth.uid())
   );
 
+-- Anyone sees a live shop's photos, and its owner all of theirs, in the same
+-- way. Only the owner adds, changes or removes them.
+create policy "read photos of visible shops" on public.shop_photos
+  for select using (coalesce((select true from public.shops s where s.id = shop_id), false));
+create policy "owners manage their photos" on public.shop_photos
+  for all using (shop_id = (select public.my_shop_id()))
+  with check (shop_id = (select public.my_shop_id()));
+
 -- Users can't change their own role, billing fields or review counts from the app.
 revoke update on public.profiles from anon, authenticated;
 grant update (full_name, phone) on public.profiles to authenticated;
@@ -576,6 +657,11 @@ revoke all on public.queue_entries from anon, authenticated;
 revoke all on public.reviews from anon, authenticated;
 grant select (booking_id, shop_id, barber_id, rating, comment, first_name, reply, replied_at, created_at, updated_at)
   on public.reviews to anon, authenticated;
+-- A photo's files and shop never change: a new photo is a new row. Its
+-- place in the order is set by shop_photos_check on the way in.
+revoke insert, update on public.shop_photos from anon, authenticated;
+grant insert (shop_id, barber_id, caption, path, thumb_path, width, height) on public.shop_photos to authenticated;
+grant update (barber_id, caption, sort_order) on public.shop_photos to authenticated;
 
 -- Finding a barber ----------------------------------------------------------
 
@@ -777,7 +863,8 @@ revoke execute on function public.km_between(double precision, double precision,
 -- chairs, today's hours (first barber in to last one out, in the shop's
 -- time zone; breaks and blocked time are not counted, and both are null
 -- when nobody works today), its next free time, and how many reviews it
--- has with their average to one decimal (null without any). Sending every
+-- has with their average to one decimal (null without any), and its first
+-- photo's thumbnail for the card (null without photos). Sending every
 -- shop with all its services and barbers came to 570 KB for 1,000 shops
 -- (e2e/load).
 -- Given the customer's position (Near me), each shop also says how far it
@@ -819,7 +906,9 @@ returns table (
   latitude double precision,
   longitude double precision,
   -- How many are waiting in its walk-in queue today; null when it has none.
-  queue_waiting int
+  queue_waiting int,
+  -- Its first photo's thumbnail (a path in the shop-photos bucket); null without photos.
+  photo_thumb text
 )
 language plpgsql
 stable
@@ -873,7 +962,8 @@ begin
          s.rating_count, round(s.rating_sum::numeric / nullif(s.rating_count, 0), 1),
          case when v_near then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end,
          s.latitude, s.longitude,
-         case when s.queue_enabled then q.waiting end
+         case when s.queue_enabled then q.waiting end,
+         ph.thumb_path
   from unnest(v_page) with ordinality as page (id, n)
   join shops s on s.id = page.id
   left join public.shops_hours_today(v_page) h on h.shop_id = s.id
@@ -885,6 +975,14 @@ begin
     where s.queue_enabled and e.shop_id = s.id and e.state = 'waiting'
       and e.day = (now() at time zone s.time_zone)::date
   ) q on true
+  -- One lookup of shop_photos_shop_order_idx per shop.
+  left join lateral (
+    select p.thumb_path
+    from shop_photos p
+    where p.shop_id = s.id
+    order by p.sort_order, p.created_at, p.id
+    limit 1
+  ) ph on true
   order by page.n;
 end;
 $$;
@@ -3210,8 +3308,9 @@ $$;
 -- hours), in the page's order; the days closed in the 14 the page offers
 -- (shop_closed_days); today's hours (shop_hours_today) and the date they
 -- are for; while the shop runs a queue, its count and wait with the
--- caller's own place (queue_status); and the newest reviews, three as the
--- page shows them, with whether there are more. The shop is there when the
+-- caller's own place (queue_status); the photos of its cuts, up to 24 in
+-- the owner's order; and the newest reviews, three as the page shows them,
+-- with whether there are more. The shop is there when the
 -- caller can see it, as the shops policy says: live, or their own. Any
 -- other shop gives only what shop_public_status gives, so its link can say
 -- whose shop it is and that it isn't taking bookings; an unknown link gives
@@ -3285,6 +3384,19 @@ begin
     ), '[]'::jsonb),
     'hours_today', (select to_jsonb(h) from public.shop_hours_today(v_shop.id) h),
     'queue', case when v_shop.queue_enabled then public.queue_status(v_shop.id) end,
+    -- Photos of the shop's cuts, first first, off shop_photos_shop_order_idx.
+    'photos', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', ph.id, 'barber_id', ph.barber_id, 'caption', ph.caption, 'path', ph.path,
+               'thumb_path', ph.thumb_path, 'width', ph.width, 'height', ph.height, 'sort_order', ph.sort_order
+             ) order by ph.sort_order, ph.created_at, ph.id)
+      from (
+        select * from shop_photos ph
+        where ph.shop_id = v_shop.id
+        order by ph.sort_order, ph.created_at, ph.id
+        limit 24
+      ) ph
+    ), '[]'::jsonb),
     'reviews', v_reviews,
     'more_reviews', v_more
   );
@@ -3386,7 +3498,8 @@ $$;
 -- People can delete their own account (the app stores require it).
 -- A customer's upcoming bookings are cancelled, and their past ones stay in
 -- the shop's history without their name or phone. An owner's shop goes
--- with them, along with its barbers, services and bookings.
+-- with them, along with its barbers, services, bookings and photos (the
+-- app removes the photos' files from Storage first, as only it can).
 create function public.delete_my_account()
 returns void
 language plpgsql
@@ -3527,3 +3640,52 @@ revoke execute on function public.queue_status(uuid) from public;
 grant execute on function public.queue_status(uuid) to anon, authenticated;
 revoke execute on function public.shop_page(text) from public;
 grant execute on function public.shop_page(text) to anon, authenticated;
+
+-- Photos of the shop's cuts: the files ------------------------------------------
+
+-- A public bucket, so the app shows each photo straight from Supabase's CDN,
+-- with no signed links to ask for. Anyone with a file's link can open it, as
+-- with any public bucket: a hidden shop's photos are only left out of the
+-- lists, and their names are random. Raster images up to 2 MB (the app sends
+-- JPEGs of a few hundred KB; no SVG, which can carry scripts). A shop's
+-- owner writes only into its own folder, "<shop id>/...", and never over a
+-- file: each photo is a new name, so the CDN and phones keep them for a year.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('shop-photos', 'shop-photos', true, 2 * 1024 * 1024, array['image/jpeg', 'image/png', 'image/webp']);
+
+create policy "owners add photos to their shop's folder" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'shop-photos' and (storage.foldername(name))[1] = (select public.my_shop_id())::text);
+-- Supabase Storage reads the file's row before removing it, so the owner
+-- needs to see their own; everyone else gets the files from the CDN.
+create policy "owners see their shop's photo files" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'shop-photos' and (storage.foldername(name))[1] = (select public.my_shop_id())::text);
+create policy "owners remove photos from their shop's folder" on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'shop-photos' and (storage.foldername(name))[1] = (select public.my_shop_id())::text);
+
+-- Files in the bucket that no photo points at, a day after they came: left
+-- by an upload whose photo was never saved (the phone lost signal, or the
+-- shop had 24 by then), a removal whose files didn't go, or a shop deleted
+-- outside the app. Deleting rows from storage.objects would leave the files
+-- themselves behind, so scripts/clean-photos.mjs lists these and removes them
+-- through the Storage API with the service role key, the only key that may
+-- call this (see README, "Photos of the shop's cuts").
+create function public.shop_photo_files_left_behind(p_limit int default 1000)
+returns setof text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select o.name
+  from storage.objects o
+  where o.bucket_id = 'shop-photos'
+    and o.created_at < now() - interval '1 day'
+    and not exists (select 1 from shop_photos p where p.path = o.name)
+    and not exists (select 1 from shop_photos p where p.thumb_path = o.name)
+  order by o.created_at, o.name
+  limit least(greatest(coalesce(p_limit, 1000), 1), 1000);
+$$;
+revoke execute on function public.shop_photo_files_left_behind(int) from public, anon, authenticated;

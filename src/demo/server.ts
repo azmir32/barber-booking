@@ -2,15 +2,17 @@
 // sends its requests here instead of over the network, so the demo build is
 // the real app, screen for screen, with no account or server behind it.
 //
-//   /auth/v1/*   sign up, sign in, refresh, sign out, user, password reset
-//   /rest/v1/*   tables and booking functions (postgrest.ts, functions.ts)
+//   /auth/v1/*      sign up, sign in, refresh, sign out, user, password reset
+//   /rest/v1/*      tables and booking functions (postgrest.ts, functions.ts)
+//   /storage/v1/*   the shop photos' files (files.ts)
 
 import { insertRow, newId, now, PgError, resetTables, setClock, tables, transaction, type Row } from './db.ts';
+import { demoFileUrl, handleStorage, resetFiles } from './files.ts';
 import { callFunction } from './functions.ts';
 import { handleRest, type Caller } from './postgrest.ts';
 import { DEMO_BARBER_EMAIL, DEMO_CUSTOMER_EMAIL, DEMO_PASSWORD } from './seed.ts';
 
-export { DEMO_BARBER_EMAIL, DEMO_CUSTOMER_EMAIL, DEMO_PASSWORD };
+export { DEMO_BARBER_EMAIL, DEMO_CUSTOMER_EMAIL, DEMO_PASSWORD, demoFileUrl };
 
 export const DEMO_URL = 'https://demo.potongku.invalid';
 export const DEMO_ANON_KEY = 'demo-anon-key';
@@ -234,6 +236,22 @@ export async function demoFetch(input: RequestInfo | URL, init: RequestInit = {}
   }
   await latency(net.delayMs);
   if (net.offline) throw new TypeError('Failed to fetch');
+  if (url.pathname.startsWith('/storage/v1/object/')) {
+    let body: unknown = init.body;
+    try {
+      if (typeof body === 'string' && method === 'DELETE') body = JSON.parse(body);
+    } catch {
+      body = undefined;
+    }
+    const reply = await handleStorage(
+      method,
+      url.pathname.slice('/storage/v1/object/'.length),
+      headers,
+      body,
+      callerFrom(headers).uid,
+    );
+    return reply instanceof Response ? reply : toResponse(reply, method);
+  }
   let body: unknown;
   try {
     body = typeof init.body === 'string' && init.body !== '' ? JSON.parse(init.body) : undefined;
@@ -271,9 +289,10 @@ export async function demoFetch(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
-/** Puts every shop, booking and account back the way the demo started. */
+/** Puts every shop, booking, account and photo back the way the demo started. */
 export function resetDemo() {
   resetTables();
+  resetFiles();
 }
 
 // Session storage that never throws, for browsers that block localStorage.
