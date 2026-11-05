@@ -3195,6 +3195,44 @@ begin
 end;
 $$;
 
+-- The caller's next 30 confirmed bookings that haven't started, soonest
+-- first, each with its shop's name and time zone: what the phone app needs
+-- to schedule its own reminders the evening before and an hour before (lib/
+-- phone-reminders.ts). The app asks for it when it comes back to the front,
+-- at most once a minute, so a booking moved or cancelled elsewhere moves or
+-- drops its reminders; my_shops sends it too, so Find a barber stays one
+-- request. Read through bookings_customer_idx, then each shop by id (offset 0
+-- keeps the planner from reading every shop), whatever the shop's state: a
+-- paused shop's bookings still stand. 30 is half of the 64 notifications iOS
+-- keeps waiting, two for each. plpgsql with a generic plan, so a connection
+-- plans it once.
+create function public.my_upcoming_bookings()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+set plan_cache_mode = force_generic_plan
+as $$
+begin
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', u.id, 'starts_at', u.starts_at, 'service_name', u.service_name,
+             'shop_name', s.name, 'time_zone', s.time_zone) order by u.starts_at, u.id)
+    from (
+      select b.id, b.shop_id, b.starts_at, b.service_name
+      from bookings b
+      where b.customer_id = (select auth.uid())
+        and b.status = 'confirmed'
+        and b.starts_at > now()
+      order by b.starts_at, b.id
+      limit 30
+    ) u
+    cross join lateral (select x.name, x.time_zone from shops x where x.id = u.shop_id offset 0) s
+  ), '[]'::jsonb);
+end;
+$$;
+
 -- What Find a barber shows a returning customer above the list, in one call:
 -- their soonest upcoming booking and how many they have ("Your next cut"),
 -- and up to three shops where they had cuts in the last two years, most
@@ -3208,7 +3246,8 @@ $$;
 -- shop's to see. Their shops and barbers are then looked up by id (offset
 -- 0 stops the planner reading every shop and barber on the platform
 -- instead), and only the three shops get their hours and next free time,
--- in one call each. plpgsql, so a connection plans it once: as plain SQL
+-- in one call each. upcoming_bookings is my_upcoming_bookings, for the
+-- phone's reminders. plpgsql, so a connection plans it once: as plain SQL
 -- planning it took a quarter of its time.
 create function public.my_shops()
 returns jsonb
@@ -3276,6 +3315,7 @@ begin
       cross join lateral (select x.name from barbers x where x.id = u.barber_id offset 0) br
     ),
     'upcoming', (select count(*) from upcoming),
+    'upcoming_bookings', public.my_upcoming_bookings(),
     'shops', coalesce((
       select jsonb_agg(jsonb_build_object(
                'shop_id', r.shop_id, 'name', r.name, 'slug', r.slug, 'time_zone', r.time_zone,
@@ -3568,6 +3608,8 @@ revoke execute on function public.my_bookings(int) from public, anon;
 grant execute on function public.my_bookings(int) to authenticated;
 revoke execute on function public.my_shops() from public, anon;
 grant execute on function public.my_shops() to authenticated;
+revoke execute on function public.my_upcoming_bookings() from public, anon;
+grant execute on function public.my_upcoming_bookings() to authenticated;
 grant execute on function public.delete_my_account() to authenticated;
 revoke execute on function public.become_customer() from public, anon;
 grant execute on function public.become_customer() to authenticated;

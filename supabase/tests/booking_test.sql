@@ -1587,6 +1587,10 @@ begin
                                       where customer_id = auth.uid() and status = 'confirmed' and starts_at > now()
                                       order by starts_at limit 1),
     'the soonest booking: ' || (m -> 'next')::text;
+  assert m -> 'upcoming_bookings' = my_upcoming_bookings()
+     and jsonb_array_length(m -> 'upcoming_bookings') = (m ->> 'upcoming')::int,
+    'the phone''s reminders come with the cards, as my_upcoming_bookings gives them: '
+      || (m -> 'upcoming_bookings')::text;
 end $$;
 
 -- Only the caller's own: Chong sees his one cut, someone with none sees
@@ -1603,13 +1607,101 @@ begin
 end $$;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
 do $$ begin
-  assert my_shops() = '{"next": null, "upcoming": 0, "shops": []}'::jsonb, 'no bookings, no cards: ' || my_shops()::text;
+  assert my_shops() = '{"next": null, "upcoming": 0, "upcoming_bookings": [], "shops": []}'::jsonb,
+    'no bookings, no cards: ' || my_shops()::text;
 end $$;
 reset role;
 set role anon;
 do $$ begin
   perform my_shops();
   raise exception 'guests must not call my_shops';
+exception when insufficient_privilege then null;
+end $$;
+rollback;
+
+-- The phone's own reminders -----------------------------------------------------
+-- my_upcoming_bookings: what the app schedules its reminders from. Ben's
+-- confirmed bookings that haven't started, soonest first, each with its
+-- shop's name and time zone (a paused shop's too: the booking stands), at
+-- most 30; nobody else's, and nothing for guests.
+begin;
+reset role;
+delete from bookings;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b5', 'owner5@test', '{"role":"barber","full_name":"Wayan"}');
+insert into shops (id, owner_id, name, slug, is_published, time_zone) values
+  ('00000000-0000-0000-0000-00000000005e', '00000000-0000-0000-0000-0000000000b5', 'Bali Cuts', 'bali-cuts', false,
+   'Asia/Makassar');
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-00000000005e', 'Wayan');
+insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at, status)
+select f.shop_id::uuid, f.barber_id::uuid, f.customer_id::uuid, f.service_name, 20,
+       now() + f.starts_in, now() + f.starts_in + interval '30 minutes', f.status::booking_status
+from (values
+  -- Started ten minutes ago: too late to remind.
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000c1',
+   'Started', interval '-10 minutes', 'confirmed'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000c1',
+   'Soon', interval '10 minutes', 'confirmed'),
+  ('00000000-0000-0000-0000-00000000005e', '00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-0000000000c1',
+   'At a paused shop', interval '2 days', 'confirmed'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000c1',
+   'Cancelled', interval '1 day', 'cancelled'),
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a2', '00000000-0000-0000-0000-0000000000c1',
+   'Tomorrow', interval '1 day', 'confirmed'),
+  -- Chong's is his own.
+  ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000c2',
+   'Chong''s', interval '3 days', 'confirmed')
+) f(shop_id, barber_id, customer_id, service_name, starts_in, status);
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+set role authenticated;
+do $$
+declare
+  u jsonb := my_upcoming_bookings();
+begin
+  assert (select array_agg(x ->> 'service_name') from jsonb_array_elements(u) x)
+         = array['Soon', 'Tomorrow', 'At a paused shop'],
+    'confirmed and still to start, soonest first: ' || u::text;
+  assert (u -> 0) - 'id' - 'starts_at'
+         = '{"service_name": "Soon", "shop_name": "Ali Cuts", "time_zone": "Asia/Kuala_Lumpur"}'::jsonb
+     and (u #>> '{0,id}')::uuid = (select id from bookings where service_name = 'Soon')
+     and (u #>> '{0,starts_at}')::timestamptz = (select starts_at from bookings where service_name = 'Soon'),
+    'each with its id, time, service and the shop''s name: ' || (u -> 0)::text;
+  assert u #>> '{2,shop_name}' = 'Bali Cuts' and u #>> '{2,time_zone}' = 'Asia/Makassar',
+    'a paused shop''s booking still stands, on its own clock: ' || (u -> 2)::text;
+end $$;
+
+-- At most 30, the soonest.
+reset role;
+insert into bookings (shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at)
+select '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+       '00000000-0000-0000-0000-0000000000c1', 'Later ' || i, 20,
+       now() + interval '3 days' + i * interval '1 hour', now() + interval '3 days' + i * interval '1 hour' + interval '30 minutes'
+from generate_series(1, 30) i;
+set role authenticated;
+do $$
+declare
+  u jsonb := my_upcoming_bookings();
+begin
+  assert jsonb_array_length(u) = 30 and u #>> '{0,service_name}' = 'Soon' and u #>> '{29,service_name}' = 'Later 27',
+    'the 30 soonest: ' || jsonb_array_length(u) || ', last ' || (u #>> '{29,service_name}');
+end $$;
+
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  assert (select array_agg(x ->> 'service_name') from jsonb_array_elements(my_upcoming_bookings()) x) = array['Chong''s'],
+    'only Chong''s own: ' || my_upcoming_bookings()::text;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert my_upcoming_bookings() = '[]'::jsonb, 'nothing booked, nothing to remind: ' || my_upcoming_bookings()::text;
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  perform my_upcoming_bookings();
+  raise exception 'guests must not call my_upcoming_bookings';
 exception when insufficient_privilege then null;
 end $$;
 rollback;
