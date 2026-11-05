@@ -102,6 +102,10 @@ const DYNAMIC_KEYS = [
   'Pick a service for their cut.',
   "That barber isn't working today. Pick another barber.",
   'You can join this queue 5 times a day. Book a time instead.',
+  'Pick a reason.',
+  'Please keep your note under 200 characters.',
+  'This review has already been reported.',
+  "This review was removed, so it can't have a reply.",
 ];
 
 test('every piece of UI text has a Malay translation', () => {

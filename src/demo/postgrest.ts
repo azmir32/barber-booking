@@ -9,6 +9,7 @@ import {
   findById,
   FOREIGN_KEYS,
   insertRow,
+  keyOf,
   ownsShop,
   PgError,
   shopIsLive,
@@ -75,10 +76,15 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
   // No policies: only the closing functions read and write it.
   shop_closures: { select: () => false },
   // A live shop's reviews are public, its owner sees all of theirs, and
-  // reviewers always see their own.
+  // reviewers always see their own. One the team removed only its owner sees.
   reviews: {
-    select: (r, c) => shopVisible(r.shop_id, c.uid) || (c.uid != null && r.customer_id === c.uid),
+    select: (r, c) =>
+      r.removed === true
+        ? ownsShop(r.shop_id, c.uid)
+        : shopVisible(r.shop_id, c.uid) || (c.uid != null && r.customer_id === c.uid),
   },
+  // Only the shop's owner reads its reports; customers never see them.
+  review_reports: { select: (r, c) => ownsShop(r.shop_id, c.uid) },
   // No policies, and no grants either: only the waiting list functions read and write it.
   waitlist: { select: () => false },
   // The same for the walk-in queue: customers see counts and their own place, and only the shop sees names.
@@ -120,6 +126,7 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
   bookings: { insert: [], update: [], delete: [] },
   shop_closures: { insert: [], update: [], delete: [] },
   reviews: { insert: [], update: [], delete: [] },
+  review_reports: { insert: [], update: [], delete: [] },
   waitlist: { insert: [], update: [], delete: [] },
   queue_entries: { insert: [], update: [], delete: [] },
   // A photo's files and shop never change, and its place is set on the way in.
@@ -135,14 +142,20 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
  */
 const READABLE: Partial<Record<TableName, string[]>> = {
   reviews: Object.keys(COLUMNS.reviews).filter((c) => c !== 'customer_id'),
+  // The app reads a report, not its shop.
+  review_reports: Object.keys(COLUMNS.review_reports).filter((c) => c !== 'shop_id'),
   waitlist: [],
   queue_entries: [],
 };
+/** Tables granted to signed-in callers only: guests may read none of them. */
+const SIGNED_IN_READ = new Set<TableName>(['review_reports']);
 
 /** Postgres refuses a query that names a column the caller may not read, select * included. */
 function checkReadable(table: TableName, column: string | null, c: Caller) {
   const readable = READABLE[table];
-  if (readable && (column == null || !readable.includes(column))) throw denied(c, `permission denied for table ${table}`);
+  if ((readable && (column == null || !readable.includes(column))) || (SIGNED_IN_READ.has(table) && !c.uid)) {
+    throw denied(c, `permission denied for table ${table}`);
+  }
 }
 
 function denied(c: Caller, message: string) {
@@ -298,11 +311,16 @@ function relation(from: TableName, name: string, hints: string[]): Relation {
   const found: Relation[] = [];
   for (const fk of FOREIGN_KEYS) {
     if (fkHint && fk.name !== fkHint) continue;
+    const key = keyOf(fk);
     if (fk.table === from && fk.references === name) {
-      found.push({ table: fk.references, one: true, matches: (p, c) => p[fk.column] === c.id, via: [fk.table, fk.column] });
+      found.push({ table: fk.references, one: true, matches: (p, c) => p[fk.column] === c[key], via: [fk.table, fk.column] });
     } else if (fk.references === from && fk.table === name) {
-      const unique = (fk.table === 'shops' && fk.column === 'owner_id') || (fk.table === 'reviews' && fk.column === 'booking_id');
-      found.push({ table: fk.table, one: unique, matches: (p, c) => c[fk.column] === p.id, via: [fk.table, fk.column] });
+      // One-to-one where the column is unique: an object or null, as PostgREST gives it.
+      const unique =
+        (fk.table === 'shops' && fk.column === 'owner_id') ||
+        (fk.table === 'reviews' && fk.column === 'booking_id') ||
+        (fk.table === 'review_reports' && fk.column === 'booking_id');
+      found.push({ table: fk.table, one: unique, matches: (p, c) => c[fk.column] === p[key], via: [fk.table, fk.column] });
     }
   }
   if (found.length !== 1 || name === 'users') {
@@ -375,7 +393,7 @@ function prefers(headers: Headers, what: string) {
 /** The rows a request's top-level filters pick out, as the caller sees them. */
 function pick(table: TableName, q: Query, use?: (r: Row, c: Caller) => boolean): Row[] {
   // A table nobody may read is refused before any row is looked at, as Postgres does.
-  if (READABLE[table]?.length === 0) checkReadable(table, null, q.caller);
+  if (READABLE[table]?.length === 0 || (SIGNED_IN_READ.has(table) && !q.caller.uid)) checkReadable(table, null, q.caller);
   const top = q.filters.filter((f) => f.path === '');
   for (const f of top) checkReadable(table, f.column, q.caller);
   return tables()[table].filter(

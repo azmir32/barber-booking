@@ -1307,4 +1307,25 @@ export const ms: Record<string, string> = {
   'Pick a service above to see free times.': 'Pilih servis di atas untuk melihat masa kosong.',
   'Your shop has too many photo files waiting to be cleared away. Remove a photo to make room, or try again tomorrow.':
     'Kedai anda ada terlalu banyak fail foto yang menunggu untuk dibuang. Buang satu foto untuk memberi ruang, atau cuba lagi esok.',
+
+  // Round 15, reporting an unfair review. The reasons, as the form and the review's card say them.
+  'Not a real customer': 'Bukan pelanggan sebenar',
+  'Rude or hateful': 'Kasar atau berunsur kebencian',
+  'About something else': 'Tentang perkara lain',
+  'Other': 'Lain-lain',
+  // Where a report is, on the owner's Reviews.
+  'Reported': 'Dilaporkan',
+  'Kept': 'Dikekalkan',
+  'Removed': 'Dibuang',
+  '{reason}. It stays on your page until the {app} team decides.':
+    '{reason}. Ulasan ini kekal di halaman anda sehingga pasukan {app} membuat keputusan.',
+  'The {app} team looked at your report and kept this review.':
+    'Pasukan {app} telah menyemak laporan anda dan mengekalkan ulasan ini.',
+  'Removed by the {app} team. Customers don’t see it, and it doesn’t count in your stars.':
+    'Dibuang oleh pasukan {app}. Pelanggan tidak melihatnya, dan ia tidak dikira dalam bintang anda.',
+  // The database's answers.
+  'Pick a reason.': 'Pilih satu sebab.',
+  'Please keep your note under 200 characters.': 'Sila pastikan nota kurang daripada 200 aksara.',
+  'This review has already been reported.': 'Ulasan ini sudah dilaporkan.',
+  "This review was removed, so it can't have a reply.": 'Ulasan ini telah dibuang, jadi ia tidak boleh dibalas.',
 };

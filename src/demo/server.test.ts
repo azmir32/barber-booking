@@ -7,10 +7,11 @@ import { createClient } from '@supabase/supabase-js';
 import { distanceText, kmBetween } from '../lib/distance.ts';
 import { firstName } from '../lib/reviews.ts';
 import type { MyShops } from '../lib/my-shops.ts';
-import { PHOTO_UPLOAD } from '../lib/photos.ts';
+import { MAX_PHOTOS, PHOTO_UPLOAD } from '../lib/photos.ts';
+import { REPORT_COLUMNS } from '../lib/review-reports.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
 import { addDays, dayBounds, localDateString } from '../lib/time.ts';
-import { insertRow, now as demoNow, reloadTables, save, setClock, tables, updateRows, type Row } from './db.ts';
+import { deleteRows, insertRow, now as demoNow, reloadTables, save, setClock, tables, updateRows, type Row } from './db.ts';
 import {
   DEMO_ANON_KEY,
   DEMO_BARBER_EMAIL,
@@ -2004,6 +2005,7 @@ type ShopCards = {
   customers: { total: number; due: number };
   reviews: { count: number; sum: number; newest: { rating: number; comment: string; first_name: string } | null };
   closures: { day: string; reason: string | null }[];
+  photos: Row[];
 };
 
 test('My shop’s cards come in one answer, the same numbers as the screens behind them', async () => {
@@ -2023,10 +2025,20 @@ test('My shop’s cards come in one answer, the same numbers as the screens behi
       .select('rating_count, rating_sum, reviews(rating, comment, first_name)')
       .eq('id', shop.id)
       .not('reviews.comment', 'is', null)
+      .eq('reviews.removed', false)
       .order('created_at', { referencedTable: 'reviews', ascending: false })
       .limit(1, { referencedTable: 'reviews' })
       .single();
     const closed = await ali.rpc('shop_closed_days', { p_shop_id: shop.id, p_from: today(), p_to: addDays(today(), 60) });
+    // The photo card's own request until round 15 (useShopPhotos).
+    const photos = await ali
+      .from('shop_photos')
+      .select(`${PHOTO_COLUMNS}, barber:barbers(name)`)
+      .eq('shop_id', shop.id)
+      .order('sort_order')
+      .order('created_at')
+      .order('id')
+      .limit(MAX_PHOTOS);
     return {
       takings: takings.data.totals,
       customers: { total: first.total_count, due: first.due_count },
@@ -2038,6 +2050,7 @@ test('My shop’s cards come in one answer, the same numbers as the screens behi
       closures: (closed.data as { day: string; reason: string | null; is_closure: boolean }[])
         .filter((d) => d.is_closure)
         .map(({ day, reason }) => ({ day, reason })),
+      photos: photos.data as Row[],
     };
   };
 
@@ -2093,6 +2106,31 @@ test('My shop’s cards come in one answer, the same numbers as the screens behi
     assert.deepEqual(await cards(week.from, week.to), await before(week.from, week.to));
   }
 
+  // Each photo with its barber's name, as the photo card lists them; one
+  // added, tagged, moved first or removed shows on coming back.
+  assert.ok(first.photos.length > 0);
+  assert.ok(first.photos.some((p) => (p.barber as { name: string } | null)?.name === 'Danial'));
+  const [moved, gone] = first.photos.slice(-2) as { id: string }[];
+  assert.equal((await ali.from('shop_photos').update({ sort_order: -1, caption: 'First now' }).eq('id', moved.id)).error, null);
+  assert.equal((await ali.from('shop_photos').delete().eq('id', gone.id)).error, null);
+  const photosNow = (await cards(week.from, week.to)).photos;
+  assert.deepEqual([photosNow[0].id, photosNow[0].caption, photosNow.length], [moved.id, 'First now', first.photos.length - 1]);
+  assert.deepEqual(await cards(week.from, week.to), await before(week.from, week.to));
+
+  // A review the team removed is not the newest comment, and counts no more.
+  const newest = tables()
+    .reviews.filter((r) => r.shop_id === shop.id && r.comment != null)
+    .sort((a, b) => Date.parse(String(b.created_at)) - Date.parse(String(a.created_at)))[0];
+  assert.equal(first.reviews.newest!.comment, newest.comment);
+  insertRow('review_reports', { booking_id: newest.booking_id, shop_id: shop.id, reason: 'rude', outcome: 'removed' });
+  const removed = await cards(week.from, week.to);
+  assert.notEqual(removed.reviews.newest!.comment, newest.comment);
+  assert.deepEqual(
+    [removed.reviews.count, removed.reviews.sum],
+    [first.reviews.count - 1, first.reviews.sum - Number(newest.rating)],
+  );
+  assert.deepEqual(removed, await before(week.from, week.to));
+
   // No review with a comment: the count and total still, and no comment.
   for (const r of tables().reviews) if (r.shop_id === shop.id) r.comment = null;
   const quiet = await cards(week.from, week.to);
@@ -2113,6 +2151,10 @@ test('My shop’s cards come in one answer, the same numbers as the screens behi
   const kemas = await shopBySlug(rahman, 'kemas-barber-kajang');
   const theirs = (await rahman.rpc('shop_cards', { p_from: week.from, p_to: week.to })).data as ShopCards;
   assert.deepEqual([theirs.reviews.count, theirs.reviews.sum, theirs.closures], [kemas.rating_count, kemas.rating_sum, []]);
+  assert.deepEqual(
+    theirs.photos.map((p) => p.id),
+    tables().shop_photos.filter((p) => p.shop_id === kemas.id).map((p) => p.id),
+  );
 });
 
 // Reviews ----------------------------------------------------------------------
@@ -2140,7 +2182,8 @@ const ratingOf = async (slug: string) => {
 
 const sampleTotals = (slug: string) => {
   const shop = tables().shops.find((s) => s.slug === slug)!;
-  const own = tables().reviews.filter((r) => r.shop_id === shop.id);
+  // A review the team removed counts for nobody.
+  const own = tables().reviews.filter((r) => r.shop_id === shop.id && r.removed !== true);
   const sum = own.reduce((n, r) => n + Number(r.rating), 0);
   return { count: own.length, sum, avg: Math.round((sum * 10) / own.length) / 10 };
 };
@@ -2362,6 +2405,168 @@ test('anyone reads a live shop’s reviews, but not who wrote them, and the owne
   assert.equal(await count(rahman), totals.count + 1);
 });
 
+/** What the owner's Reviews asks for: each review with its report, or null. */
+const ownerReviews = async (c: ReturnType<typeof client>, shopId: unknown) => {
+  const { data, error } = await c
+    .from('reviews')
+    .select(`booking_id, rating, comment, removed, report:review_reports(${REPORT_COLUMNS})`)
+    .eq('shop_id', shopId)
+    .order('created_at', { ascending: false });
+  assert.equal(error, null);
+  return data as unknown as { booking_id: string; rating: number; comment: string | null; removed: boolean; report: Row | null }[];
+};
+
+test('an owner reports an unfair review once, and it counts until the team removes it', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+  const aiman = tables().profiles.find((p) => p.full_name === 'Aiman')!;
+  const ravi = tables().profiles.find((p) => p.full_name === 'Ravi')!;
+  const target = tables().reviews.find((r) => r.shop_id === shop.id && r.customer_id === aiman.id)!;
+  // The rows as they are now: each change puts a new one in the table.
+  const review = () => tables().reviews.find((r) => r.booking_id === target.booking_id)!;
+  const reported = () => tables().review_reports.find((r) => r.booking_id === target.booking_id);
+  const report = (c: ReturnType<typeof client>, bookingId: unknown, reason: unknown, note?: unknown) =>
+    c.rpc('report_review', { p_booking_id: bookingId, p_reason: reason, p_note: note });
+
+  // Ravi's one star about parking came already reported, and is waiting for the team.
+  const listed = await ownerReviews(ali, shop.id);
+  const parking = listed.find((r) => tables().reviews.find((x) => x.booking_id === r.booking_id)!.customer_id === ravi.id && r.rating === 1)!;
+  assert.deepEqual([parking.removed, parking.report?.reason, parking.report?.outcome, parking.report?.decided_at], [false, 'off_topic', null, null]);
+  assert.match(String(parking.comment), /parking/);
+  assert.deepEqual(
+    listed.filter((r) => r.report).map((r) => r.booking_id),
+    [parking.booking_id],
+  );
+  const totals = sampleTotals('ali-barber');
+  assert.deepEqual(await ratingOf('ali-barber'), [totals.count, totals.avg]);
+  assert.ok(totals.count >= 10);
+
+  // Not another shop's owner, a customer (the reviewer neither) or a guest; and never with a reason it doesn't know.
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  const aimanClient = await signedIn('aiman@demo.potongku.my');
+  for (const c of [rahman, aimanClient]) {
+    const no = await report(c, target.booking_id, 'rude');
+    assert.deepEqual([no.error?.code, no.error?.message], ['P0002', 'Review not found.']);
+  }
+  assert.equal((await report(client(), target.booking_id, 'rude')).error?.code, '42501');
+  assert.equal((await report(ali, crypto.randomUUID(), 'rude')).error?.message, 'Review not found.');
+  for (const reason of [null, 'spam', 'Rude']) {
+    const bad = await report(ali, target.booking_id, reason);
+    assert.deepEqual([bad.error?.code, bad.error?.message], ['22023', 'Pick a reason.']);
+  }
+  const long = await report(ali, target.booking_id, 'other', 'x'.repeat(201));
+  assert.deepEqual([long.error?.code, long.error?.message], ['22001', 'Please keep your note under 200 characters.']);
+  assert.equal(tables().review_reports.length, 1);
+
+  // The owner's report, with the note trimmed; it stays up and counts while the team looks.
+  const sent = await report(ali, target.booking_id, 'not_customer', `  ${'Never came in. '.repeat(13)}\n`);
+  assert.equal(sent.error, null);
+  assert.deepEqual(
+    [sent.data.reason, sent.data.note, sent.data.outcome, sent.data.decided_at],
+    ['not_customer', 'Never came in. '.repeat(13).trim(), null, null],
+  );
+  assert.equal(sent.data.note.length, 194);
+  const twice = await report(ali, target.booking_id, 'rude');
+  assert.deepEqual([twice.error?.code, twice.error?.message], ['23505', 'This review has already been reported.']);
+  assert.equal(reported()!.reason, 'not_customer');
+  assert.deepEqual(await ratingOf('ali-barber'), [totals.count, totals.avg]);
+  const guest = client();
+  const onPage = async () =>
+    ((await guest.rpc('shop_page', { p_slug: 'ali-barber' })).data.reviews as Row[]).some((r) => r.booking_id === target.booking_id);
+  assert.equal(await onPage(), true);
+  // An empty note is no note.
+  const other = tables().reviews.find((r) => r.shop_id === shop.id && r.comment == null)!;
+  assert.equal((await report(ali, other.booking_id, 'other', '  \n ')).data.note, null);
+
+  // Only the owner reads reports: not the reviewer, another owner or a guest, by any way in.
+  for (const c of [aimanClient, rahman, await signedIn(DEMO_CUSTOMER_EMAIL)]) {
+    assert.deepEqual((await c.from('review_reports').select('reason, outcome')).data, []);
+    const theirs = await c.from('reviews').select(`booking_id, report:review_reports(${REPORT_COLUMNS})`).eq('shop_id', shop.id);
+    assert.equal(theirs.error, null);
+    assert.ok(theirs.data!.length > 0 && theirs.data!.every((r) => r.report === null));
+  }
+  assert.equal((await guest.from('review_reports').select('reason')).error?.code, '42501');
+  assert.equal((await guest.from('reviews').select('booking_id, review_reports(reason)').eq('shop_id', shop.id)).error?.code, '42501');
+  assert.equal((await ali.from('review_reports').select('shop_id')).error?.code, '42501');
+  assert.ok(!JSON.stringify((await aimanClient.rpc('my_bookings')).data).includes('not_customer'));
+  // Nor writes one, or decides it, except through report_review.
+  const direct = [
+    ali.from('review_reports').insert({ booking_id: target.booking_id, shop_id: shop.id, reason: 'rude' }),
+    ali.from('review_reports').update({ outcome: 'removed' }).eq('booking_id', target.booking_id),
+    ali.from('review_reports').delete().eq('booking_id', target.booking_id),
+    ali.from('reviews').update({ removed: true }).eq('booking_id', target.booking_id),
+  ];
+  for (const query of direct) assert.equal((await query).error?.code, '42501');
+
+  // The team removes it: off the shop's page, the barber's reviews and the stars; the owner still sees it, removed.
+  const barber = () => tables().barbers.find((b) => b.id === target.barber_id)!;
+  const barberBefore = [barber().rating_count, barber().rating_sum];
+  const decide = (outcome: string | null) => updateRows('review_reports', [reported()!], { outcome });
+  decide('removed');
+  assert.ok(Math.abs(Date.parse(String(reported()!.decided_at)) - demoNow()) < 5_000);
+  assert.equal(review().removed, true);
+  const less = sampleTotals('ali-barber');
+  assert.deepEqual([less.count, less.sum], [totals.count - 1, totals.sum - Number(target.rating)]);
+  assert.deepEqual(await ratingOf('ali-barber'), [less.count, less.avg]);
+  assert.deepEqual([barber().rating_count, barber().rating_sum], [Number(barberBefore[0]) - 1, Number(barberBefore[1]) - Number(target.rating)]);
+  assert.equal(await onPage(), false);
+  for (const c of [guest, aimanClient, ali]) {
+    const theBarbers = await c
+      .from('reviews')
+      .select('booking_id')
+      .eq('shop_id', shop.id)
+      .eq('barber_id', target.barber_id)
+      .eq('removed', false);
+    assert.ok(!theBarbers.data!.some((r) => r.booking_id === target.booking_id));
+  }
+  assert.equal((await guest.from('reviews').select('booking_id').eq('booking_id', target.booking_id)).data!.length, 0);
+  const mine = (await ownerReviews(ali, shop.id)).find((r) => r.booking_id === target.booking_id)!;
+  assert.deepEqual([mine.removed, mine.report?.outcome], [true, 'removed']);
+  // The reviewer still has their rating on My bookings, though no one else sees it.
+  assert.equal((await myBookings(aimanClient)).find((b) => b.id === target.booking_id)?.review?.rating, target.rating);
+  const noReply = await ali.rpc('reply_to_review', { p_booking_id: target.booking_id, p_reply: 'Hmm' });
+  assert.deepEqual([noReply.error?.code, noReply.error?.message], ['42501', 'This review was removed, so it can\'t have a reply.']);
+  // Changed while removed, it stays removed, and still counts for nobody.
+  assert.equal((await aimanClient.rpc('rate_booking', { p_booking_id: target.booking_id, p_rating: 2, p_comment: 'Meh' })).error, null);
+  assert.deepEqual([review().removed, reported()!.outcome], [true, 'removed']);
+  assert.deepEqual(await ratingOf('ali-barber'), [less.count, less.avg]);
+
+  // Kept after all (as the team can put right): back on the page and in the stars, at its new rating.
+  decide('kept');
+  assert.equal(review().removed, false);
+  const back = sampleTotals('ali-barber');
+  assert.deepEqual([back.count, back.sum], [totals.count, totals.sum - Number(target.rating) + 2]);
+  assert.deepEqual(await ratingOf('ali-barber'), [back.count, back.avg]);
+  assert.deepEqual([barber().rating_count, barber().rating_sum], [barberBefore[0], Number(barberBefore[1]) - Number(target.rating) + 2]);
+  assert.equal(await onPage(), true);
+  assert.equal((await ali.rpc('reply_to_review', { p_booking_id: target.booking_id, p_reply: 'Thanks!' })).error, null);
+  // A reply is the owner's, so it leaves the team's decision alone; the customer changing the review sends it back.
+  assert.equal(reported()!.outcome, 'kept');
+  assert.equal((await aimanClient.rpc('rate_booking', { p_booking_id: target.booking_id, p_rating: 2, p_comment: 'Meh, again' })).error, null);
+  assert.deepEqual([reported()!.outcome, reported()!.decided_at], [null, null]);
+  assert.equal((await ownerReviews(ali, shop.id)).find((r) => r.booking_id === target.booking_id)!.report?.outcome, null);
+  // Saved again with nothing changed is no change.
+  decide('kept');
+  assert.equal((await aimanClient.rpc('rate_booking', { p_booking_id: target.booking_id, p_rating: 2, p_comment: 'Meh, again' })).error, null);
+  assert.equal(reported()!.outcome, 'kept');
+
+  // Undone: the report deleted, the review is as it was and can be reported again.
+  decide('removed');
+  assert.equal(review().removed, true);
+  deleteRows('review_reports', [reported()!]);
+  assert.equal(review().removed, false);
+  assert.deepEqual(await ratingOf('ali-barber'), [back.count, back.avg]);
+  assert.equal((await report(ali, target.booking_id, 'rude')).error, null);
+
+  // A removed review goes with its customer's account, report and all, and the counts stay right.
+  decide('removed');
+  assert.equal((await aimanClient.rpc('delete_my_account')).error, null);
+  assert.equal(reported(), undefined);
+  const after = sampleTotals('ali-barber');
+  assert.deepEqual(await ratingOf('ali-barber'), [after.count, after.avg]);
+  for (const b of tables().barbers) assert.deepEqual([b.rating_count, b.rating_sum], barberTotals(b.id));
+});
+
 test('deleting an account takes its reviews off the shop', async () => {
   const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
   const kemasCut = doneAt(await myBookings(hakim), 'kemas-barber-kajang');
@@ -2421,6 +2626,11 @@ test('opened on a later day, ratings and replies people left stay, and the sampl
     const daniel = tables().profiles.find((p) => p.full_name === 'Daniel Tan')!;
     const his = tables().reviews.find((r) => r.customer_id === daniel.id)!;
     assert.equal((await ali.rpc('reply_to_review', { p_booking_id: his.booking_id, p_reply: 'Thanks!' })).error, null);
+    // And reports one of Jason's, which the team removes.
+    const jason = tables().profiles.find((p) => p.full_name === 'Jason')!;
+    const unfair = tables().reviews.find((r) => r.customer_id === jason.id && r.shop_id === his.shop_id)!;
+    assert.equal((await ali.rpc('report_review', { p_booking_id: unfair.booking_id, p_reason: 'rude' })).error, null);
+    updateRows('review_reports', tables().review_reports.filter((r) => r.booking_id === unfair.booking_id), { outcome: 'removed' });
     save();
 
     setClock(() => Date.now() + 86_400_000);
@@ -2429,6 +2639,15 @@ test('opened on a later day, ratings and replies people left stay, and the sampl
     const mine = tables().reviews.find((r) => r.booking_id === cut.id);
     assert.deepEqual([mine?.rating, mine?.comment], [4, 'Kemas!']);
     assert.equal(tables().reviews.find((r) => r.booking_id === his.booking_id)?.reply, 'Thanks!');
+    // The reports stay with their reviews: Ravi's sample one still open, Jason's still removed.
+    const outcomes = () => tables().review_reports.map((r) => [r.booking_id, r.outcome]);
+    const ravi = tables().profiles.find((p) => p.full_name === 'Ravi')!;
+    const parking = tables().reviews.find((r) => r.customer_id === ravi.id && r.shop_id === his.shop_id && r.rating === 1)!;
+    assert.deepEqual(outcomes(), [
+      [parking.booking_id, null],
+      [unfair.booking_id, 'removed'],
+    ]);
+    assert.equal(tables().reviews.find((r) => r.booking_id === unfair.booking_id)?.removed, true);
     // Daniel and Amirul joined after the first bookings, so their ids hang on
     // the weekday; their cuts are still theirs.
     assert.ok(!tables().bookings.some((b) => b.guest_name === 'Deleted account'));
@@ -2446,6 +2665,7 @@ test('opened on a later day, ratings and replies people left stay, and the sampl
     const [key, json] = [...saved.entries()][0];
     const old = JSON.parse(json);
     delete old.tables.reviews;
+    delete old.tables.review_reports;
     for (const s of old.tables.shops) {
       delete s.rating_count;
       delete s.rating_sum;
@@ -2454,6 +2674,19 @@ test('opened on a later day, ratings and replies people left stay, and the sampl
     reloadTables();
     assert.ok(tables().shops.every((s) => (s.rating_count as number) >= 3));
     assert.equal(JSON.parse(saved.get(key)!).tables.reviews.length, tables().reviews.length, 'and saves them');
+    // With the sample report, and no other.
+    assert.deepEqual(outcomes(), [[parking.booking_id, null]]);
+    assert.equal(tables().reviews.filter((r) => r.removed).length, 0);
+
+    // A demo saved before reports came keeps its reviews and gets the sample report.
+    const kept = JSON.parse(saved.get(key)!);
+    delete kept.tables.review_reports;
+    for (const r of kept.tables.reviews) delete r.removed;
+    saved.set(key, JSON.stringify(kept));
+    reloadTables();
+    assert.deepEqual(outcomes(), [[parking.booking_id, null]]);
+    assert.ok(tables().reviews.every((r) => r.removed === false));
+    assert.ok(Array.isArray(JSON.parse(saved.get(key)!).tables.review_reports), 'and saves it');
   } finally {
     setClock(() => Date.now());
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
@@ -2465,7 +2698,7 @@ test('opened on a later day, ratings and replies people left stay, and the sampl
 
 /** A barber's review count and total, added up from the reviews themselves. */
 const barberTotals = (barberId: unknown) => {
-  const own = tables().reviews.filter((r) => r.barber_id === barberId);
+  const own = tables().reviews.filter((r) => r.barber_id === barberId && r.removed !== true);
   return [own.length, own.reduce((n, r) => n + Number(r.rating), 0)];
 };
 
@@ -3845,6 +4078,7 @@ async function shopPageBefore(c: Client, slug: string) {
       .from('reviews')
       .select('booking_id, rating, comment, first_name, reply, replied_at, created_at, barbers(name)')
       .eq('shop_id', shop.id)
+      .eq('removed', false)
       .order('created_at', { ascending: false })
       .order('booking_id')
       .range(0, 3),
@@ -3915,6 +4149,11 @@ test('a shop’s page comes in one answer, part for part what its requests gave 
       });
       const hakimId = (await hakim.auth.getUser()).data.user!.id;
       insertRow('queue_entries', { shop_id: shop.id, day: date, customer_id: hakimId, created_at: new Date(at).toISOString() });
+      // The newest review, removed by the team: not on the page, even for the owner.
+      const newest = tables()
+        .reviews.filter((r) => r.shop_id === shop.id)
+        .sort((a, b) => Date.parse(String(b.created_at)) - Date.parse(String(a.created_at)))[0];
+      insertRow('review_reports', { booking_id: newest.booking_id, shop_id: shop.id, reason: 'rude', outcome: 'removed' });
 
       for (const [who, c] of [['guest', guest], ['Hakim', hakim], ['Ali', ali]] as const) {
         for (const slug of ['ali-barber', 'kemas-barber-kajang', 'the-fade-room']) {
@@ -3924,6 +4163,7 @@ test('a shop’s page comes in one answer, part for part what its requests gave 
       const page = await shopPage(guest, 'ali-barber');
       assert.equal(page.shop.name, 'Ali Barber Sungai Chua');
       assert.equal(page.reviews.length, 3);
+      assert.ok(!(await shopPage(ali, 'ali-barber')).reviews.some((r: Row) => r.booking_id === newest.booking_id));
       assert.equal(page.more_reviews, true);
       assert.ok(page.photos.length > 0);
       assert.equal(page.photos.length, tables().shop_photos.filter((p) => p.shop_id === shop.id).length);
