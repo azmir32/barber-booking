@@ -1307,4 +1307,15 @@ export const ms: Record<string, string> = {
   'Pick a service above to see free times.': 'Pilih servis di atas untuk melihat masa kosong.',
   'Your shop has too many photo files waiting to be cleared away. Remove a photo to make room, or try again tomorrow.':
     'Kedai anda ada terlalu banyak fail foto yang menunggu untuk dibuang. Buang satu foto untuk memberi ruang, atau cuba lagi esok.',
+
+  // Round 15, reminders on the customer's phone the evening before and an
+  // hour before each booking (lib/phone-reminders.ts, lib/reminder-scheduler.ts,
+  // components/reminders-card.tsx, Account and the booking confirmation)
+  'Your {service} is tomorrow at {time}.': '{service} anda esok jam {time}.',
+  'Your {service} is in an hour, at {time}.': '{service} anda sejam lagi, jam {time}.',
+  'We’ll remind you the evening before and an hour before.':
+    'Kami akan ingatkan anda pada malam sebelumnya dan sejam sebelumnya.',
+  'We’ll remind you the evening before.': 'Kami akan ingatkan anda pada malam sebelumnya.',
+  'We’ll remind you an hour before.': 'Kami akan ingatkan anda sejam sebelumnya.',
+  'Booking reminders': 'Peringatan tempahan',
 };

@@ -492,11 +492,33 @@ function myBookingList(c: Caller, limitArg: unknown) {
 }
 
 /**
+ * my_upcoming_bookings: the caller's next 30 confirmed bookings that haven't
+ * started, soonest first, each with its shop's name and time zone (a paused
+ * shop's too), for the phone's own reminders.
+ */
+export function myUpcomingBookings(c: Caller) {
+  return tables()
+    .bookings.filter(
+      (b) => c.uid != null && b.customer_id === c.uid && b.status === 'confirmed' && ms(b.starts_at) > now(),
+    )
+    .sort((a, b) => ms(a.starts_at) - ms(b.starts_at) || (String(a.id) < String(b.id) ? -1 : 1))
+    .slice(0, 30)
+    .flatMap((b) => {
+      const shop = findById('shops', b.shop_id);
+      if (!shop) return [];
+      return [
+        { id: b.id, starts_at: b.starts_at, service_name: b.service_name, shop_name: shop.name, time_zone: shop.time_zone },
+      ];
+    });
+}
+
+/**
  * my_shops: Find a barber's cards for a returning customer. Their soonest
  * upcoming booking and how many they have, and up to three shops they had
  * cuts at in the last two years, most recent first, each with the last cut
  * there, their visits and usual gap (as shopCustomers works them out), and
- * today's hours and next free time as the shop list has them.
+ * today's hours and next free time as the shop list has them; and the
+ * bookings to remind of, as my_upcoming_bookings gives them.
  */
 export function myShops(c: Caller) {
   const from = yearsFromNow(-2);
@@ -536,6 +558,7 @@ export function myShops(c: Caller) {
           }
         : null,
     upcoming: upcoming.length,
+    upcoming_bookings: myUpcomingBookings(c),
     shops: recent.flatMap((cut) => {
       const shop = findById('shops', cut.shop_id);
       const barber = findById('barbers', cut.barber_id);
@@ -1984,6 +2007,7 @@ const SIGNED_IN_ONLY = new Set([
   'rate_booking',
   'reply_to_review',
   'my_shops',
+  'my_upcoming_bookings',
   'join_waitlist',
   'leave_waitlist',
   'mark_waitlist_offered',
@@ -2063,6 +2087,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: replyToReview(c, args.p_booking_id, args.p_reply) };
     case 'my_shops':
       return { status: 200, body: myShops(c) };
+    case 'my_upcoming_bookings':
+      return { status: 200, body: myUpcomingBookings(c) };
     case 'join_waitlist':
       return { status: 200, body: joinWaitlist(c, args.p_service_id, args.p_day, args.p_barber_id ?? null) };
     case 'leave_waitlist':

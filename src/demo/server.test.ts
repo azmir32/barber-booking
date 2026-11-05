@@ -7,9 +7,10 @@ import { createClient } from '@supabase/supabase-js';
 import { distanceText, kmBetween } from '../lib/distance.ts';
 import { firstName } from '../lib/reviews.ts';
 import type { MyShops } from '../lib/my-shops.ts';
+import { plannedReminders, reminderChanges, type ReminderBooking } from '../lib/phone-reminders.ts';
 import { PHOTO_UPLOAD } from '../lib/photos.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
-import { addDays, dayBounds, localDateString } from '../lib/time.ts';
+import { addDays, dayBounds, localDateString, localInstant } from '../lib/time.ts';
 import { insertRow, now as demoNow, reloadTables, save, setClock, tables, updateRows, type Row } from './db.ts';
 import {
   DEMO_ANON_KEY,
@@ -2941,8 +2942,121 @@ test('my_shops works out the last cut, visits and usual gap at each shop, as the
     [c.next, c.upcoming, c.shops.map((s) => [s.slug, s.visits, s.barber_name])],
     [null, 0, [['ali-barber', 1, 'Ali']]],
   );
-  assert.deepEqual(await mine(DEMO_BARBER_EMAIL), { next: null, upcoming: 0, shops: [] });
+  assert.deepEqual(await mine(DEMO_BARBER_EMAIL), { next: null, upcoming: 0, upcoming_bookings: [], shops: [] });
   assert.equal((await client().rpc('my_shops')).error?.code, '42501');
+});
+
+test('the phone’s reminders get Hakim’s upcoming bookings with each shop’s clock, and Find a barber brings them along', async () => {
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const upcoming = async (c = hakim) => {
+    const { data, error } = await c.rpc('my_upcoming_bookings');
+    assert.equal(error, null);
+    return data as ReminderBooking[];
+  };
+  // The sample's one cut to come: his skin fade tomorrow at 4:30 pm at Ali's.
+  const [fade, ...none] = await upcoming();
+  assert.deepEqual(none, []);
+  assert.deepEqual(
+    { ...fade, id: undefined, starts_at: Date.parse(fade.starts_at) },
+    {
+      id: undefined,
+      starts_at: Date.parse(kajang(1, '16:30')),
+      service_name: 'Skin fade',
+      shop_name: 'Ali Barber Sungai Chua',
+      time_zone: TZ,
+    },
+  );
+  assert.equal(tables().bookings.find((b) => b.id === fade.id)?.customer_id, tables().users.find((u) => u.email === DEMO_CUSTOMER_EMAIL)!.id);
+  assert.deepEqual(((await hakim.rpc('my_shops')).data as MyShops).upcoming_bookings, await upcoming());
+
+  // The same rules as supabase/tests/booking_test.sql: confirmed and still to start, soonest first, a
+  // paused shop's too (on its own clock), at most 30, and only his own.
+  const shop = (slug: string) => tables().shops.find((s) => s.slug === slug)!;
+  const hakimId = tables().users.find((u) => u.email === DEMO_CUSTOMER_EMAIL)!.id;
+  const chongId = tables().users.find((u) => u.email === 'ravi@demo.potongku.my')!.id;
+  shop('the-fade-room').is_published = false;
+  shop('the-fade-room').time_zone = 'Asia/Makassar';
+  tables().bookings.splice(0);
+  const book = (customer: unknown, slug: string, service: string, startsInMin: number, chair = 0, status = 'confirmed') => {
+    const at = new Date(Date.now() + startsInMin * 60_000).toISOString();
+    insertRow('bookings', {
+      shop_id: shop(slug).id,
+      barber_id: tables().barbers.filter((b) => b.shop_id === shop(slug).id)[chair].id,
+      customer_id: customer,
+      service_name: service,
+      price: 20,
+      starts_at: at,
+      ends_at: new Date(Date.parse(at) + 30 * 60_000).toISOString(),
+      status,
+    });
+  };
+  book(hakimId, 'ali-barber', 'Started', -10);
+  book(hakimId, 'ali-barber', 'Soon', 10, 1);
+  book(hakimId, 'the-fade-room', 'At a paused shop', 2 * 24 * 60);
+  book(hakimId, 'ali-barber', 'Cancelled', 24 * 60, 0, 'cancelled');
+  book(hakimId, 'ali-barber', 'Tomorrow', 24 * 60, 1);
+  book(chongId, 'kemas-barber-kajang', 'Chong’s', 3 * 24 * 60);
+  const list = await upcoming();
+  assert.deepEqual(
+    list.map((b) => b.service_name),
+    ['Soon', 'Tomorrow', 'At a paused shop'],
+  );
+  assert.deepEqual([list[2].shop_name, list[2].time_zone], ['The Fade Room', 'Asia/Makassar']);
+  for (let i = 1; i <= 30; i++) book(hakimId, 'kemas-barber-kajang', `Later ${i}`, 3 * 24 * 60 + i * 60);
+  const capped = await upcoming();
+  assert.deepEqual([capped.length, capped[0].service_name, capped[29].service_name], [30, 'Soon', 'Later 27']);
+  assert.deepEqual(
+    (await upcoming(await signedIn('ravi@demo.potongku.my'))).map((b) => b.service_name),
+    ['Chong’s'],
+  );
+  assert.deepEqual(await upcoming(await signedIn(DEMO_BARBER_EMAIL)), []);
+  assert.equal((await client().rpc('my_upcoming_bookings')).error?.code, '42501');
+});
+
+test('a booking the shop moves or cancels moves or drops its reminders on the next sync', async () => {
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const owner = await signedIn(DEMO_BARBER_EMAIL);
+  const upcoming = async () => (await hakim.rpc('my_upcoming_bookings')).data as ReminderBooking[];
+  const settings = { evening: true, hour: true };
+  // Planned as of an hour after midnight tonight, so both reminders of tomorrow's 4:30 pm cut are still to come.
+  const at = Date.parse(kajang(1, '01:00'));
+  const [fade] = await upcoming();
+  const before = plannedReminders(await upcoming(), settings, at);
+  assert.deepEqual(
+    before.map((r) => [r.kind, r.bookingId]),
+    [['hour', fade.id]],
+  );
+
+  // Ali moves it to a free time two or more days on: the old reminder goes and both new ones come.
+  const service = tables().bookings.find((b) => b.id === fade.id)!.service_id;
+  let free: { barber_id: string; starts_at: string } | undefined;
+  for (let day = 2; !free && day < 9; day++) {
+    const { data } = await client().rpc('available_slots', { p_service_id: service, p_day: addDays(today(), day) });
+    free = (data as { barber_id: string; starts_at: string }[])[0];
+  }
+  assert.ok(free, 'a free time in the week after tomorrow');
+  const moved = await owner.rpc('reschedule_booking', {
+    p_booking_id: fade.id,
+    p_starts_at: free.starts_at,
+    p_barber_id: free.barber_id,
+  });
+  assert.equal(moved.error, null);
+  const after = plannedReminders(await upcoming(), settings, at);
+  const { cancel, schedule } = reminderChanges(after, before.map((r) => r.id));
+  assert.deepEqual(cancel, before.map((r) => r.id));
+  const dayBefore = addDays(localDateString(new Date(free.starts_at), TZ), -1);
+  assert.deepEqual(
+    schedule.map((r) => [r.kind, r.at]),
+    [
+      ['evening', localInstant(dayBefore, '20:00', TZ).getTime()],
+      ['hour', Date.parse(free.starts_at) - 60 * 60_000],
+    ],
+  );
+
+  // Then cancels it: nothing is left to remind of.
+  assert.equal((await owner.rpc('set_booking_status', { p_booking_id: fade.id, p_status: 'cancelled' })).error, null);
+  assert.deepEqual(await upcoming(), []);
+  assert.deepEqual(reminderChanges(plannedReminders([], settings, at), after.map((r) => r.id)).cancel, after.map((r) => r.id));
 });
 
 test('the demo can be slowed down or cut off, the way a phone with a weak signal is', async () => {

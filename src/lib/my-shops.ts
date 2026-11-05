@@ -3,6 +3,7 @@
 
 import { daysSince, timeSpan } from './customers.ts';
 import { t } from './lang.ts';
+import type { ReminderBooking } from './phone-reminders.ts';
 import { addDays, formatDay, formatTime, localDateString } from './time.ts';
 
 /** The soonest of the customer's upcoming bookings (my_shops in supabase/migrations). */
@@ -40,6 +41,8 @@ export type MyShops = {
   next: NextCut | null;
   /** All their upcoming bookings, the next one included. */
   upcoming: number;
+  /** The soonest 30, for the phone's reminders (missing from an answer kept from before they came). */
+  upcoming_bookings?: ReminderBooking[];
   /** At most three, the latest cut first. */
   shops: MyShop[];
 };

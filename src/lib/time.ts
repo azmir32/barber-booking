@@ -87,6 +87,14 @@ export function dayBounds(date: string, timeZone = DEFAULT_TIME_ZONE): { start: 
   return { start: startOf(date), end: startOf(addDays(date, 1)) };
 }
 
+/** The instant a YYYY-MM-DD date shows "20:00" on the zone's clocks, even on a day its clocks change. */
+export function localInstant(date: string, clock: string, timeZone = DEFAULT_TIME_ZONE): Date {
+  const guess = new Date(`${date}T${clock}:00Z`);
+  const first = guess.getTime() - zoneOffsetMinutes(guess, timeZone) * 60000;
+  // Asked again at the first answer, in case the offset changes between midnight UTC and then.
+  return new Date(guess.getTime() - zoneOffsetMinutes(new Date(first), timeZone) * 60000);
+}
+
 /** "14:05": the 24-hour clock time of an instant in the zone, rounded down to `step` minutes. */
 export function localClock(at: string | Date, timeZone = DEFAULT_TIME_ZONE, step = 1): string {
   const parts = new Intl.DateTimeFormat('en-US', {
