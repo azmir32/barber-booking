@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Platform } from 'react-native';
 
 import { DemoSwitch } from '@/components/demo-panel';
+import { RemindersCard } from '@/components/reminders-card';
 import { Button, Card, Chip, ErrorText, Field, Row, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
@@ -15,7 +16,7 @@ import { TEXT_SIZES } from '@/lib/text-size';
 import { useTextSize } from '@/lib/text-size-provider';
 import type { Profile } from '@/lib/types';
 
-/** Language, text size, name, phone, sign out and delete account. Shared by the customer and barber apps. */
+/** Language, text size, name, phone, reminders (customers), sign out and delete account. Shared by the customer and barber apps. */
 export function AccountPanel() {
   const { session, profile } = useAuth();
   return (
@@ -35,6 +36,8 @@ export function AccountPanel() {
             </Card>
           ) : null}
           <AccountForm key={profile.id} email={session.user.email ?? ''} profile={profile} />
+          {/* Reminders of their own bookings; a barber's day is on the Bookings tab. */}
+          {profile.role === 'customer' ? <RemindersCard /> : null}
         </>
       )}
       <LanguagePicker />

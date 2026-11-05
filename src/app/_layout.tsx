@@ -2,6 +2,7 @@ import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
 import { ConfirmHost } from '@/components/confirm-host';
+import { ReminderHost } from '@/components/reminder-host';
 import { Empty, Screen, T, webBackButton } from '@/components/ui';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -35,6 +36,7 @@ export default function RootLayout() {
             <AuthProvider>
               <AppStack />
               <ConfirmHost />
+              <ReminderHost />
             </AuthProvider>
           </LanguageProvider>
         </TextSizeProvider>

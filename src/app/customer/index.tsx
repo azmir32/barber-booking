@@ -29,6 +29,7 @@ import {
   type LocateProblem,
 } from '@/lib/near-me';
 import { queueCount } from '@/lib/queue';
+import { syncReminders } from '@/lib/reminder-scheduler';
 import { photoUrl } from '@/lib/shop-photos';
 import { rememberShop } from '@/lib/shop-preview';
 import { errorMessage, supabase } from '@/lib/supabase';
@@ -183,6 +184,9 @@ export default function Explore() {
     if (request !== latestMine.current || error || !data) return;
     setMine({ ...(data as MyShops), uid: who });
     appCache.write(cacheKey(who, 'my-shops'), data);
+    // The same answer brings the bookings the phone's reminders follow.
+    const upcoming = (data as MyShops).upcoming_bookings;
+    if (upcoming) syncReminders(who, upcoming);
   }, []);
 
   const restore = useEffectEvent(async (saved: string | null, wasNear: boolean) => {

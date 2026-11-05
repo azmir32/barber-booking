@@ -1,5 +1,5 @@
-// Renders the app icon, Android adaptive icon layers, splash image and
-// favicon from the Ionicons scissors glyph. Re-run after changing BRAND.
+// Renders the app icon, Android adaptive icon layers, notification icon,
+// splash image and favicon from the Ionicons scissors glyph. Re-run after changing BRAND.
 //   node scripts/make-icons.mjs
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,6 +21,8 @@ const outputs = [
   ['assets/images/android-icon-background.png', 512, BRAND, 0, 0],
   ['assets/images/android-icon-foreground.png', 512, null, 230, 0],
   ['assets/images/android-icon-monochrome.png', 432, null, 200, 0],
+  // Android's small icon on a reminder: white on clear, as Android tints it.
+  ['assets/images/notification-icon.png', 96, null, 84, 0],
   ['assets/images/splash-icon.png', 512, null, 440, 0],
   ['assets/images/favicon.png', 48, BRAND, 32, 10],
 ];

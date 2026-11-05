@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 
 import { appCache } from '@/lib/app-cache';
 import { cacheKey, GUEST } from '@/lib/cache';
+import { cancelAllReminders } from '@/lib/reminder-scheduler';
 import { supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/types';
 
@@ -59,9 +60,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (active) setLoading(false);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
-      // Signed out here, or the session ran out: nothing of theirs stays on the phone.
-      if (event === 'SIGNED_OUT') appCache.clear();
-      else appCache.setUser(s?.user.id ?? null);
+      // Signed out here, or the session ran out: nothing of theirs stays on the phone, reminders included.
+      if (event === 'SIGNED_OUT') {
+        appCache.clear();
+        cancelAllReminders();
+      } else appCache.setUser(s?.user.id ?? null);
       setSession(s);
       // Someone else signed in: drop the old profile until theirs loads.
       setProfile((p) => (p && p.id === s?.user.id ? p : null));
@@ -81,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshProfile: () => loadProfile(session),
     signOut: async () => {
       // First, so nothing of theirs stays behind even when the sign out can't reach the server.
-      await appCache.clear();
+      await Promise.all([appCache.clear(), cancelAllReminders()]);
       await supabase.auth.signOut();
     },
   };

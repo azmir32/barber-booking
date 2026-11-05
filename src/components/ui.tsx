@@ -282,10 +282,15 @@ export function Card({
   role = 'button',
   selected,
   accessibilityLabel,
+  ref,
+  onLayout,
 }: {
   children: ReactNode;
   onPress?: () => void;
   style?: ViewStyle;
+  /** To measure where a card is, e.g. to scroll to it once it is laid out (onLayout). */
+  ref?: Ref<View>;
+  onLayout?: () => void;
   /** What a tappable card is to a screen reader: a button, a link to another page, or one choice of several. */
   role?: 'button' | 'link' | 'radio';
   /** For role="radio": whether this card is the one picked. */
@@ -299,7 +304,13 @@ export function Card({
     selected && { borderColor: theme.tint, borderWidth: 2 },
     style,
   ];
-  if (!onPress) return <View style={cardStyle}>{children}</View>;
+  if (!onPress) {
+    return (
+      <View ref={ref} onLayout={onLayout} collapsable={onLayout ? false : undefined} style={cardStyle}>
+        {children}
+      </View>
+    );
+  }
   return (
     <Pressable
       role={role}
@@ -412,6 +423,66 @@ export function Chip({
         <Text style={[text, { color: look.text }]}>{label}</Text>
       )}
       {sublabel ? <Text style={[scaleText(styles.chipSub, scale), { color: look.sub }]}>{sublabel}</Text> : null}
+    </Pressable>
+  );
+}
+
+/**
+ * An on/off setting. The whole row is the switch, so it is easy to hit, and
+ * the knob's side says on or off as well as its colour. `detail` is a line
+ * under the label, read after it.
+ */
+export function SwitchRow({
+  label,
+  detail,
+  value,
+  onChange,
+  busy,
+}: {
+  label: string;
+  detail?: string;
+  value: boolean;
+  onChange: (next: boolean) => void;
+  /** Saving: presses are ignored, with a spinner by the knob. */
+  busy?: boolean;
+}) {
+  const theme = useTheme();
+  const below = useId();
+  return (
+    <Pressable
+      role="switch"
+      aria-checked={value}
+      aria-busy={busy}
+      accessibilityState={{ checked: value, busy }}
+      accessibilityLabel={label}
+      accessibilityHint={detail}
+      aria-describedby={detail ? below : undefined}
+      onPress={busy ? undefined : () => onChange(!value)}
+      style={styles.switchRow}>
+      <View style={styles.switchLabel}>
+        <T variant="label">{label}</T>
+        {detail ? (
+          <T variant="small" id={below}>
+            {detail}
+          </T>
+        ) : null}
+      </View>
+      <View style={styles.switchState}>
+        {busy ? <ActivityIndicator color={theme.textSecondary} /> : null}
+        <View
+          aria-hidden
+          style={[
+            styles.switchTrack,
+            { backgroundColor: value ? theme.success : theme.card, borderColor: value ? theme.success : theme.inputBorder },
+          ]}>
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: value ? theme.accentText : theme.inputBorder, alignSelf: value ? 'flex-end' : 'flex-start' },
+            ]}
+          />
+        </View>
+      </View>
     </Pressable>
   );
 }
@@ -724,6 +795,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md - 1,
     paddingVertical: Spacing.sm - 1,
   },
+  switchRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.sm, minHeight: 48 },
+  switchLabel: { flexGrow: 1, flexShrink: 1, flexBasis: 160, gap: 2 },
+  switchState: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginLeft: 'auto' },
+  switchTrack: { width: 52, height: 32, borderRadius: Radius.pill, borderWidth: 2, padding: 2, justifyContent: 'center' },
+  switchThumb: { width: 24, height: 24, borderRadius: Radius.pill },
   iconButton: {
     minWidth: 48,
     minHeight: 48,

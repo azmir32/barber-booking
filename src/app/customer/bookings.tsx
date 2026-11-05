@@ -1,6 +1,6 @@
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Linking, StyleSheet, View } from 'react-native';
+import { Linking, StyleSheet, View, type ScrollView } from 'react-native';
 
 import { BookingStatusBadge } from '@/components/booking-status';
 import { RateForm, ShopReply, Stars } from '@/components/reviews';
@@ -19,6 +19,7 @@ import { t } from '@/lib/lang';
 import { directionsUrl } from '@/lib/maps';
 import { whatsappUrl } from '@/lib/phone';
 import { placeLine, QUEUE_POLL_MS, queuedFor, type MyQueue } from '@/lib/queue';
+import { syncReminders } from '@/lib/reminder-scheduler';
 import { canRate, rateUntil, starsLabel, type MyReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { useBigText } from '@/lib/text-size-provider';
@@ -51,6 +52,9 @@ type Notice = { message: string; whatsapp?: string };
 
 /** How long the bar stays up: time to decide whether to message the shop. */
 const NOTICE_MS = 10_000;
+
+/** ScrollView's getInnerViewRef, its scrolled content: there on native and on the web, but missing from its types. */
+type ScrollWithContent = ScrollView & { getInnerViewRef?: () => View | null };
 
 export default function MyBookingsScreen() {
   const uid = useAuth().session?.user.id;
@@ -93,6 +97,17 @@ function MyBookings() {
   const [justRated, setJustRated] = useState<Set<string>>(new Set());
   const [savedId, setSavedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // A tapped reminder opens the screen at its booking (?booking=), outlined until they leave the screen.
+  const params = useLocalSearchParams<{ booking?: string }>();
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const [linked, setLinked] = useState<string | null>(null);
+  if ((params.booking ?? null) !== linked) {
+    setLinked(params.booking ?? null);
+    if (params.booking) setFocusId(params.booking);
+  }
+  const scrollRef = useRef<ScrollView>(null);
+  const focusRef = useRef<View>(null);
+  const scrolledTo = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     if (!session) return setLoading(false);
@@ -120,6 +135,18 @@ function MyBookings() {
     setSavedAt(Date.now());
     setFromCache(false);
     appCache.write(cacheKey(session.user.id, 'my-bookings'), list);
+    // The phone's reminders follow the bookings as they are now: moved, cancelled or made elsewhere.
+    syncReminders(
+      session.user.id,
+      list.map((b) => ({
+        id: b.id,
+        starts_at: b.starts_at,
+        status: b.status,
+        service_name: b.service_name,
+        shop_name: b.shops?.name ?? '',
+        time_zone: b.shops?.time_zone ?? null,
+      })),
+    );
   }, [session]);
 
   useFocusEffect(
@@ -127,6 +154,32 @@ function MyBookings() {
       load();
     }, [load]),
   );
+  // The reminded booking stays outlined until they leave the screen.
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        setFocusId(null);
+        scrolledTo.current = null;
+      },
+      [],
+    ),
+  );
+
+  // Taken from the link at once, so coming back to the tab later doesn't jump to it again.
+  useEffect(() => {
+    if (params.booking) router.setParams({ booking: undefined });
+  }, [params.booking]);
+
+  /** Brings the reminded booking's card into view once it is laid out. */
+  function scrollToFocus() {
+    if (!focusId || scrolledTo.current === focusId) return;
+    const content = (scrollRef.current as ScrollWithContent | null)?.getInnerViewRef?.();
+    if (!content) return;
+    scrolledTo.current = focusId;
+    focusRef.current?.measureLayout(content, (_x, y) =>
+      scrollRef.current?.scrollTo({ y: Math.max(0, y - Spacing.lg), animated: true }),
+    );
+  }
 
   /** Just their place in the queue: one small request. */
   const loadQueue = useCallback(async () => {
@@ -348,7 +401,7 @@ function MyBookings() {
   const hold = fromCache ? { disabled: true } : {};
 
   return (
-    <Screen onRefresh={load} overlay={overlay}>
+    <Screen onRefresh={load} overlay={overlay} scrollRef={scrollRef}>
       <ScreenTitle title={t('My bookings')} refreshing={fromCache && loading} />
       {loaded && refreshError ? <StaleNote savedAt={savedAt} onRetry={load} retrying={loading} /> : null}
       {loaded ? <ErrorText message={error} /> : null}
@@ -506,8 +559,13 @@ function MyBookings() {
                       time,
                     })
                 : undefined;
+            const reminded = focusId === b.id;
             return (
-              <Card key={b.id}>
+              <Card
+                key={b.id}
+                ref={reminded ? focusRef : undefined}
+                onLayout={reminded ? scrollToFocus : undefined}
+                style={reminded ? { borderColor: theme.tint, borderWidth: 2 } : undefined}>
                 <T variant="heading">
                   {day}, {time}
                 </T>

@@ -1318,4 +1318,23 @@ export const ms: Record<string, string> = {
   'We’ll remind you the evening before.': 'Kami akan ingatkan anda pada malam sebelumnya.',
   'We’ll remind you an hour before.': 'Kami akan ingatkan anda sejam sebelumnya.',
   'Booking reminders': 'Peringatan tempahan',
+  // Account
+  Reminders: 'Peringatan',
+  'Evening before': 'Malam sebelumnya',
+  'At 8 pm the day before': 'Jam 8 malam sehari sebelumnya',
+  'An hour before': 'Sejam sebelumnya',
+  'Reminders come in the {app} app on your phone. Here, add a booking to your calendar to be reminded.':
+    'Peringatan datang dalam aplikasi {app} di telefon anda. Di sini, tambah tempahan ke kalendar anda untuk diingatkan.',
+  'They come on this phone only.': 'Peringatan hanya datang di telefon ini.',
+  'Allow notifications so they can show.': 'Benarkan pemberitahuan supaya peringatan boleh dipaparkan.',
+  'Allow notifications': 'Benarkan pemberitahuan',
+  'Notifications are off for {app}, so reminders can’t show. Turn them on in Settings.':
+    'Pemberitahuan dimatikan untuk {app}, jadi peringatan tidak boleh dipaparkan. Hidupkannya di Tetapan.',
+  'Next reminder: {when}, for {service} at {shop}.': 'Peringatan seterusnya: {when}, untuk {service} di {shop}.',
+  // The booking confirmation
+  'Your calendar can remind you before it.': 'Kalendar anda boleh mengingatkan anda sebelum masanya.',
+  'Get a reminder so you don’t miss it?': 'Mahu peringatan supaya tidak terlepas?',
+  'Turn on reminders': 'Hidupkan peringatan',
+  'Notifications are off, so no reminders will come. You can turn them on in Settings.':
+    'Pemberitahuan dimatikan, jadi tiada peringatan akan datang. Anda boleh menghidupkannya di Tetapan.',
 };

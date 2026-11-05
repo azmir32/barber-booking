@@ -5,6 +5,7 @@ import { Linking, View, type LayoutChangeEvent, type ScrollView, type TextInput 
 import { DayPicker } from '@/components/day-picker';
 import { Distance } from '@/components/distance';
 import { ShopQueueCard } from '@/components/queue-card';
+import { BookedReminders } from '@/components/reminders-card';
 import { RatingSummary } from '@/components/reviews';
 import { BarberPhotosButton, PhotoStrip, PhotoViewer } from '@/components/shop-photos';
 import { ShopReviews } from '@/components/shop-reviews';
@@ -30,6 +31,7 @@ import { whatsappUrl } from '@/lib/phone';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatClock, openStatus, shopWeek, WEEK_ORDER } from '@/lib/hours';
 import type { QueueStatus } from '@/lib/queue';
+import { refreshReminders } from '@/lib/reminder-scheduler';
 import { ratingAverage, type ShopReview } from '@/lib/reviews';
 import { shopPreview } from '@/lib/shop-preview';
 import { couldFreeUp, requestService, type MyWaiting } from '@/lib/waitlist';
@@ -520,6 +522,8 @@ export default function ShopPage() {
     setBooking(false);
     if (error) return failed(error);
     setConfirmed(data as Booking);
+    // Its reminders, with the rest of their bookings', once notifications are allowed.
+    refreshReminders();
   }
 
   async function move() {
@@ -534,6 +538,8 @@ export default function ShopPage() {
     setBooking(false);
     if (error) return failed(error);
     setMoved(data as Booking);
+    // The reminders move with it.
+    refreshReminders();
   }
 
   /** On a full day: ask the shop to say if a time frees up. A guest signs up first, keeping the picks. */
@@ -855,6 +861,16 @@ export default function ShopPage() {
             variant="secondary"
             style={{ marginTop: Spacing.sm }}
             onPress={() => addToCalendar(calendarEvent())}
+          />
+          <BookedReminders
+            booking={{
+              id: confirmed.id,
+              starts_at: confirmed.starts_at,
+              status: confirmed.status,
+              service_name: confirmed.service_name,
+              shop_name: shop.name,
+              time_zone: shop.time_zone,
+            }}
           />
         </Empty>
         <Card>
