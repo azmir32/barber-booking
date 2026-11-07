@@ -25,6 +25,7 @@ import {
 } from '@/lib/review-reports';
 import { averageText, ratingAverage, ratingLabel, REVIEW_MAX_LENGTH, reviewCount, type ShopReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
+import { useBigText } from '@/lib/text-size-provider';
 
 /** Reviews per page. One more is asked for, to know whether there are more. */
 const PAGE = 20;
@@ -200,6 +201,7 @@ function OwnerReview({
   onSaved: (review: ShopReview) => void;
 }) {
   const theme = useTheme();
+  const big = useBigText();
   const [editing, setEditing] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [text, setText] = useState(review.reply ?? '');
@@ -262,9 +264,10 @@ function OwnerReview({
             accessibilityLabel={[notice, statusText.badge, statusText.line].filter(Boolean).join('. ')}
             style={[styles.status, { borderColor: theme.border }]}>
             {notice ? <T variant="small">{notice}</T> : null}
-            <Row style={styles.statusRow}>
+            {/* Side by side, or the line under the badge once text is big, so it isn't a narrow column. */}
+            <Row style={big ? styles.statusStacked : styles.statusRow}>
               <Badge label={statusText.badge} tone={STATE_TONE[reportState(report)]} />
-              <T variant="small" style={styles.statusLine}>
+              <T variant="small" style={big ? undefined : styles.statusLine}>
                 {statusText.line}
               </T>
             </Row>
@@ -406,6 +409,10 @@ function ReportForm({
       <T variant="small">
         {t('The {app} team reads every report. The review stays on your page until they decide.', { app: APP_NAME })}
       </T>
+      {/* Said by the group itself to screen readers. */}
+      <T variant="label" aria-hidden>
+        {t('Why is it unfair?')}
+      </T>
       <Row role="radiogroup" accessibilityLabel={t('Why is it unfair?')}>
         {REPORT_REASONS.map((r) => (
           <Chip key={r} label={reasonLabel(r)} selected={reason === r} onPress={() => setReason(r)} />
@@ -447,5 +454,6 @@ const styles = StyleSheet.create({
   done: { flexGrow: 1, flexShrink: 1, flexBasis: 120 },
   status: { gap: Spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.sm, marginTop: Spacing.xs },
   statusRow: { flexWrap: 'nowrap', alignItems: 'flex-start' },
+  statusStacked: { flexDirection: 'column', alignItems: 'flex-start', gap: Spacing.xs },
   statusLine: { flex: 1 },
 });
