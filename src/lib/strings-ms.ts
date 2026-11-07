@@ -1307,4 +1307,25 @@ export const ms: Record<string, string> = {
   'Pick a service above to see free times.': 'Pilih servis di atas untuk melihat masa kosong.',
   'Your shop has too many photo files waiting to be cleared away. Remove a photo to make room, or try again tomorrow.':
     'Kedai anda ada terlalu banyak fail foto yang menunggu untuk dibuang. Buang satu foto untuk memberi ruang, atau cuba lagi esok.',
+  // Round 15, filters on Find a barber (customer/index.tsx): three chips
+  // that narrow the list, how many it found, and nothing found.
+  Filters: 'Penapis',
+  'Open now': 'Buka sekarang',
+  'Free today': 'Masa kosong hari ini',
+  'Walk-ins': 'Walk-in',
+  // Joined into a sentence: "3 barbers open now and free today".
+  'open now': 'buka sekarang',
+  'free today': 'ada masa kosong hari ini',
+  'taking walk-ins': 'terima walk-in',
+  '{a} and {b}': '{a} dan {b}',
+  '{a}, {b} and {c}': '{a}, {b} dan {c}',
+  '1 barber {filters}': '1 barber {filters}',
+  '{count} barbers {filters}': '{count} barber {filters}',
+  'More than {count} barbers {filters}': 'Lebih daripada {count} barber {filters}',
+  'Barbers {filters}': 'Barber {filters}',
+  'No barbers {filters}': 'Tiada barber {filters}',
+  'Try fewer filters, or another name or area.': 'Cuba kurangkan penapis, atau cari nama atau kawasan lain.',
+  'Try again later, or clear the filters to see every barber.':
+    'Cuba lagi nanti, atau buang penapis untuk melihat semua barber.',
+  'Clear filters': 'Buang penapis',
 };

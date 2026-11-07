@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
-import { Linking, Platform, RefreshControl, ScrollView, View } from 'react-native';
+import { AccessibilityInfo, Linking, Platform, RefreshControl, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Distance } from '@/components/distance';
@@ -64,14 +64,51 @@ type Near = 'off' | 'finding' | 'on';
 /** The first page for a search or area, as kept for next time. */
 type FirstPage = { shops: ShopListing[]; hasMore: boolean; listedOn: string };
 
+/**
+ * Find a barber's filters, which combine with each other and with the rest:
+ * Open now (by the shop's hours today), Free today (it can still take a
+ * booking today) and Walk-ins (it runs a walk-in queue).
+ */
+type Filters = { open: boolean; free: boolean; walkIns: boolean };
+const NO_FILTERS: Filters = { open: false, free: false, walkIns: false };
+const FILTER_NAMES = ['open', 'free', 'walkIns'] as const;
+
 /** Shops per page. One more is asked for, to know whether there are more. */
 const PAGE = 20;
 /** The area a customer picked last time, so they land on their own area. */
 const AREA_KEY = 'potongku.area';
+/** The filters on last time, e.g. "open,walkIns", remembered like the area. */
+const FILTERS_KEY = 'potongku.findFilters';
 
-/** Where the first page for an area and search is kept: the list itself is the same for everyone. Near me's is apart. */
-const pageKey = (uid: string | undefined, area: string | null, query: string, near: boolean) =>
-  cacheKey(uid ?? GUEST, 'find', area?.toLowerCase(), query.trim().toLowerCase(), near ? 'near' : null);
+const filtersOn = (f: Filters) => FILTER_NAMES.filter((name) => f[name]);
+function readFilters(saved: string | null): Filters {
+  const names = (saved ?? '').split(',');
+  return { open: names.includes('open'), free: names.includes('free'), walkIns: names.includes('walkIns') };
+}
+
+/** The filters on, as words for a sentence: "open now", "open now and free today". */
+function filterWords(f: Filters): string {
+  const words = [f.open && t('open now'), f.free && t('free today'), f.walkIns && t('taking walk-ins')].filter(
+    (w): w is string => Boolean(w),
+  );
+  if (words.length === 3) return t('{a}, {b} and {c}', { a: words[0], b: words[1], c: words[2] });
+  if (words.length === 2) return t('{a} and {b}', { a: words[0], b: words[1] });
+  return words[0] ?? '';
+}
+
+/**
+ * Where the first page for an area, search and filters is kept: the list itself is the same for
+ * everyone. Near me's is apart. Without filters the key is as it was before they came in.
+ */
+const pageKey = (uid: string | undefined, area: string | null, query: string, near: boolean, filters: Filters) =>
+  cacheKey(
+    uid ?? GUEST,
+    'find',
+    area?.toLowerCase(),
+    query.trim().toLowerCase(),
+    near ? 'near' : null,
+    ...(filtersOn(filters).length ? [filtersOn(filters).join('+')] : []),
+  );
 
 export default function Explore() {
   const theme = useTheme();
@@ -113,6 +150,9 @@ export default function Explore() {
   const [nearProblem, setNearProblem] = useState<LocateProblem | null>(null);
   // Near me tapped on this visit, rather than kept on from the last.
   const [nearPicked, setNearPicked] = useState(false);
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  // A filter tapped on this visit, rather than kept on from the last.
+  const [filtersPicked, setFiltersPicked] = useState(false);
   // Only the newest tap of Near me counts; turning it off drops a position still on its way.
   const latestFind = useRef(0);
   // Last time's cards show at once for whoever is signed in.
@@ -124,7 +164,7 @@ export default function Explore() {
   }
   // The list on screen: which area and search it is for, when the server gave it, and whether that was on this visit.
   const [shown, setShown] = useState<{ key: string; at: number; fresh: boolean } | null>(null);
-  const key = pageKey(uid, area, query, near === 'on' && here !== null);
+  const key = pageKey(uid, area, query, near === 'on' && here !== null, filters);
   // A list kept from before (last visit, or an earlier search on this one) shows at once while it is asked for again.
   const [peeked, setPeeked] = useState<string | null>(null);
   if (areaRestored && peeked !== key) {
@@ -185,7 +225,8 @@ export default function Explore() {
     appCache.write(cacheKey(who, 'my-shops'), data);
   }, []);
 
-  const restore = useEffectEvent(async (saved: string | null, wasNear: boolean) => {
+  const restore = useEffectEvent(async (saved: string | null, wasNear: boolean, savedFilters: string | null) => {
+    setFilters(readFilters(savedFilters));
     if (wasNear) {
       // Their next cut and barbers don't need the position, so they don't wait for it.
       mineSent.current = true;
@@ -203,9 +244,11 @@ export default function Explore() {
   });
 
   useEffect(() => {
-    Promise.all([AsyncStorage.getItem(AREA_KEY).catch(() => null), nearMeWasOn()]).then(([saved, wasNear]) =>
-      restore(saved, wasNear),
-    );
+    Promise.all([
+      AsyncStorage.getItem(AREA_KEY).catch(() => null),
+      nearMeWasOn(),
+      AsyncStorage.getItem(FILTERS_KEY).catch(() => null),
+    ]).then(([saved, wasNear, savedFilters]) => restore(saved, wasNear, savedFilters));
   }, []);
 
   const at = near === 'on' ? here : null;
@@ -218,8 +261,12 @@ export default function Explore() {
         p_offset: offset,
         // Sent in the request's body, never its address, so it stays out of server logs.
         ...(at ? { p_lat: at.latitude, p_lng: at.longitude } : null),
+        // Only the filters that are on, so a list without them is asked for as before.
+        ...(filters.open ? { p_open_now: true } : null),
+        ...(filters.free ? { p_free_today: true } : null),
+        ...(filters.walkIns ? { p_walk_ins: true } : null),
       }),
-    [query, area, at],
+    [query, area, at, filters],
   );
 
   const load = useCallback(async () => {
@@ -227,10 +274,11 @@ export default function Explore() {
     setLoading(true);
     // then() sends the list's request now, so the cards' one goes alongside it, never ahead.
     const page = fetchPage(0).then((res) => res);
-    // Searching, picking an area or tapping Near me hides the cards, so they wait until those are cleared.
-    // On opening with Near me kept they were sent already, while the list waited for the position.
+    // Searching, picking an area or a filter, or tapping Near me hides the cards, so they wait until
+    // those are cleared. On opening with Near me kept they were sent already, while the list waited for
+    // the position.
     if (mineSent.current) mineSent.current = false;
-    else if (!query.trim() && !areaPicked && !nearPicked) loadMine();
+    else if (!query.trim() && !areaPicked && !nearPicked && !filtersPicked) loadMine();
     const { data, error } = await page;
     if (request !== latest.current) return;
     setLoading(false);
@@ -241,12 +289,12 @@ export default function Explore() {
     setShops(first.shops);
     setHasMore(first.hasMore);
     setListedOn(first.listedOn);
-    const key = pageKey(uidRef.current, area, query, at !== null);
+    const key = pageKey(uidRef.current, area, query, at !== null, filters);
     setShown({ key, at: Date.now(), fresh: true });
     // A search only lasts the visit, so the box starts empty next time; so does a list
     // nearest first, as its distances say where the customer was.
     appCache.write(key, first, !query.trim() && !at);
-  }, [fetchPage, loadMine, query, area, at, areaPicked, nearPicked]);
+  }, [fetchPage, loadMine, query, area, at, filters, areaPicked, nearPicked, filtersPicked]);
 
   async function loadMore() {
     const request = latest.current;
@@ -305,6 +353,20 @@ export default function Explore() {
     chipsRef.current?.scrollTo({ x: 0, animated: true });
   }
 
+  function toggleFilter(name: (typeof FILTER_NAMES)[number]) {
+    const next = { ...filters, [name]: !filters[name] };
+    setFilters(next);
+    setFiltersPicked(filtersOn(next).length > 0);
+    const on = filtersOn(next);
+    (on.length ? AsyncStorage.setItem(FILTERS_KEY, on.join(',')) : AsyncStorage.removeItem(FILTERS_KEY)).catch(() => {});
+  }
+
+  function clearFilters() {
+    setFilters(NO_FILTERS);
+    setFiltersPicked(false);
+    AsyncStorage.removeItem(FILTERS_KEY).catch(() => {});
+  }
+
   function tapNearMe() {
     setNearProblem(null);
     if (near === 'off') findMe(true);
@@ -316,7 +378,7 @@ export default function Explore() {
   const fromCache = shown !== null && !shown.fresh && shown.key === key;
   // Only the signed-in customer's own, and out of the way while they look for something else.
   // The area or Near me remembered from last time still sorts the list, but they came back for their barber.
-  const returning = !searching && !areaPicked && !nearPicked && mine && mine.uid === uid ? mine : null;
+  const returning = !searching && !areaPicked && !nearPicked && !filtersPicked && mine && mine.uid === uid ? mine : null;
   // While Near me looks for the customer the area still filters the list, but its chip is no longer the one picked.
   const areaShown = near === 'off' ? area : null;
   // The saved area may have no live shops any more; keep its chip so it can be cleared.
@@ -324,6 +386,35 @@ export default function Explore() {
     area && areas.length && !areas.some((a) => a.area.toLowerCase() === area.toLowerCase())
       ? [...areas, { area, shops: 0 }]
       : areas;
+  const filtering = filtersOn(filters).length > 0;
+  const filterText = filterWords(filters);
+  // Each shop's open line on today's list, worked out once for the filters and the cards.
+  const status = new Map(
+    shops.map((shop) => [shop.id, listedOn === today ? openStatus(shop.opens_today, shop.closes_today, now) : null]),
+  );
+  // A list kept from earlier, or left up a while, can have shops that have since closed: they go
+  // until the list comes again.
+  const listed = shops.filter((shop) => {
+    const open = status.get(shop.id);
+    if (!open) return true;
+    if (filters.open && open.state !== 'open') return false;
+    return !(filters.free && open.state === 'closed');
+  });
+  // With a filter on, the list says how many it found, and a screen reader hears it change.
+  const countLine =
+    filtering && !loading && !error && listed.length
+      ? hasMore
+        ? t('More than {count} barbers {filters}', { count: listed.length, filters: filterText })
+        : listed.length === 1
+          ? t('1 barber {filters}', { filters: filterText })
+          : t('{count} barbers {filters}', { count: listed.length, filters: filterText })
+      : null;
+  const nothing = filtering && !loading && !error && listed.length === 0;
+  const news = countLine ?? (nothing ? t('No barbers {filters}', { filters: filterText }) : null);
+  useEffect(() => {
+    // iOS has no live regions, so VoiceOver is told what the filters found out loud.
+    if (news && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(news);
+  }, [news]);
 
   return (
     <SafeAreaView edges={['top']} style={{ flex: 1, backgroundColor: theme.background }}>
@@ -392,6 +483,11 @@ export default function Explore() {
             })}
           </ScrollView>
         ) : null}
+        <Row role="group" accessibilityLabel={t('Filters')}>
+          <FilterChip label={t('Open now')} on={filters.open} onPress={() => toggleFilter('open')} />
+          <FilterChip label={t('Free today')} on={filters.free} onPress={() => toggleFilter('free')} />
+          <FilterChip label={t('Walk-ins')} on={filters.walkIns} onPress={() => toggleFilter('walkIns')} />
+        </Row>
         {/* The filter is remembered between visits, so say it is on even when its chip is off screen. */}
         {areaShown ? (
           <Row style={{ flexWrap: 'nowrap', marginVertical: -Spacing.sm }}>
@@ -413,11 +509,13 @@ export default function Explore() {
             mine={returning}
             now={now}
             listTitle={
-              near !== 'off'
-                ? t('Barbers near you')
-                : areaShown
-                  ? t('Barbers in {area}', { area: areaShown })
-                  : t('All barbers')
+              filtering
+                ? t('Barbers {filters}', { filters: filterText })
+                : near !== 'off'
+                  ? t('Barbers near you')
+                  : areaShown
+                    ? t('Barbers in {area}', { area: areaShown })
+                    : t('All barbers')
             }
           />
         ) : null}
@@ -427,7 +525,25 @@ export default function Explore() {
           </Empty>
         ) : null}
         {loading && shops.length === 0 && !error ? <ShopsSkeleton /> : null}
-        {!loading && !error && shops.length === 0 ? (
+        {countLine && !returning ? (
+          <T variant="label" role="status" accessibilityLiveRegion="polite">
+            {countLine}
+          </T>
+        ) : null}
+        {nothing ? (
+          // Said out loud when the filters leave nothing, as the count is otherwise.
+          <View role="status" accessibilityLiveRegion="polite">
+            <Empty
+              title={t('No barbers {filters}', { filters: filterText })}
+              body={
+                searching || area
+                  ? t('Try fewer filters, or another name or area.')
+                  : t('Try again later, or clear the filters to see every barber.')
+              }>
+              <Button title={t('Clear filters')} variant="secondary" onPress={clearFilters} />
+            </Empty>
+          </View>
+        ) : !loading && !error && shops.length === 0 ? (
           searching || area ? (
             <Empty title={t('No matches')} body={t('Try another name or area.')}>
               {/* A search inside one area can miss a shop in the next; one tap looks everywhere. */}
@@ -449,9 +565,9 @@ export default function Explore() {
             <Empty title={t('No barbers yet')} body={t('Barbers in your area are joining soon. Check back shortly.')} />
           )
         ) : null}
-        {shops.map((shop) => {
+        {listed.map((shop) => {
           // The list doesn't send each shop's zone: every shop is in Malaysia, on Kuala Lumpur time.
-          const openNow = listedOn === today ? openStatus(shop.opens_today, shop.closes_today, now) : null;
+          const openNow = status.get(shop.id) ?? null;
           const nextFree = openNow ? nextFreeLine(shop.next_free_at, openNow.state, now, undefined, shop.opens_today) : null;
           return (
             <Card
@@ -534,6 +650,11 @@ export default function Explore() {
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+/** A filter: on or off, and said as a toggle button that is pressed or not. */
+function FilterChip({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
+  return <Chip label={label} mode="toggle" selected={on} onPress={onPress} />;
 }
 
 /** Why Near me couldn't turn on, and how to let it: one line, with the phone's Settings a tap away. */
