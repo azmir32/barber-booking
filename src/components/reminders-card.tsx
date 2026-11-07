@@ -16,12 +16,14 @@ import {
   setReminderSetting,
 } from '@/lib/reminder-scheduler';
 import { useReminderState, type ReminderPermission } from '@/lib/reminder-settings';
+import { useBigText } from '@/lib/text-size-provider';
 
-/** Notifications refused: said plainly, with the phone's Settings a tap away. */
+/** Notifications refused: said plainly, with the phone's Settings a tap away (under it with big text, rather than squeezing it). */
 function RefusedLine({ text }: { text: string }) {
+  const big = useBigText();
   return (
-    <Row style={styles.noWrap}>
-      <T variant="small" role="alert" accessibilityLiveRegion="polite" style={styles.grow}>
+    <Row style={big ? undefined : styles.noWrap}>
+      <T variant="small" role="alert" accessibilityLiveRegion="polite" style={big ? styles.wholeLine : styles.grow}>
         {text}
       </T>
       <Button title={t('Settings')} variant="ghost" onPress={() => Linking.openSettings()} />
@@ -137,8 +139,13 @@ export function BookedReminders({ booking }: { booking: ReminderBooking }) {
       </T>
     );
   }
+  // In the card that asked, so it stays where they tapped and lines up with the cards below.
   if (answer === 'ask' || answer === 'blocked') {
-    return <RefusedLine text={t('Notifications are off, so no reminders will come. You can turn them on in Settings.')} />;
+    return (
+      <Card style={styles.prompt}>
+        <RefusedLine text={t('Notifications are off, so no reminders will come. You can turn them on in Settings.')} />
+      </Card>
+    );
   }
   if (permission !== 'ask' || asked) return null;
 
@@ -163,6 +170,7 @@ export function BookedReminders({ booking }: { booking: ReminderBooking }) {
 const styles = StyleSheet.create({
   noWrap: { flexWrap: 'nowrap' },
   grow: { flex: 1 },
+  wholeLine: { flexBasis: '100%' },
   center: { textAlign: 'center' },
   // Inside the centred confirmation, as wide as the cards below it.
   prompt: { alignSelf: 'stretch' },
