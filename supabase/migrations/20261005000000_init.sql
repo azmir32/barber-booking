@@ -205,6 +205,11 @@ create table public.working_hours (
     tsrange(date '2000-01-01' + opens_at, date '2000-01-01' + closes_at) with &&
   )
 );
+-- A barber's hours on one weekday, which the shop list looks up for every
+-- shop on its page and, with a filter on, for every shop it looks through.
+-- The overlap index above can answer it too, but more slowly: for 1,000
+-- shops today's hours took about 28 ms with it and 10 ms with this.
+create index working_hours_barber_day_idx on public.working_hours (barber_id, weekday);
 
 -- A shop goes live only with something customers can book: a service, and a
 -- barber who works at least one day a week. Without them it was listed with
@@ -742,8 +747,12 @@ $$;
 -- tomorrow is only worked out for the shops with nothing left today: one
 -- call per shop took nearly half the shop list's time (see README, "How
 -- many users it handles"). A generic plan, so a connection plans the query
--- once.
-create function public.shops_next_free(p_shop_ids uuid[])
+-- once. p_days 1 looks at today only, for find_shops' Free today filter.
+-- A barber whose hours end too soon for the shortest service is dropped
+-- before the bookings are read, so late in the day, on a day off or once
+-- every shop has closed it reads no bookings at all: at ten to midnight it
+-- took a third of the time for 1,000 shops.
+create function public.shops_next_free(p_shop_ids uuid[], p_days int default 2)
 returns table (shop_id uuid, next_free_at timestamptz)
 language plpgsql
 stable
@@ -757,39 +766,46 @@ declare
   v_found record;
 begin
   -- Today, then tomorrow for the rest. Both are well inside the booking horizon.
-  for i in 0..1 loop
+  for i in 0..least(greatest(coalesce(p_days, 2), 1), 2) - 1 loop
     exit when cardinality(v_left) = 0;
     for v_found in
-      with shop as (
+      with shop as materialized (
         select s.id, s.time_zone as tz, (now() at time zone s.time_zone)::date + i as day,
                (select v.duration_min from services v where v.shop_id = s.id and v.is_active
                 order by v.duration_min, v.sort_order, v.id limit 1) as minutes
         from shops s
         where s.id = any(v_left) and (public.shop_is_live(s) or s.owner_id = (select auth.uid()))
       ),
-      hours as (
-        select sh.id as shop_id, sh.minutes, w.barber_id,
-               (sh.day + w.opens_at) at time zone sh.tz as opens,
-               (sh.day + w.closes_at) at time zone sh.tz as closes
-        from shop sh
-        -- Offset 0 keeps this a lookup of each shop's own barbers, where the
-        -- planner would otherwise read every barber on the platform.
-        cross join lateral (
-          select b.id as barber_id, wh.opens_at, wh.closes_at
-          from barbers b
-          join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from sh.day)::int
-          where b.shop_id = sh.id and b.is_active
-          offset 0
-        ) w
-        where sh.minutes is not null
-          and not exists (select 1 from shop_closures c where c.shop_id = sh.id and c.day = sh.day)
+      hours as materialized (
+        -- Only hours with room left for the shortest service: every time
+        -- tried is after now and after opening, so in any other range it
+        -- would end after closing.
+        select h.* from (
+          select sh.id as shop_id, sh.tz, sh.day, sh.minutes, w.barber_id,
+                 (sh.day + w.opens_at) at time zone sh.tz as opens,
+                 (sh.day + w.closes_at) at time zone sh.tz as closes
+          from shop sh
+          -- Offset 0 keeps this a lookup of each shop's own barbers, where the
+          -- planner would otherwise read every barber on the platform.
+          cross join lateral (
+            select b.id as barber_id, wh.opens_at, wh.closes_at
+            from barbers b
+            join working_hours wh on wh.barber_id = b.id and wh.weekday = extract(dow from sh.day)::int
+            where b.shop_id = sh.id and b.is_active
+            offset 0
+          ) w
+          where sh.minutes is not null
+            and not exists (select 1 from shop_closures c where c.shop_id = sh.id and c.day = sh.day)
+        ) h
+        where greatest(h.opens, now()) + make_interval(mins => h.minutes) <= h.closes
       ),
       taken as materialized (
         -- Bookings and blocks are at most a day long, so anything in the way
         -- started after the day before began; and only one that hasn't ended
-        -- yet can be in the way of a time from now on.
+        -- yet can be in the way of a time from now on. Only for the shops
+        -- with hours left.
         select bk.shop_id, bk.barber_id, bk.starts_at, bk.ends_at
-        from shop sh
+        from (select distinct h.shop_id as id, h.tz, h.day from hours h) sh
         join bookings bk on bk.shop_id = sh.id
           and bk.status <> 'cancelled'
           and bk.starts_at > (sh.day - 1)::timestamp at time zone sh.tz
@@ -834,7 +850,7 @@ begin
 end;
 $$;
 -- Only find_shops and my_shops use it.
-revoke execute on function public.shops_next_free(uuid[]) from public, anon, authenticated;
+revoke execute on function public.shops_next_free(uuid[], int) from public, anon, authenticated;
 
 -- How far apart two points are in km, over the earth's surface (the
 -- haversine formula on a round earth: well within the 100 m the app shows).
@@ -879,13 +895,33 @@ revoke execute on function public.km_between(double precision, double precision,
 -- planned on every call, about half a millisecond each time. To add a
 -- column, add it to the returns table and to the last select, in the same
 -- place in both.
+-- Filters, which combine with each other and with the rest: Open now (the
+-- shop's clock is between today's first barber in and last one out, as its
+-- card says), Free today (it can still take a booking today by its own
+-- clock: shops_next_free finds a time today) and Walk-ins (it runs a
+-- walk-in queue). Walk-ins is a column, so it narrows the list like the
+-- area does. The other two depend on the hours and the bookings, which
+-- the naive way works out for every shop and then filters: 105 ms for
+-- 1,000 shops (README, "How many users it handles"). Instead the shops
+-- are taken in list order a batch at a time: today's hours first, which
+-- is cheap and drops the shops that are shut, have closed for the day or
+-- (Open now) haven't opened yet, then for Free today the next free time
+-- of the rest; until the page is full. A batch is the page's size at
+-- first, then what is still missing, twice over; when few shops match it
+-- grows fourfold each time, to 1,024. So a page costs about what it did
+-- without filters when most shops match (5 ms), little when none can (at
+-- ten to midnight, or on a Sunday, the hours step alone), and the most
+-- when only a few shops in the whole list can still take a booking today.
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
   p_limit int default 20,
   p_offset int default 0,
   p_lat double precision default null,
-  p_lng double precision default null
+  p_lng double precision default null,
+  p_open_now boolean default false,
+  p_free_today boolean default false,
+  p_walk_ins boolean default false
 )
 returns table (
   id uuid,
@@ -923,26 +959,68 @@ declare
   v_near boolean := coalesce(p_lat between -90 and 90 and p_lng between -180 and 180, false);
   v_limit int := least(greatest(coalesce(p_limit, 20), 1), 50);
   v_offset int := greatest(coalesce(p_offset, 0), 0);
+  v_open boolean := coalesce(p_open_now, false);
+  v_free boolean := coalesce(p_free_today, false);
+  v_walk boolean := coalesce(p_walk_ins, false);
+  -- The page, and each shop's hours today and next free time, in order.
   v_page uuid[];
+  v_opens time[];
+  v_closes time[];
+  v_next timestamptz[];
+  -- With Open now or Free today: every shop that could be listed, in
+  -- order, the batch being looked at, and what in it is listed.
+  v_cands uuid[];
+  v_batch uuid[];
+  v_ids uuid[];
+  v_o time[];
+  v_c time[];
+  v_n timestamptz[];
+  v_want int := v_offset + v_limit;
+  v_at int := 1;
+  v_size int := v_offset + v_limit;
 begin
-  -- With nothing to narrow or measure by, the page comes straight off
-  -- shops_name_idx in name order. Otherwise every live shop is looked at:
-  -- nearest first given a position (without one every distance is null, so
-  -- the order is by name either way). The id last keeps the pages from
-  -- overlapping.
-  if coalesce(v_search, '') = '' and coalesce(v_area, '') = '' and not v_near then
-    v_page := array(
-      select s.id
-      from shops s
-      where public.shop_is_live(s)
-      order by lower(s.name), s.id
-      limit v_limit offset v_offset
-    );
+  if not (v_open or v_free) then
+    -- With nothing to narrow or measure by, the page comes straight off
+    -- shops_name_idx in name order. Otherwise every live shop is looked at:
+    -- nearest first given a position (without one every distance is null, so
+    -- the order is by name either way). The id last keeps the pages from
+    -- overlapping.
+    if coalesce(v_search, '') = '' and coalesce(v_area, '') = '' and not v_near then
+      v_page := array(
+        select s.id
+        from shops s
+        where public.shop_is_live(s) and (not v_walk or s.queue_enabled)
+        order by lower(s.name), s.id
+        limit v_limit offset v_offset
+      );
+    else
+      v_page := array(
+        select s.id
+        from shops s
+        where public.shop_is_live(s)
+          and (not v_walk or s.queue_enabled)
+          and (coalesce(v_area, '') = '' or lower(s.area) = v_area)
+          and (
+            coalesce(v_search, '') = ''
+            or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), v_search) > 0
+          )
+        order by case when v_near then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end nulls last,
+                 lower(s.name), s.id
+        limit v_limit offset v_offset
+      );
+    end if;
+    select array_agg(h.opens_today order by p.n), array_agg(h.closes_today order by p.n),
+           array_agg(f.next_free_at order by p.n)
+    into v_opens, v_closes, v_next
+    from unnest(v_page) with ordinality as p (id, n)
+    left join public.shops_hours_today(v_page) h on h.shop_id = p.id
+    left join public.shops_next_free(v_page) f on f.shop_id = p.id;
   else
-    v_page := array(
+    v_cands := array(
       select s.id
       from shops s
       where public.shop_is_live(s)
+        and (not v_walk or s.queue_enabled)
         and (coalesce(v_area, '') = '' or lower(s.area) = v_area)
         and (
           coalesce(v_search, '') = ''
@@ -950,24 +1028,62 @@ begin
         )
       order by case when v_near then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end nulls last,
                lower(s.name), s.id
-      limit v_limit offset v_offset
     );
+    v_page := '{}';
+    v_opens := '{}';
+    v_closes := '{}';
+    v_next := '{}';
+    loop
+      exit when v_at > cardinality(v_cands) or cardinality(v_page) >= v_want;
+      v_batch := v_cands[v_at : v_at + v_size - 1];
+      v_at := v_at + v_size;
+      -- Open until later today by the shop's clock, and (Open now) open already.
+      select coalesce(array_agg(b.id order by b.n), '{}'), coalesce(array_agg(h.opens_today order by b.n), '{}'),
+             coalesce(array_agg(h.closes_today order by b.n), '{}')
+      into v_ids, v_o, v_c
+      from unnest(v_batch) with ordinality as b (id, n)
+      join public.shops_hours_today(v_batch) h on h.shop_id = b.id
+      join shops s on s.id = b.id
+      cross join lateral (select (now() at time zone s.time_zone)::time as clock) l
+      where l.clock < h.closes_today and (not v_open or l.clock >= h.opens_today);
+      if v_free and cardinality(v_ids) > 0 then
+        select coalesce(array_agg(b.id order by b.n), '{}'), coalesce(array_agg(b.o order by b.n), '{}'),
+               coalesce(array_agg(b.c order by b.n), '{}'), coalesce(array_agg(f.next_free_at order by b.n), '{}')
+        into v_ids, v_o, v_c, v_n
+        from unnest(v_ids, v_o, v_c) with ordinality as b (id, o, c, n)
+        join public.shops_next_free(v_ids, 1) f on f.shop_id = b.id;
+        v_next := v_next || v_n;
+      end if;
+      v_page := v_page || v_ids;
+      v_opens := v_opens || v_o;
+      v_closes := v_closes || v_c;
+      v_size := case when cardinality(v_page) * 4 < v_at - 1 then least(v_size * 4, 1024)
+                     else least(greatest(v_want - cardinality(v_page), 8) * 2, 1024) end;
+    end loop;
+    v_page := v_page[v_offset + 1 : v_want];
+    v_opens := v_opens[v_offset + 1 : v_want];
+    v_closes := v_closes[v_offset + 1 : v_want];
+    if v_free then
+      v_next := v_next[v_offset + 1 : v_want];
+    else
+      select array_agg(f.next_free_at order by p.n) into v_next
+      from unnest(v_page) with ordinality as p (id, n)
+      left join public.shops_next_free(v_page) f on f.shop_id = p.id;
+    end if;
   end if;
 
   return query
   select s.id, s.name, s.slug, s.area, s.address, s.about,
          (select min(v.price) from services v where v.shop_id = s.id and v.is_active),
          (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active),
-         h.opens_today, h.closes_today, f.next_free_at,
+         page.opens_today, page.closes_today, page.next_free_at,
          s.rating_count, round(s.rating_sum::numeric / nullif(s.rating_count, 0), 1),
          case when v_near then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end,
          s.latitude, s.longitude,
          case when s.queue_enabled then q.waiting end,
          ph.thumb_path
-  from unnest(v_page) with ordinality as page (id, n)
+  from unnest(v_page, v_opens, v_closes, v_next) with ordinality as page (id, opens_today, closes_today, next_free_at, n)
   join shops s on s.id = page.id
-  left join public.shops_hours_today(v_page) h on h.shop_id = s.id
-  left join public.shops_next_free(v_page) f on f.shop_id = s.id
   -- One lookup of queue_entries_shop_day_idx per shop, only for queue shops.
   left join lateral (
     select count(*)::int as waiting
