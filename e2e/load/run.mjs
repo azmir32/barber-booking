@@ -66,7 +66,7 @@ async function must(promise) {
 
 /** The data each screen loads, the way the app asks for it. */
 const SCENARIOS = {
-  // Signed in, so their next cut and their barbers come alongside the list.
+  // Signed in, so their next cut, their barbers and the bookings the phone reminds them of come alongside the list.
   'Find a barber': async () => {
     const c = customer();
     return Promise.all([
@@ -112,6 +112,9 @@ const SCENARIOS = {
     ),
   // One request: the bookings come with the days they are waiting on and their place in a walk-in queue.
   'My bookings': async () => must(customer().rpc('my_bookings')),
+  // The phone app coming back to the front (at most once a minute) asks for the bookings to remind of,
+  // so a booking moved or cancelled elsewhere moves or drops its reminders.
+  'Back to the app': async () => must(customer().rpc('my_upcoming_bookings')),
   // Not something the app sends, but anyone with an account can: the
   // bookings policy has to stay fast without the app's filter.
   'Every booking I may see': async () =>

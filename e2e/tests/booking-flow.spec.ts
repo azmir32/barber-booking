@@ -206,6 +206,8 @@ test.describe.serial('booking flow', () => {
     await signUp(page, customer);
 
     await expect(page.getByText('You’re booked!')).toBeVisible();
+    // The web schedules no reminders of its own: the calendar is its way to be reminded.
+    await expect(page.getByText('Your calendar can remind you before it.', { exact: true })).toBeVisible();
     await snap(page, '11-booked');
     // So the phone reminds them: opens Google Calendar's add-event page, answered here to stay offline.
     await page.context().route('https://calendar.google.com/**', (route) =>

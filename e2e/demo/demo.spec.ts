@@ -233,7 +233,10 @@ test('a reminder that can’t be saved still opens WhatsApp, and says so', async
 
   const opened = context.waitForEvent('page');
   await button(app, 'Remind Hakim on WhatsApp').click();
-  expect((await opened).url()).toMatch(/^https:\/\/wa\.me\/601122334455\?text=Hi%20Hakim/);
+  // A new tab can show up before it has its address, so wait for it to load first.
+  const whatsapp = await opened;
+  await whatsapp.waitForLoadState();
+  expect(whatsapp.url()).toMatch(/^https:\/\/wa\.me\/601122334455\?text=Hi%20Hakim/);
   // Hakim's row has gone to Cancelled, so the bar says it, and stays until it is seen.
   const notSaved = app.getByText('Reminder for Hakim not saved. You can only remind a customer about an upcoming booking.');
   await expect(notSaved).toBeVisible();
@@ -2240,4 +2243,68 @@ test.describe('on an iPhone', () => {
     expect(ics).toMatch(/\r\nDTSTART:\d{8}T\d{6}Z\r\nDTEND:\d{8}T\d{6}Z\r\n/);
     expect(ics).toContain('\r\nTRIGGER:-PT1H\r\n');
   });
+});
+
+test('Hakim’s Account has the reminders setting, kept in the browser, which says they come in the phone app', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await expect(app.getByRole('heading', { name: 'Reminders', exact: true })).toBeVisible();
+  const evening = app.getByRole('switch', { name: 'Evening before', exact: true });
+  const hour = app.getByRole('switch', { name: 'An hour before', exact: true });
+  // Both on to start.
+  await expect(evening).toBeChecked();
+  await expect(hour).toBeChecked();
+  await expect(evening).toHaveAccessibleDescription('At 8 pm the day before');
+  await expect(
+    app.getByText('Reminders come in the PotongKu app on your phone. Here, add a booking to your calendar to be reminded.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  // A web page can't remind anyone once it is closed, so there is nothing to allow here.
+  await expect(button(app, 'Allow notifications')).toHaveCount(0);
+  await expect(app.getByText('They come on this phone only.')).toHaveCount(0);
+  await snap(page, 'demo-reminders-01-account');
+
+  await evening.click();
+  await expect(evening).not.toBeChecked();
+  await page.reload();
+  await page.frameLocator('#app').getByRole('tab', { name: /Account/ }).click();
+  await expect(evening).not.toBeChecked();
+  await expect(hour).toBeChecked();
+
+  // The booking confirmation points to the calendar instead, and asks nothing.
+  await app.getByRole('tab', { name: /Barbers/ }).click();
+  await listed(app, 'Ali Barber Sungai Chua').last().click();
+  await app.getByRole('radio', { name: /^Haircut RM/ }).click();
+  await app.getByRole('radio', { name: /^Tomorrow/ }).click();
+  await app.getByRole('radio', { name: /^\d{1,2}:\d{2}\s?(am|pm)$/i }).first().click();
+  await button(app, 'Confirm booking').click();
+  await expect(app.getByText('You’re booked!')).toBeVisible();
+  await expect(app.getByText('Your calendar can remind you before it.', { exact: true })).toBeVisible();
+  await expect(button(app, 'Turn on reminders')).toHaveCount(0);
+  await snap(page, 'demo-reminders-02-booked');
+});
+
+test('with the largest text in Malay on a small phone, the reminders setting fits and says what it is', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const app = await open(page);
+  await app.getByRole('radiogroup', { name: 'Text size' }).getByRole('radio', { name: 'Largest', exact: true }).click();
+  await button(app, 'Try as a customer').click();
+  await app.getByRole('tab', { name: /Account/ }).click();
+  await app.getByRole('radiogroup', { name: 'Language' }).getByRole('radio', { name: 'Bahasa Melayu', exact: true }).click();
+  await expectWhole(app.getByRole('heading', { name: 'Peringatan', exact: true }));
+  const evening = app.getByRole('switch', { name: 'Malam sebelumnya', exact: true });
+  await expect(evening).toBeChecked();
+  await expectWhole(evening);
+  await expectWhole(app.getByRole('switch', { name: 'Sejam sebelumnya', exact: true }));
+  await expectWhole(
+    app.getByText(
+      'Peringatan datang dalam aplikasi PotongKu di telefon anda. Di sini, tambah tempahan ke kalendar anda untuk diingatkan.',
+    ),
+  );
+  await snap(page, 'demo-largest-reminders-ms');
 });
