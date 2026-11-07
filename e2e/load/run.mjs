@@ -97,6 +97,29 @@ const SCENARIOS = {
   },
   'Search for a barber': async () =>
     must(anon.rpc('find_shops', { p_search: AREAS[pick(AREAS.length) - 1], p_area: null, p_limit: 20, p_offset: 0 })),
+  // Find a barber with a random mix of its filters on (Open now, Free today, Walk-ins: at least one),
+  // kept from last time, so their next cut and barbers come too; one in three with Near me on as well.
+  'Find a barber, filtered': async () => {
+    const c = customer();
+    const mix = pick(7);
+    const around = (centre) => Math.round((centre + (Math.random() - 0.5) * 0.1) * 1000) / 1000;
+    return Promise.all([
+      must(
+        c.rpc('find_shops', {
+          p_search: null,
+          p_area: null,
+          p_limit: 21,
+          p_offset: 0,
+          ...(pick(3) === 1 ? { p_lat: around(2.99), p_lng: around(101.79) } : null),
+          ...(mix & 1 ? { p_open_now: true } : null),
+          ...(mix & 2 ? { p_free_today: true } : null),
+          ...(mix & 4 ? { p_walk_ins: true } : null),
+        }),
+      ),
+      must(c.rpc('shop_areas')),
+      must(c.rpc('my_shops')),
+    ]);
+  },
   // Everything the page shows on opening, in one request (shop_page): the shop, its services, barbers
   // with their hours, intros and stars, closed days, today's hours, the walk-in queue at the one shop in
   // three that runs one, photos of the shop's cuts (two shops in three have some) and the newest reviews.

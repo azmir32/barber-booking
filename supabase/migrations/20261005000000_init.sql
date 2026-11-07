@@ -901,17 +901,19 @@ revoke execute on function public.km_between(double precision, double precision,
 -- clock: shops_next_free finds a time today) and Walk-ins (it runs a
 -- walk-in queue). Walk-ins is a column, so it narrows the list like the
 -- area does. The other two depend on the hours and the bookings, which
--- the naive way works out for every shop and then filters: 105 ms for
--- 1,000 shops (README, "How many users it handles"). Instead the shops
--- are taken in list order a batch at a time: today's hours first, which
--- is cheap and drops the shops that are shut, have closed for the day or
--- (Open now) haven't opened yet, then for Free today the next free time
--- of the rest; until the page is full. A batch is the page's size at
--- first, then what is still missing, twice over; when few shops match it
--- grows fourfold each time, to 1,024. So a page costs about what it did
--- without filters when most shops match (5 ms), little when none can (at
--- ten to midnight, or on a Sunday, the hours step alone), and the most
--- when only a few shops in the whole list can still take a booking today.
+-- the naive way works out for every shop and then filters: about 95 ms a
+-- page for 1,000 shops on an afternoon (README, "How many users it
+-- handles"). Instead the shops are taken in list order a batch at a time:
+-- today's hours first, which is cheap and drops the shops that are shut,
+-- have closed for the day or (Open now) haven't opened yet, then for Free
+-- today the next free time of the rest (today only); until the page is
+-- full. A batch is the page's size at first, then what is still missing,
+-- twice over; when few shops match it grows fourfold each time, to 1,024.
+-- So a page costs about what it does without filters when most shops
+-- match (4 ms against 3), 20 ms when none can (at ten to midnight, or on a
+-- day nobody works, the hours step alone), and the most, about 145 ms,
+-- when nearly every shop is open but booked up for the rest of the day:
+-- then every shop's next free time is worked out, as the naive way does.
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
