@@ -8,8 +8,18 @@ import path from 'node:path';
 
 let problems: string[] = [];
 
+/**
+ * DEMO_NOW (a time such as 2026-11-08T00:05:00+08:00) runs the tests as if it
+ * were then, to try one at an awkward hour or on a given weekday:
+ *   DEMO_NOW=2026-11-08T23:40:00+08:00 npm run test:demo -- -g 'walk-in queue'
+ * Without it they run at the real time. Tests that work out a date themselves take it from testNow().
+ */
+const DEMO_NOW = process.env.DEMO_NOW;
+const testNow = () => (DEMO_NOW ? new Date(DEMO_NOW) : new Date());
+
 test.beforeEach(async ({ page }) => {
   problems = [];
+  if (DEMO_NOW) await page.clock.install({ time: new Date(DEMO_NOW) });
   // Runs in the iframe too: report anything the browser blocked or that broke.
   await page.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (e) =>
@@ -741,7 +751,7 @@ test('the owner sees this week’s takings, and last week’s and the month’s'
   // The month is named, and compared with last month up to the same day.
   await periods.getByRole('radio', { name: 'This month' }).click();
   const month = new Intl.DateTimeFormat('en-MY', { month: 'long', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur' });
-  await expect(app.getByRole('heading', { name: month.format(new Date()) })).toBeVisible();
+  await expect(app.getByRole('heading', { name: month.format(testNow()) })).toBeVisible();
   await expect(app.getByText(/this time last month$/)).toHaveCount(2);
   await snap(page, 'demo-14-takings-month');
   await page.emulateMedia({ colorScheme: 'dark' });
@@ -1249,7 +1259,12 @@ test('a shop’s page opens with one request, and the barber’s day with one ea
 test('a phone a few minutes fast after midnight still sees the last day on the strip closed', async ({ page }) => {
   // Just past midnight on the phone, while the server (3 minutes behind) is still on yesterday:
   // the page's one answer counts its 14 days from yesterday, the strip from today.
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+  // Never on a Sunday: from a Sunday the strip's last day is the demo's fully booked Saturday,
+  // which can't be closed until its 28 bookings are cancelled, so it is the Monday after instead.
+  let today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(testNow());
+  if (new Date(`${today}T00:00:00Z`).getUTCDay() === 0) {
+    today = new Date(Date.parse(`${today}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  }
   await page.clock.install({ time: new Date(`${today}T00:01:00+08:00`) });
   const app = await open(page);
   await button(app, 'Try as a barber').click();
@@ -1668,7 +1683,7 @@ test('customers pick a barber by their intro and stars and read one barber’s r
  * and in the demo nobody is booked then but on its full Saturday.
  */
 function weekAhead(weekday: number) {
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+  const today = testNow().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
   const day = Array.from({ length: 7 }, (_, i) => new Date(Date.parse(`${today}T00:00:00Z`) + (i + 7) * 86_400_000)).find(
     (d) => d.getUTCDay() === weekday,
   )!;
@@ -1890,8 +1905,11 @@ test('Hakim joins Ali’s walk-in queue and watches his place, then Ali calls hi
   await app.getByRole('radiogroup', { name: 'Barber' }).first().getByRole('radio', { name: 'Ali', exact: true }).click();
   await snap(page, 'demo-52-queue-join');
   await button(app, 'Join the queue').click();
-  await expect(app.getByRole('status').filter({ hasText: /^You’re 4th in the queue · about \d+\smin$/ })).toBeVisible();
-  await expect(app.getByText('Skin fade with Ali', { exact: true })).toBeVisible();
+  const place = app.getByRole('status').filter({ hasText: /^You’re 4th in the queue · about \d+\smin$/ });
+  await expect(place).toBeVisible();
+  // What he asked for, in his place's card: Find a barber, under the page, can say the same of his next cut
+  // (on a Sunday, as Danial is off on Monday and his cut tomorrow is with Ali).
+  await expect(place.locator('..').getByText('Skin fade with Ali', { exact: true })).toBeVisible();
   await expect(button(app, 'Join the queue')).toHaveCount(0);
   await snap(page, 'demo-53-queue-place');
 
