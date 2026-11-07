@@ -3,9 +3,9 @@
 // hand it the bookings they load fresh, the booking pages and Account ask it
 // to fetch them, and coming back to the front asks again, so a booking moved
 // or cancelled by the shop or on another device moves or drops its
-// reminders. Android gets them at about the time (the phone may hold one a
-// few minutes while it sleeps) rather than needing the exact-alarm
-// permission. The web has no reminders: reminder-scheduler.web.ts.
+// reminders. On Android each sync also sets every reminder up again, as a
+// force stop or a battery manager can drop the alarms behind them. The web
+// has no reminders: reminder-scheduler.web.ts.
 
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
@@ -81,9 +81,11 @@ async function apply() {
   const wanted = plannedReminders(last.bookings, reminderState().settings, Date.now());
   await ensureChannel();
   const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  // Android: all of them again, as its alarms can be gone while the list still has them (reminderChanges).
   const { cancel, schedule } = reminderChanges(
     wanted,
     scheduled.map((r) => r.identifier),
+    { again: Platform.OS === 'android' },
   );
   for (const id of cancel) await Notifications.cancelScheduledNotificationAsync(id);
   for (const r of schedule) {

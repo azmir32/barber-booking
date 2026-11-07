@@ -105,16 +105,24 @@ export function plannedReminders(bookings: ReminderBooking[], settings: Reminder
  * longer wanted (a booking moved, cancelled or done, a setting turned off),
  * and the wanted ones not there yet. Notifications that aren't reminders are
  * left alone.
+ *
+ * `again` (Android) schedules every wanted reminder, not only the new ones.
+ * There the list of what is scheduled is expo-notifications' own, kept apart
+ * from the alarms that make them go off, and a force stop or a phone's
+ * battery manager (Xiaomi, Oppo, Vivo, Huawei, realme) drops the alarms but
+ * not the list; expo sets them up again only on restart or an app update.
+ * Scheduled again under the same identifier, a reminder replaces both.
  */
 export function reminderChanges(
   wanted: PlannedReminder[],
   scheduledIds: string[],
+  options: { again?: boolean } = {},
 ): { cancel: string[]; schedule: PlannedReminder[] } {
   const want = new Set(wanted.map((r) => r.id));
   const have = new Set(scheduledIds);
   return {
     cancel: scheduledIds.filter((id) => id.startsWith(REMINDER_ID_PREFIX) && !want.has(id)),
-    schedule: wanted.filter((r) => !have.has(r.id)),
+    schedule: options.again ? wanted : wanted.filter((r) => !have.has(r.id)),
   };
 }
 

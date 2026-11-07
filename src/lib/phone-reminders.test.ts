@@ -190,6 +190,34 @@ test('a moved booking swaps its reminders; the others stay as they are, and othe
   assert.deepEqual(remindersOfKind('evening', scheduled).length, 2);
 });
 
+test('on Android every wanted reminder is scheduled again, as a force stop can drop its alarm but not its entry', () => {
+  const now = at('2026-10-06T10:00:00+08:00');
+  const before = plannedReminders(
+    [booking('2026-10-08T16:30:00+08:00', { id: 'moved' }), booking('2026-10-09T11:00:00+08:00', { id: 'same' })],
+    both,
+    now,
+  );
+  const after = plannedReminders(
+    [booking('2026-10-10T12:00:00+08:00', { id: 'moved' }), booking('2026-10-09T11:00:00+08:00', { id: 'same' })],
+    both,
+    now,
+  );
+  const scheduled = [...before.map((r) => r.id), 'someone-elses'];
+  const android = reminderChanges(after, scheduled, { again: true });
+  // The same ones go as on iOS, and all four wanted are scheduled, under the identifiers they had.
+  assert.deepEqual(android.cancel, reminderChanges(after, scheduled).cancel);
+  assert.deepEqual(android.schedule, after);
+  const same = before.filter((r) => r.bookingId === 'same').map((r) => r.id);
+  assert.deepEqual(
+    android.schedule.filter((r) => r.bookingId === 'same').map((r) => r.id),
+    same,
+  );
+  // Nothing changed: nothing goes, and every one is set up again all the same.
+  assert.deepEqual(reminderChanges(after, after.map((r) => r.id), { again: true }), { cancel: [], schedule: after });
+  // Nothing wanted: nothing to schedule.
+  assert.deepEqual(reminderChanges([], scheduled, { again: true }).schedule, []);
+});
+
 test('in Malay, with Malay times, and a new identifier so a language change replaces them', () => {
   const now = at('2026-10-06T10:00:00+08:00');
   const cut = [booking('2026-10-08T16:30:00+08:00', { id: 'b1', service_name: 'Potong rambut' })];
