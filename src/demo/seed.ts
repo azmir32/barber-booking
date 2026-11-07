@@ -249,6 +249,8 @@ function seed() {
       longitude: 101.7781,
       phone: '019-388 1020',
       subscription_status: 'active',
+      // Takes walk-ins too, so Find a barber's Walk-ins filter has two shops.
+      queue_enabled: true,
     },
     barbers: [
       ['Pak Mat', week([0, 1, 2, 3, 4, 5, 6], '08:00', '18:00'), 'Simple neat cuts, 30 years in Kajang'],
@@ -708,6 +710,30 @@ function seed() {
       created_at: new Date(now() - (30 - i * 4) * DAY).toISOString(),
     }),
   );
+
+  // So each of Find a barber's filters changes the list whenever the demo
+  // opens: Gunting Pak Mat is shut today for a family kenduri (its two
+  // sample bookings today stay as they always were, though the app would
+  // have the shop cancel them before closing), and Irfan at The Fade Room is booked
+  // up from opening to closing (Monday to Saturday; he is off on Sundays).
+  // The gaps left are 15 minutes, shorter than any of his services. Added
+  // last, so every id above stays as it was.
+  insertRow('shop_closures', { shop_id: m.shop.id, day: today, reason: 'Kenduri kahwin' });
+  const [skinFade, taper] = f.services;
+  const fadeRoomDay: [string, Row, string][] = [
+    ['12:00', skinFade, 'Haikal'],
+    ['12:45', taper, 'Marcus'],
+    ['16:00', skinFade, 'Arjun'],
+    ['16:45', taper, 'Hafiy'],
+    ['17:45', skinFade, 'Imran'],
+    ['18:30', taper, 'Kenneth'],
+    ['19:30', skinFade, 'Aqil'],
+    ['20:15', taper, 'Nabil'],
+    ['21:15', skinFade, 'Shaun'],
+  ];
+  for (const [at, service, guest] of fadeRoomDay) {
+    book(f.shop, { barber: f.barbers[0], day: 0, at, service, guest: [guest] });
+  }
 }
 
 setSeed(seed);

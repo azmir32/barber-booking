@@ -79,10 +79,31 @@ function float(value: unknown): number | null {
   return n;
 }
 
+/** A boolean argument, as Postgres reads one: null, or true or false in any of its spellings. */
+function bool(value: unknown): boolean | null {
+  if (value == null) return null;
+  if (typeof value === 'boolean') return value;
+  const text = String(value).trim().toLowerCase();
+  const spelt = (word: string, shortest: number) => text.length >= shortest && word.startsWith(text);
+  if (spelt('true', 1) || spelt('yes', 1) || spelt('on', 2) || text === '1') return true;
+  if (spelt('false', 1) || spelt('no', 1) || spelt('off', 2) || text === '0') return false;
+  throw new PgError('22P02', `invalid input syntax for type boolean: "${String(value)}"`, 400);
+}
+
+/** The shop's clock now, "14:05:09", to compare with its hours. */
+function clockNow(shop: Row): string {
+  const at = new Date(now());
+  return `${localClock(at, String(shop.time_zone))}:${String(at.getUTCSeconds()).padStart(2, '0')}`;
+}
+
 /**
  * Live shops matching the search and area, a page at a time. Given the
  * customer's position (both halves, on the map), nearest first with each
  * one's distance, and those without a location after the rest by name.
+ * Filters: Open now (its clock is between today's first barber in and last
+ * one out), Free today (it is open until later today and still has a free
+ * time today) and Walk-ins (it runs a walk-in queue). The demo is small, so
+ * it simply checks every shop, where the database takes them in batches.
  */
 export function findShops(args: Record<string, unknown>) {
   const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
@@ -90,6 +111,17 @@ export function findShops(args: Record<string, unknown>) {
   const limit = Math.min(Math.max(Number(args.p_limit ?? 20), 1), 50);
   const offset = Math.max(Number(args.p_offset ?? 0), 0);
   const [lat, lng] = [float(args.p_lat), float(args.p_lng)];
+  const openNow = bool(args.p_open_now) ?? false;
+  const freeToday = bool(args.p_free_today) ?? false;
+  const walkIns = bool(args.p_walk_ins) ?? false;
+  const matches = (s: Row) => {
+    if (!openNow && !freeToday) return true;
+    const { opens_today, closes_today } = hoursToday(s);
+    const clock = clockNow(s);
+    if (closes_today == null || !(clock < closes_today)) return false;
+    if (openNow && !(clock >= String(opens_today))) return false;
+    return !freeToday || shopNextFree(s, undefined, 1) != null;
+  };
   const here =
     lat != null && lng != null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
       ? { latitude: lat, longitude: lng }
@@ -102,6 +134,7 @@ export function findShops(args: Record<string, unknown>) {
     .shops.filter(
       (s) =>
         shopIsLive(s) &&
+        (!walkIns || s.queue_enabled === true) &&
         (area == null || sortKey(s.area) === area) &&
         (search == null || `${s.name} ${s.area} ${s.address ?? ''}`.toLowerCase().includes(search)),
     )
@@ -113,6 +146,7 @@ export function findShops(args: Record<string, unknown>) {
         (sortKey(a.s.name) < sortKey(b.s.name) ? -1 : sortKey(a.s.name) > sortKey(b.s.name) ? 1 : 0) ||
         (String(a.s.id) < String(b.s.id) ? -1 : 1),
     )
+    .filter(({ s }) => matches(s))
     .slice(offset, offset + limit)
     .map(({ s, km }) => {
       const prices = tables()
@@ -156,10 +190,10 @@ function firstPhoto(shopId: unknown): Row | undefined {
 
 /**
  * The earliest free start for the shop's shortest service with any barber,
- * today by its own clock or else tomorrow; null when neither has one, or the
- * shop is hidden from the caller.
+ * today by its own clock or else tomorrow (days 1: today only); null when
+ * neither has one, or the shop is hidden from the caller.
  */
-function shopNextFree(shop: Row, caller: Caller = { uid: null }): string | null {
+function shopNextFree(shop: Row, caller: Caller = { uid: null }, days = 2): string | null {
   const [service] = tables()
     .services.filter((v) => v.shop_id === shop.id && v.is_active)
     .sort(
@@ -171,7 +205,7 @@ function shopNextFree(shop: Row, caller: Caller = { uid: null }): string | null 
   if (!service) return null;
   const today = localDateString(new Date(now()), String(shop.time_zone));
   // Tomorrow is only worked out when today has nothing left.
-  for (const day of [today, addDays(today, 1)]) {
+  for (const day of [today, addDays(today, 1)].slice(0, days)) {
     const [first] = availableSlots(caller, service.id, day);
     if (first) return first.starts_at;
   }
