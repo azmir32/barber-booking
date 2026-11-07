@@ -10,9 +10,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
-import { appCache } from '@/lib/app-cache';
 import { useAuth } from '@/lib/auth';
-import { cacheKey } from '@/lib/cache';
 import { t } from '@/lib/lang';
 import {
   base64Bytes,
@@ -30,6 +28,7 @@ import {
   uploadProblem,
   type ShopPhoto,
 } from '@/lib/photos';
+import { keepPhotos, keptPhotos } from '@/lib/shop-cards';
 import { errorMessage, publicFileUrl, supabase } from '@/lib/supabase';
 
 /** A photo's link on Supabase's CDN, for expo-image. */
@@ -175,17 +174,14 @@ export async function removeAllShopPhotos(ownerId: string): Promise<string | nul
 }
 
 /**
- * My shop's photos: last time's at once, then the server's, asked for on
- * every visit so a photo changed on its own screen shows on coming back.
+ * The shop's photos on a photo's own screen: the ones My shop's cards have
+ * (shop_cards brings them), else asked for, as when the screen is opened by
+ * its link. A change made here goes into My shop's kept cards too, so it
+ * shows there on going back, before My shop asks again.
  */
 export function useShopPhotos(shopId: string | undefined) {
   const uid = useAuth().session?.user.id;
-  const key = uid && shopId ? cacheKey(uid, 'shop-photos', shopId) : null;
-  const [kept] = useState(() => (key ? appCache.peek<OwnPhoto[]>(key) : null));
-  const [photos, setPhotos] = useState<OwnPhoto[] | null>(kept?.data ?? null);
-  const [savedAt, setSavedAt] = useState(kept?.at ?? 0);
-  const [fromCache, setFromCache] = useState(Boolean(kept));
-  const [loading, setLoading] = useState(false);
+  const [photos, setPhotos] = useState<OwnPhoto[] | null>(() => (uid && shopId ? keptPhotos(uid, shopId) : null));
   const [error, setError] = useState<string | null>(null);
 
   // Only the latest ask's answer counts, so one that failed offline can't land after one that worked.
@@ -193,7 +189,6 @@ export function useShopPhotos(shopId: string | undefined) {
   const load = useCallback(async () => {
     if (!shopId) return;
     const n = ++asked.current;
-    setLoading(true);
     const { data, error } = await supabase
       .from('shop_photos')
       .select(`${PHOTO_COLUMNS}, barber:barbers(name)`)
@@ -203,45 +198,30 @@ export function useShopPhotos(shopId: string | undefined) {
       .order('id')
       .limit(MAX_PHOTOS);
     if (n !== asked.current) return;
-    setLoading(false);
     if (error || !data) return setError(errorMessage(error));
     const list = data as unknown as OwnPhoto[];
     setPhotos(list);
     setError(null);
-    setSavedAt(Date.now());
-    setFromCache(false);
-    if (key) appCache.write(key, list);
-  }, [shopId, key]);
+    if (uid) keepPhotos(uid, shopId, list);
+  }, [shopId, uid]);
 
-  // Back from a photo's own screen, its changes are in the cache before the server answers.
+  const missing = photos === null;
   useFocusEffect(
     useCallback(() => {
-      const latest = key ? appCache.peek<OwnPhoto[]>(key) : null;
-      if (latest) setPhotos(latest.data);
-      load();
-    }, [key, load]),
+      if (missing) load();
+    }, [missing, load]),
   );
 
-  /** A change made here, shown at once and kept for next time. */
+  /** A change made here, shown at once and kept in My shop's cards. */
   const change = useCallback(
     (next: (list: OwnPhoto[]) => OwnPhoto[]) =>
       setPhotos((list) => {
         const updated = next(list ?? []);
-        if (key) appCache.write(key, updated);
+        if (uid && shopId) keepPhotos(uid, shopId, updated);
         return updated;
       }),
-    [key],
+    [uid, shopId],
   );
 
-  return {
-    photos,
-    change,
-    loading,
-    /** Last visit's photos, with the server's on their way. */
-    refreshing: fromCache && loading,
-    /** When the photos on screen are from, when asking again failed; null otherwise. */
-    staleSince: error != null && savedAt ? savedAt : null,
-    error,
-    reload: load,
-  };
+  return { photos, change, error, reload: load };
 }

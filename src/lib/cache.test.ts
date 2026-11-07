@@ -104,6 +104,27 @@ test('after an update that changes what is kept, last version’s answers are ig
   assert.deepEqual([...saved.keys()], []);
 });
 
+test('a change merged into a kept answer keeps the time the server gave it', async () => {
+  const { store, clock, cache } = phone();
+  const c = cache();
+  c.setUser(ALI);
+  const key = cacheKey(ALI, 'shop-cards', 's1');
+  await c.write(key, { reviews: 3, photos: ['a', 'b'] });
+  const fetched = clock.now();
+  // An hour later a photo is removed on its own screen, and merged into My shop's cards.
+  clock.wait(60 * 60_000);
+  const kept = c.peek<{ reviews: number; photos: string[] }>(key)!;
+  await c.write(key, { ...kept.data, photos: ['a'] }, true, kept.at);
+  assert.deepEqual(c.peek(key), { data: { reviews: 3, photos: ['a'] }, at: fetched });
+  // So the cards' "showing what you saw at" is still when they came, on the phone too ...
+  const reopened = createCache(store, clock.now);
+  await reopened.load(ALI);
+  assert.equal(reopened.peek(key)?.at, fetched);
+  // ... and they still go a day after they came, not a day after the change.
+  clock.wait(CACHE_MAX_AGE_MS - 60 * 60_000);
+  assert.equal(c.peek(key), null);
+});
+
 test('searches last the visit but are not written to the phone', async () => {
   const { saved, cache } = phone();
   const c = cache();

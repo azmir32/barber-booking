@@ -122,31 +122,17 @@ const SCENARIOS = {
   // most to count).
   "Barber's day": async () =>
     must(owner(pick(SHOPS)).rpc('shop_day', { p_day: localDate(pick(3) - 1), p_since: null, p_limit: 5 })),
-  // The owner opening the app on My shop: their shop, then every card's
-  // numbers in one call (the week's takings, customers, reviews and closed
-  // days). Every seeded shop is live, so the "Get your shop ready" card's
-  // shop_setup, which the app sends only while a shop is getting ready, is
-  // sent each time here to measure it at its most.
+  // The owner opening the app on My shop: their shop, then every card in
+  // one call (the week's takings, customers, reviews, closed days and, since
+  // round 15, the photos of their cuts). Every seeded shop is live, so the
+  // "Get your shop ready" card's shop_setup, which the app sends only while a
+  // shop is getting ready, is sent each time here to measure it at its most.
   'My shop': async () => {
     const i = pick(SHOPS);
     const c = owner(i);
-    const shop = await must(c.from('shops').select('*').eq('owner_id', idOf(`owner${i}`)).maybeSingle());
+    await must(c.from('shops').select('*').eq('owner_id', idOf(`owner${i}`)).maybeSingle());
     const week = thisWeek();
-    return Promise.all([
-      must(c.rpc('shop_cards', { p_from: week.from, p_to: week.to })),
-      must(c.rpc('shop_setup')),
-      // The owner's photos of their cuts, each with who did it, asked for on every visit.
-      must(
-        c
-          .from('shop_photos')
-          .select('id, barber_id, caption, path, thumb_path, width, height, sort_order, barber:barbers(name)')
-          .eq('shop_id', shop.data.id)
-          .order('sort_order')
-          .order('created_at')
-          .order('id')
-          .limit(24),
-      ),
-    ]);
+    return Promise.all([must(c.rpc('shop_cards', { p_from: week.from, p_to: week.to })), must(c.rpc('shop_setup'))]);
   },
   'Book a cut': async () => {
     const i = pick(SHOPS);

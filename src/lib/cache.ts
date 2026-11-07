@@ -68,10 +68,12 @@ export function createCache(store: KeyValueStore, clock: () => number = Date.now
     /**
      * Keeps a good answer for next time. Searches pass persist false: the box
      * starts empty when the app opens again, so they only need to last the visit.
+     * A change made in the app to an answer kept earlier passes that answer's
+     * `at`, so it still says when the server gave it, and goes when that is a day old.
      */
-    async write(key: string, data: unknown, persist = true): Promise<void> {
+    async write(key: string, data: unknown, persist = true, at?: number): Promise<void> {
       if (ownerOf(key) !== user) return;
-      const e: Entry = { v: CACHE_VERSION, at: clock(), data };
+      const e: Entry = { v: CACHE_VERSION, at: at ?? clock(), data };
       memory.set(key, e);
       if (persist) await store.setItem(key, JSON.stringify(e)).catch(() => {});
     },

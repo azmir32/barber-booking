@@ -1,24 +1,39 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo, findNodeHandle, Platform, StyleSheet, View } from 'react-native';
 
 import { BarberFilter, ReviewItem } from '@/components/reviews';
 import { REVIEW_COLUMNS, reviewsOf } from '@/components/shop-reviews';
-import { Button, Card, Empty, ErrorText, Field, Row, Screen, T } from '@/components/ui';
+import { Badge, Button, Card, Chip, Empty, ErrorText, Field, Row, Screen, T } from '@/components/ui';
+import { APP_NAME } from '@/constants/brand';
 import { Spacing } from '@/constants/theme';
 import { useNow } from '@/hooks/use-now';
 import { useTheme } from '@/hooks/use-theme';
 import { reviewFilters, type BarberStars } from '@/lib/barbers';
 import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
+import {
+  REPORT_COLUMNS,
+  REPORT_NOTE_MAX_LENGTH,
+  REPORT_REASONS,
+  reasonLabel,
+  reportState,
+  reportStatus,
+  type ReportReason,
+  type ReviewReport,
+} from '@/lib/review-reports';
 import { averageText, ratingAverage, ratingLabel, REVIEW_MAX_LENGTH, reviewCount, type ShopReview } from '@/lib/reviews';
 import { errorMessage, supabase } from '@/lib/supabase';
 
 /** Reviews per page. One more is asked for, to know whether there are more. */
 const PAGE = 20;
-/** The owner also sees which cut each review is about. */
-const OWNER_COLUMNS = `${REVIEW_COLUMNS}, bookings(service_name, starts_at)`;
+/**
+ * The owner also sees which cut each review is about, whether the team
+ * removed it, and their report of it: one object or null, as there is one
+ * report a review at most.
+ */
+const OWNER_COLUMNS = `${REVIEW_COLUMNS}, bookings(service_name, starts_at), removed, report:review_reports(${REPORT_COLUMNS})`;
 
 /** A barber with reviews, with their own figures: counts and totals, never who rated them. */
 type ReviewedBarber = BarberStars & { id: string; name: string };
@@ -168,7 +183,11 @@ export default function Reviews() {
   );
 }
 
-/** One review, with Reply (or Edit reply) opening a box for the answer right under it. */
+/**
+ * One review, with Reply (or Edit reply) opening a box for the answer right
+ * under it, and Report a short form for the team. A reported one says where
+ * the report is; one the team removed takes no reply.
+ */
 function OwnerReview({
   review,
   now,
@@ -182,11 +201,35 @@ function OwnerReview({
 }) {
   const theme = useTheme();
   const [editing, setEditing] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const [text, setText] = useState(review.reply ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  // Said with the report's status when sending found it already reported, e.g. from another phone.
+  const [notice, setNotice] = useState<string | null>(null);
   const name = review.first_name;
+  const report = review.report ?? null;
+  const removed = review.removed === true || report?.outcome === 'removed';
+
+  // Back from the report form, focus goes to what it changed (or Reply), never to the top of the list.
+  const status = useRef<View>(null);
+  const replyButton = useRef<View>(null);
+  const focusNext = useRef<'status' | 'reply' | null>(null);
+  useEffect(() => {
+    const to = focusNext.current;
+    if (!to) return;
+    focusNext.current = null;
+    // Once the form has gone and what replaces it is laid out.
+    setTimeout(() => focusOn(to === 'status' && status.current ? status.current : replyButton.current), 100);
+  });
+
+  function reported(next: ReviewReport, already: string | null) {
+    onSaved({ ...review, report: next, removed: next.outcome === 'removed' });
+    setNotice(already);
+    setReporting(false);
+    focusNext.current = 'status';
+  }
 
   // An empty reply takes it away.
   async function save(reply: string) {
@@ -207,10 +250,37 @@ function OwnerReview({
     setError(null);
   }
 
+  const statusText = report ? reportStatus(report, APP_NAME) : null;
   return (
     <Card>
       <ReviewItem review={review} now={now} timeZone={timeZone} replyTitle={t('Your reply')}>
-        {editing ? (
+        {report && statusText && !reporting ? (
+          <View
+            ref={status}
+            accessible
+            tabIndex={-1}
+            accessibilityLabel={[notice, statusText.badge, statusText.line].filter(Boolean).join('. ')}
+            style={[styles.status, { borderColor: theme.border }]}>
+            {notice ? <T variant="small">{notice}</T> : null}
+            <Row style={styles.statusRow}>
+              <Badge label={statusText.badge} tone={STATE_TONE[reportState(report)]} />
+              <T variant="small" style={styles.statusLine}>
+                {statusText.line}
+              </T>
+            </Row>
+            {report.note ? <T variant="small">{t('Your note: “{note}”', { note: report.note })}</T> : null}
+          </View>
+        ) : null}
+        {reporting ? (
+          <ReportForm
+            review={review}
+            onSent={reported}
+            onCancel={() => {
+              setReporting(false);
+              focusNext.current = 'reply';
+            }}
+          />
+        ) : editing ? (
           <View style={styles.editor}>
             <Field
               label={review.reply ? t('Edit your reply') : t('Your reply')}
@@ -240,24 +310,38 @@ function OwnerReview({
         ) : (
           <View style={styles.actions}>
             {done ? (
-              <T variant="small" role="status" accessibilityLiveRegion="polite" style={{ color: theme.success, flex: 1 }}>
+              <T variant="small" role="status" accessibilityLiveRegion="polite" style={[styles.done, { color: theme.success }]}>
                 {done}
               </T>
-            ) : (
-              <View style={{ flex: 1 }} />
+            ) : null}
+            {report ? null : (
+              <Button
+                title={t('Report')}
+                variant="ghost"
+                icon="flag-outline"
+                accessibilityLabel={t('Report {name}’s review', { name })}
+                onPress={() => {
+                  setDone(null);
+                  setReporting(true);
+                }}
+              />
             )}
-            <Button
-              title={review.reply ? t('Edit reply') : t('Reply')}
-              variant={review.reply ? 'ghost' : 'secondary'}
-              accessibilityLabel={
-                review.reply ? t('Edit your reply to {name}', { name }) : t('Reply to {name}', { name })
-              }
-              onPress={() => {
-                setDone(null);
-                setText(review.reply ?? '');
-                setEditing(true);
-              }}
-            />
+            {removed ? null : (
+              <Button
+                ref={replyButton}
+                title={review.reply ? t('Edit reply') : t('Reply')}
+                variant={review.reply ? 'ghost' : 'secondary'}
+                accessibilityLabel={
+                  review.reply ? t('Edit your reply to {name}', { name }) : t('Reply to {name}', { name })
+                }
+                onPress={() => {
+                  setDone(null);
+                  setNotice(null);
+                  setText(review.reply ?? '');
+                  setEditing(true);
+                }}
+              />
+            )}
           </View>
         )}
       </ReviewItem>
@@ -265,9 +349,103 @@ function OwnerReview({
   );
 }
 
+const STATE_TONE = { open: 'warning', kept: 'neutral', removed: 'danger' } as const;
+
+/**
+ * Report this review: why, and a note if they like, for the team. Opens with
+ * focus on its heading. A review already reported (from another phone, say)
+ * shows that report as it really is, kept or removed or still open.
+ */
+function ReportForm({
+  review,
+  onSent,
+  onCancel,
+}: {
+  review: ShopReview;
+  onSent: (report: ReviewReport, already: string | null) => void;
+  onCancel: () => void;
+}) {
+  const heading = useRef<View>(null);
+  const [reason, setReason] = useState<ReportReason | null>(null);
+  const [note, setNote] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // After the button that opened it has gone, as it does on the web.
+    const timer = setTimeout(() => focusOn(heading.current), 100);
+    return () => clearTimeout(timer);
+  }, []);
+
+  async function send() {
+    if (!reason) return;
+    setSending(true);
+    setError(null);
+    const { data, error } = await supabase.rpc('report_review', {
+      p_booking_id: review.booking_id,
+      p_reason: reason,
+      p_note: note,
+    });
+    if (error?.code === '23505') {
+      // Reported already: what the team made of it, rather than guessing.
+      const real = await supabase.from('review_reports').select(REPORT_COLUMNS).eq('booking_id', review.booking_id).maybeSingle();
+      setSending(false);
+      if (real.data) return onSent(real.data as ReviewReport, errorMessage(error));
+      return setError(errorMessage(real.error ?? error));
+    }
+    setSending(false);
+    if (error || !data) return setError(errorMessage(error));
+    onSent(data as ReviewReport, null);
+  }
+
+  return (
+    <View style={styles.editor}>
+      <View ref={heading} accessible role="heading" aria-level={3} tabIndex={-1}>
+        <T variant="label">{t('Report this review')}</T>
+      </View>
+      <T variant="small">
+        {t('The {app} team reads every report. The review stays on your page until they decide.', { app: APP_NAME })}
+      </T>
+      <Row role="radiogroup" accessibilityLabel={t('Why is it unfair?')}>
+        {REPORT_REASONS.map((r) => (
+          <Chip key={r} label={reasonLabel(r)} selected={reason === r} onPress={() => setReason(r)} />
+        ))}
+      </Row>
+      <Field
+        label={t('Note (optional)')}
+        hint={t('Anything that helps the team decide. Customers never see it.')}
+        value={note}
+        onChangeText={setNote}
+        multiline
+        maxLength={REPORT_NOTE_MAX_LENGTH}
+      />
+      <ErrorText message={error} />
+      <Row style={{ flexWrap: 'nowrap' }}>
+        <Button title={t('Cancel')} variant="secondary" onPress={onCancel} />
+        <Button title={t('Send report')} onPress={send} loading={sending} disabled={!reason} style={{ flex: 1 }} />
+      </Row>
+    </View>
+  );
+}
+
+/** Moves a screen reader, or the keyboard on the web, to `node`. */
+function focusOn(node: View | null) {
+  if (!node) return;
+  if (Platform.OS === 'web') (node as unknown as HTMLElement).focus?.();
+  else {
+    const tag = findNodeHandle(node);
+    if (tag) AccessibilityInfo.setAccessibilityFocus(tag);
+  }
+}
+
 const styles = StyleSheet.create({
   summary: { gap: 2 },
   list: { gap: Spacing.sm },
   editor: { gap: Spacing.sm, marginTop: Spacing.xs },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: Spacing.sm },
+  // The reply's line takes the room left beside the buttons, or a line of its own.
+  done: { flexGrow: 1, flexShrink: 1, flexBasis: 120 },
+  status: { gap: Spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.sm, marginTop: Spacing.xs },
+  statusRow: { flexWrap: 'nowrap', alignItems: 'flex-start' },
+  statusLine: { flex: 1 },
 });

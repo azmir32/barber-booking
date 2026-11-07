@@ -157,6 +157,7 @@ export function Button({
   accessibilityLabel,
   icon,
   iconColor,
+  ref,
 }: {
   title: string;
   onPress?: () => void;
@@ -171,6 +172,8 @@ export function Button({
   icon?: ComponentProps<typeof Ionicons>['name'];
   /** The icon's colour when it isn't the text's, e.g. WhatsApp green. */
   iconColor?: string;
+  /** To move a screen reader or the keyboard to it, e.g. back from a form it opened. */
+  ref?: Ref<View>;
 }) {
   const theme = useTheme();
   const text = scaleText(styles.buttonText, useTextScale());
@@ -187,6 +190,7 @@ export function Button({
     variant === 'primary' ? theme.accentText : variant === 'danger' || tone === 'danger' ? theme.danger : theme.text;
   return (
     <Pressable
+      ref={ref}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
       aria-busy={loading}
