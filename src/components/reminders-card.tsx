@@ -147,7 +147,9 @@ export function BookedReminders({ booking }: { booking: ReminderBooking }) {
       </Card>
     );
   }
-  if (permission !== 'ask' || asked) return null;
+  // Kept while the phone asks (allowReminders marks it asked at once), so the button shows it is busy
+  // and the page doesn't jump behind the phone's question.
+  if (!asking && (permission !== 'ask' || asked)) return null;
 
   async function turnOn() {
     setAsking(true);
