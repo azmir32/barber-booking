@@ -254,17 +254,40 @@ test('Find a barber filters to shops open now, free today or taking walk-ins, wi
     return dayBounds(day, TZ).start.getTime() + (h * 60 + m) * 60_000;
   };
   const sunday = new Date(`${day}T00:00:00Z`).getUTCDay() === 0;
-  type Listed = { slug: string; next_free_at: string | null };
+  type Listed = { id: string | null; slug: string; next_free_at: string | null; next_from: number | null };
   const list = async (args: Record<string, unknown>) => {
     const { data, error } = await c.rpc('find_shops', { p_search: null, p_area: null, p_limit: 20, p_offset: 0, ...args });
     assert.equal(error, null, JSON.stringify(args));
     return data as Listed[];
   };
-  const slugs = async (args: Record<string, unknown>) => (await list(args)).map((s) => s.slug);
+  /** The shops a page lists, and where the next page starts (next_from, the same on every row). */
+  const page = async (args: Record<string, unknown>) => {
+    const rows = await list(args);
+    const from = [...new Set(rows.map((r) => r.next_from))];
+    assert.ok(from.length <= 1, JSON.stringify(args));
+    const shops = rows.filter((r) => r.id != null).map((r) => r.slug);
+    // A row without a shop, only saying how far the page looked, comes alone.
+    assert.ok(shops.length === rows.length || rows.length === 1, JSON.stringify(args));
+    return { shops, from: from[0] ?? null };
+  };
+  const slugs = async (args: Record<string, unknown>) => (await page(args)).shops;
+  /** Every page in turn, each carrying on from where the one before stopped, until the end of the list. */
+  const pages = async (args: Record<string, unknown>) => {
+    const got = [];
+    let from: number | null = 0;
+    while (from != null && got.length < 10) {
+      const next = await page({ ...args, p_from: from });
+      got.push(next);
+      from = next.from;
+    }
+    return got;
+  };
   const [ali, pakMat, kemas, fadeRoom] = ['ali-barber', 'gunting-pak-mat', 'kemas-barber-kajang', 'the-fade-room'];
   const open = { p_open_now: true };
   const free = { p_free_today: true };
   const walkIn = { p_walk_ins: true };
+  // Nearest first from The Fade Room: itself, Kemas, Ali's, then Pak Mat.
+  const atFadeRoom = { p_lat: 2.9822, p_lng: 101.8045 };
   try {
     // The demo laid out at 3 pm: Pak Mat is shut today, and The Fade Room is
     // booked up (or, on Sundays, shut).
@@ -277,10 +300,12 @@ test('Find a barber filters to shops open now, free today or taking walk-ins, wi
     assert.deepEqual(await slugs({ ...open, ...free }), [ali, kemas]);
     assert.deepEqual(await slugs({ ...free, ...walkIn }), [ali]);
     assert.deepEqual(await slugs({ ...open, ...free, ...walkIn }), [ali]);
-    // A shop under a filter is the row the list has for it without.
+    // A shop under a filter is the row the list has for it without, but for where the next page starts.
     const all = await list({});
     for (const args of [open, free, walkIn, { ...open, ...free, ...walkIn }]) {
-      for (const row of await list(args)) assert.deepEqual(row, all.find((s) => s.slug === row.slug));
+      for (const row of await list(args)) {
+        assert.deepEqual({ ...row, next_from: null }, all.find((s) => s.slug === row.slug));
+      }
     }
     // Free today is a free time today by the shop's clock.
     for (const row of await list(free)) assert.equal(localDateString(new Date(row.next_free_at!), TZ), day);
@@ -296,6 +321,41 @@ test('Find a barber filters to shops open now, free today or taking walk-ins, wi
     const paged = [];
     for (let offset = 0; offset < 3; offset++) paged.push(...(await slugs({ ...free, p_limit: 1, p_offset: offset })));
     assert.deepEqual(paged, [ali, kemas]);
+
+    // Where the next page starts: nowhere without Open now or Free today, or at the end of the list.
+    assert.ok(all.every((s) => s.next_from === null));
+    assert.deepEqual(await page(walkIn), { shops: [ali, pakMat], from: null });
+    assert.deepEqual(await page(open), { shops: sunday ? [ali, kemas] : [ali, kemas, fadeRoom], from: null });
+    // One call works out at most two shops' next free times here (128 in the database), so Free today
+    // stops after Kemas, three shops in, Pak Mat's hours having ruled it out; the next page carries on
+    // from there and reaches the end.
+    assert.deepEqual(await pages(free), [
+      { shops: [ali, kemas], from: 3 },
+      { shops: [], from: null },
+    ]);
+    // A page at a time, each from where the one before stopped: every shop once, in order.
+    assert.deepEqual(await pages({ ...free, p_limit: 1 }), [
+      { shops: [ali], from: 1 },
+      { shops: [kemas], from: 3 },
+      { shops: [], from: null },
+    ]);
+    // Across the cap: from The Fade Room, which is booked up, the first page stops at Kemas and the
+    // second finds Ali's (on Sundays The Fade Room is shut, so both fit in the first).
+    assert.deepEqual(
+      await pages({ ...free, ...atFadeRoom }),
+      sunday
+        ? [
+            { shops: [kemas, ali], from: 3 },
+            { shops: [], from: null },
+          ]
+        : [
+            { shops: [kemas], from: 2 },
+            { shops: [ali], from: null },
+          ],
+    );
+    // As Postgres reads an int.
+    assert.deepEqual(await page({ ...free, p_from: ' 3 ' }), { shops: [], from: null });
+    assert.equal((await c.rpc('find_shops', { ...free, p_from: '2.5' })).error?.code, '22P02');
 
     // As Postgres reads a boolean: any of its spellings, and null is off.
     for (const yes of ['true', ' T ', 'yes', 'y', 'on', '1']) {
@@ -317,8 +377,20 @@ test('Find a barber filters to shops open now, free today or taking walk-ins, wi
     assert.deepEqual(await slugs(free), [ali, kemas]);
     setClock(() => at('21:30'));
     assert.deepEqual(await slugs(open), sunday ? [] : [fadeRoom]);
-    assert.deepEqual(await slugs(free), []);
+    assert.deepEqual(await page(free), { shops: [], from: null });
     assert.deepEqual(await slugs(walkIn), [ali, pakMat]);
+
+    // Ten to nine, Ali's and Kemas are open a little longer with no time left. From The Fade Room,
+    // also booked up, the first page stops at the cap with nothing found: one row that only says how
+    // far it looked. The next carries on and reaches the end.
+    setClock(() => at('20:50'));
+    const looked = sunday ? 3 : 2;
+    const [only, ...rest] = await list({ ...free, ...atFadeRoom });
+    assert.deepEqual(rest, []);
+    assert.equal(only.next_from, looked);
+    assert.ok(Object.entries(only).every(([column, value]) => column === 'next_from' || value === null));
+    assert.deepEqual(Object.keys(only), Object.keys(all[0]));
+    assert.deepEqual(await page({ ...free, ...atFadeRoom, p_from: looked }), { shops: [], from: null });
   } finally {
     setClock(() => Date.now());
   }

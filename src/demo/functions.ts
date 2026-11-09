@@ -96,31 +96,76 @@ function clockNow(shop: Row): string {
   return `${localClock(at, String(shop.time_zone))}:${String(at.getUTCSeconds()).padStart(2, '0')}`;
 }
 
+/** An int argument, as Postgres reads one: null, or a whole number. */
+function int(value: unknown): number | null {
+  if (value == null) return null;
+  const n = typeof value === 'string' && /^\s*[+-]?\d+\s*$/.test(value) ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isInteger(n)) {
+    throw new PgError('22P02', `invalid input syntax for type integer: "${String(value)}"`, 400);
+  }
+  return n;
+}
+
+/**
+ * With Free today, how many shops' next free times one call works out; with
+ * Open now or Free today, how many shops' hours it looks at. The database's
+ * are 128 and 1,024. The demo has four shops, so its Free today stops after
+ * two and Look further shows up in it.
+ */
+const FIND_FREE_CAP = 2;
+const FIND_HOURS_CAP = 1024;
+
+/** What find_shops sends alone when it stopped at a cap before finding any shop: only next_from is set. */
+const LOOKED_ONLY = {
+  id: null,
+  name: null,
+  slug: null,
+  area: null,
+  address: null,
+  about: null,
+  from_price: null,
+  barber_count: null,
+  opens_today: null,
+  closes_today: null,
+  next_free_at: null,
+  rating_count: null,
+  rating_avg: null,
+  distance_km: null,
+  latitude: null,
+  longitude: null,
+  queue_waiting: null,
+  photo_thumb: null,
+};
+
 /**
  * Live shops matching the search and area, a page at a time. Given the
  * customer's position (both halves, on the map), nearest first with each
  * one's distance, and those without a location after the rest by name.
  * Filters: Open now (its clock is between today's first barber in and last
  * one out), Free today (it is open until later today and still has a free
- * time today) and Walk-ins (it runs a walk-in queue). The demo is small, so
- * it simply checks every shop, where the database takes them in batches.
+ * time today) and Walk-ins (it runs a walk-in queue). With Open now or Free
+ * today it goes down the list from p_from, a shop at a time where the
+ * database takes them in batches, until the page is full or a cap is
+ * reached, and each row says in next_from how far into the list it got
+ * (null at the end of it); a page that found nothing before a cap is one
+ * row with only next_from.
  */
 export function findShops(args: Record<string, unknown>) {
   const search = blank(args.p_search) ? null : pgTrim(String(args.p_search)).toLowerCase();
   const area = blank(args.p_area) ? null : pgTrim(String(args.p_area)).toLowerCase();
   const limit = Math.min(Math.max(Number(args.p_limit ?? 20), 1), 50);
   const offset = Math.max(Number(args.p_offset ?? 0), 0);
+  const from = Math.max(int(args.p_from) ?? 0, 0);
   const [lat, lng] = [float(args.p_lat), float(args.p_lng)];
   const openNow = bool(args.p_open_now) ?? false;
   const freeToday = bool(args.p_free_today) ?? false;
   const walkIns = bool(args.p_walk_ins) ?? false;
-  const matches = (s: Row) => {
-    if (!openNow && !freeToday) return true;
+  /** Open until later today by its own clock, and (Open now) open already. */
+  const hoursMatch = (s: Row) => {
     const { opens_today, closes_today } = hoursToday(s);
     const clock = clockNow(s);
     if (closes_today == null || !(clock < closes_today)) return false;
-    if (openNow && !(clock >= String(opens_today))) return false;
-    return !freeToday || shopNextFree(s, undefined, 1) != null;
+    return !openNow || clock >= String(opens_today);
   };
   const here =
     lat != null && lng != null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
@@ -130,7 +175,7 @@ export function findShops(args: Record<string, unknown>) {
     const point = here && shopPoint(s as { latitude: number | null; longitude: number | null });
     return here && point ? kmBetween(here, point) : null;
   };
-  return tables()
+  const candidates = tables()
     .shops.filter(
       (s) =>
         shopIsLive(s) &&
@@ -145,35 +190,58 @@ export function findShops(args: Record<string, unknown>) {
         (a.km ?? 0) - (b.km ?? 0) ||
         (sortKey(a.s.name) < sortKey(b.s.name) ? -1 : sortKey(a.s.name) > sortKey(b.s.name) ? 1 : 0) ||
         (String(a.s.id) < String(b.s.id) ? -1 : 1),
-    )
-    .filter(({ s }) => matches(s))
-    .slice(offset, offset + limit)
-    .map(({ s, km }) => {
-      const prices = tables()
-        .services.filter((v) => v.shop_id === s.id && v.is_active)
-        .map((v) => Number(v.price));
-      const barbers = tables().barbers.filter((b) => b.shop_id === s.id && b.is_active);
-      return {
-        id: s.id,
-        name: s.name,
-        slug: s.slug,
-        area: s.area,
-        address: s.address,
-        about: s.about,
-        from_price: prices.length ? Math.min(...prices) : null,
-        barber_count: barbers.length,
-        ...hoursToday(s),
-        next_free_at: shopNextFree(s),
-        rating_count: s.rating_count,
-        // round(sum / count, 1), null without any.
-        rating_avg: s.rating_count ? Math.round(((s.rating_sum as number) * 10) / (s.rating_count as number)) / 10 : null,
-        distance_km: km,
-        latitude: s.latitude ?? null,
-        longitude: s.longitude ?? null,
-        queue_waiting: s.queue_enabled === true ? waitingAt(s.id, queueToday(s)).length : null,
-        photo_thumb: firstPhoto(s.id)?.thumb_path ?? null,
-      };
-    });
+    );
+  let page = candidates.slice(offset, offset + limit);
+  let nextFrom: number | null = null;
+  if (openNow || freeToday) {
+    const want = offset + limit;
+    const end = Math.min(candidates.length, from + FIND_HOURS_CAP);
+    const found: { s: Row; km: number | null; place: number }[] = [];
+    let budget = FIND_FREE_CAP;
+    let at = from;
+    while (at < end && found.length < want && budget > 0) {
+      const { s, km } = candidates[at++];
+      if (!hoursMatch(s)) continue;
+      if (freeToday) {
+        budget--;
+        if (shopNextFree(s, undefined, 1) == null) continue;
+      }
+      found.push({ s, km, place: at });
+    }
+    // To the page's last shop when it is full, else as far as it got.
+    nextFrom = found.length >= want ? found[want - 1].place : at;
+    if (nextFrom >= candidates.length) nextFrom = null;
+    page = found.slice(offset, want);
+    if (page.length === 0 && nextFrom != null) return [{ ...LOOKED_ONLY, next_from: nextFrom }];
+  }
+  return page.map(({ s, km }) => {
+    const prices = tables()
+      .services.filter((v) => v.shop_id === s.id && v.is_active)
+      .map((v) => Number(v.price));
+    const barbers = tables().barbers.filter((b) => b.shop_id === s.id && b.is_active);
+    return {
+      id: s.id,
+      name: s.name,
+      slug: s.slug,
+      area: s.area,
+      address: s.address,
+      about: s.about,
+      from_price: prices.length ? Math.min(...prices) : null,
+      barber_count: barbers.length,
+      ...hoursToday(s),
+      next_free_at: shopNextFree(s),
+      rating_count: s.rating_count,
+      // round(sum / count, 1), null without any.
+      rating_avg: s.rating_count ? Math.round(((s.rating_sum as number) * 10) / (s.rating_count as number)) / 10 : null,
+      distance_km: km,
+      latitude: s.latitude ?? null,
+      longitude: s.longitude ?? null,
+      queue_waiting: s.queue_enabled === true ? waitingAt(s.id, queueToday(s)).length : null,
+      photo_thumb: firstPhoto(s.id)?.thumb_path ?? null,
+      // How far into the list this page looked, with Open now or Free today; else null.
+      next_from: nextFrom,
+    };
+  });
 }
 
 /** A shop's first photo, in the order its page shows them. */
