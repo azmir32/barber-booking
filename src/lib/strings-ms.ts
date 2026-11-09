@@ -1311,11 +1311,11 @@ export const ms: Record<string, string> = {
   // that narrow the list, how many it found, and nothing found.
   Filters: 'Penapis',
   'Open now': 'Buka sekarang',
-  'Free today': 'Masa kosong hari ini',
+  'Free today': 'Ada slot hari ini',
   'Walk-ins': 'Walk-in',
   // Joined into a sentence: "3 barbers open now and free today".
   'open now': 'buka sekarang',
-  'free today': 'ada masa kosong hari ini',
+  'free today': 'ada slot hari ini',
   'taking walk-ins': 'terima walk-in',
   '{a} and {b}': '{a} dan {b}',
   '{a}, {b} and {c}': '{a}, {b} dan {c}',

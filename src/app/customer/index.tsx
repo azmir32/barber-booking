@@ -515,11 +515,19 @@ export default function Explore() {
             })}
           </ScrollView>
         ) : null}
-        <Row role="group" accessibilityLabel={t('Filters')}>
-          <FilterChip label={t('Open now')} on={filters.open} onPress={() => toggleFilter('open')} />
-          <FilterChip label={t('Free today')} on={filters.free} onPress={() => toggleFilter('free')} />
-          <FilterChip label={t('Walk-ins')} on={filters.walkIns} onPress={() => toggleFilter('walkIns')} />
-        </Row>
+        {/* One line at any text size, scrolling sideways like the areas, so a returning customer's
+            next cut and barbers stay on the first screen. */}
+        <View role="group" accessibilityLabel={t('Filters')} style={{ marginHorizontal: -Spacing.lg }}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: Spacing.sm, paddingHorizontal: Spacing.lg }}
+            style={{ flexGrow: 0 }}>
+            <FilterChip label={t('Open now')} on={filters.open} onPress={() => toggleFilter('open')} />
+            <FilterChip label={t('Free today')} on={filters.free} onPress={() => toggleFilter('free')} />
+            <FilterChip label={t('Walk-ins')} on={filters.walkIns} onPress={() => toggleFilter('walkIns')} />
+          </ScrollView>
+        </View>
         {/* The filter is remembered between visits, so say it is on even when its chip is off screen. */}
         {areaShown ? (
           <Row style={{ flexWrap: 'nowrap', marginVertical: -Spacing.sm }}>
