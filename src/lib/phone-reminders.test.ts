@@ -51,7 +51,7 @@ test('a booking gets one at 8 pm the evening before and one an hour before, sayi
   );
   assert.deepEqual(
     [hour.kind, hour.at, hour.title, hour.body],
-    ['hour', at('2026-10-08T15:30:00+08:00'), 'Ali Barber Sungai Chua', 'Your Skin fade is in an hour, at 4:30 pm.'],
+    ['hour', at('2026-10-08T15:30:00+08:00'), 'Ali Barber Sungai Chua', 'Your Skin fade is today at 4:30 pm.'],
   );
   assert.ok(evening.id.startsWith(`${REMINDER_ID_PREFIX}evening-b1-`) && hour.id.startsWith(`${REMINDER_ID_PREFIX}hour-b1-`));
 });
@@ -98,7 +98,7 @@ test('the shop’s clock decides the evening and the time, whatever the phone’
     jakarta.map((r) => [r.at, r.body]),
     [
       [at('2026-10-07T20:00:00+07:00'), 'Your Skin fade is tomorrow at 9:00 am. Can’t make it? Cancel from My bookings so someone else can take the slot.'],
-      [at('2026-10-08T08:00:00+07:00'), 'Your Skin fade is in an hour, at 9:00 am.'],
+      [at('2026-10-08T08:00:00+07:00'), 'Your Skin fade is today at 9:00 am.'],
     ],
   );
   // At 9 pm in Kajang it is already 3 am on Wednesday in Kiritimati: a cut there at 10 am today (its
@@ -127,7 +127,8 @@ test('around midnight: a cut just after it is reminded the evening before and la
     reminders.map((r) => [r.kind, new Date(r.at).toISOString(), r.body.split('.')[0]]),
     [
       ['evening', '2026-10-08T12:00:00.000Z', 'Your Skin fade is tomorrow at 12:15 am'],
-      ['hour', '2026-10-08T15:15:00.000Z', 'Your Skin fade is in an hour, at 12:15 am'],
+      // An hour before is still the evening before, so it says tomorrow too.
+      ['hour', '2026-10-08T15:15:00.000Z', 'Your Skin fade is tomorrow at 12:15 am'],
     ],
   );
   // At ten to midnight, a cut at half past: too late for either.
@@ -230,7 +231,7 @@ test('in Malay, with Malay times, and a new identifier so a language change repl
       malay.map((r) => r.body),
       [
         'Potong rambut anda esok jam 4.30 petang. Tak dapat datang? Batalkan di Tempahan saya supaya orang lain boleh ambil slot itu.',
-        'Potong rambut anda sejam lagi, jam 4.30 petang.',
+        'Potong rambut anda hari ini jam 4.30 petang.',
       ],
     );
     assert.deepEqual(

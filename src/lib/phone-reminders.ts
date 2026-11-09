@@ -95,7 +95,13 @@ export function plannedReminders(bookings: ReminderBooking[], settings: Reminder
         `${t('Your {service} is tomorrow at {time}.', vars)} ${t('Can’t make it? Cancel from My bookings so someone else can take the slot.')}`,
       );
     }
-    if (settings.hour) add('hour', startsAt - HOUR_MS, t('Your {service} is in an hour, at {time}.', vars));
+    if (settings.hour) {
+      // Named by its time rather than "in an hour", so it stays true when Android brings it late.
+      // For a cut just after midnight it goes the day before, so says tomorrow.
+      const hourAt = startsAt - HOUR_MS;
+      const sameDay = localDateString(new Date(hourAt), timeZone) === localDateString(new Date(startsAt), timeZone);
+      add('hour', hourAt, sameDay ? t('Your {service} is today at {time}.', vars) : t('Your {service} is tomorrow at {time}.', vars));
+    }
   }
   return planned.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1)).slice(0, MAX_REMINDERS);
 }

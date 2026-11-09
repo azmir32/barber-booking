@@ -1312,7 +1312,7 @@ export const ms: Record<string, string> = {
   // hour before each booking (lib/phone-reminders.ts, lib/reminder-scheduler.ts,
   // components/reminders-card.tsx, Account and the booking confirmation)
   'Your {service} is tomorrow at {time}.': '{service} anda esok jam {time}.',
-  'Your {service} is in an hour, at {time}.': '{service} anda sejam lagi, jam {time}.',
+  'Your {service} is today at {time}.': '{service} anda hari ini jam {time}.',
   'We’ll remind you the evening before and an hour before.':
     'Kami akan ingatkan anda pada malam sebelumnya dan sejam sebelumnya.',
   'We’ll remind you the evening before.': 'Kami akan ingatkan anda pada malam sebelumnya.',
