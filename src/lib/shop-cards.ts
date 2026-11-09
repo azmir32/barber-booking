@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react';
 
 import { useNow } from '@/hooks/use-now';
 import { appCache } from '@/lib/app-cache';
+import { createAsks } from '@/lib/asks';
 import { useAuth } from '@/lib/auth';
 import { cacheKey } from '@/lib/cache';
 import type { ClosedDay } from '@/lib/closures';
@@ -30,11 +31,19 @@ export type ShopCardNumbers = {
 const cardsKey = (uid: string, shopId: string) => cacheKey(uid, 'shop-cards', shopId);
 
 /**
+ * My shop's asks for its cards, numbered: on a slow line only the latest
+ * answer counts, and photos changed here (or on a photo's own screen) after
+ * an ask was sent are newer than the list its answer brings back.
+ */
+const asks = createAsks();
+
+/**
  * Puts a change to the shop's photos into My shop's kept cards, so they show
  * it at once. The cards still say when the server gave them, for StaleNote
  * and the cache's day, as only the photos changed. Nothing kept, nothing to change.
  */
 export function keepPhotos(uid: string, shopId: string, photos: OwnPhoto[]) {
+  asks.changed();
   const key = cardsKey(uid, shopId);
   const kept = appCache.peek<ShopCardNumbers>(key);
   if (kept) appCache.write(key, { ...kept.data, photos }, true, kept.at);
@@ -67,9 +76,12 @@ export function useShopCards(shop: Shop | null) {
   /** Asks the server again; resolves to why that failed, or null. */
   const load = useCallback(async (): Promise<string | null> => {
     if (!shopId || !timeZone) return null;
+    const ask = asks.ask();
     setLoading(true);
     const week = periodDays('week', Date.now(), timeZone);
     const { data, error } = await supabase.rpc('shop_cards', { p_from: week.from, p_to: week.to });
+    // A later ask is on its way, and says how it went when it comes.
+    if (!ask.latest()) return null;
     setLoading(false);
     // What was there stays; each card still opens its own screen, which says what went wrong.
     if (error || !data) {
@@ -77,7 +89,10 @@ export function useShopCards(shop: Shop | null) {
       setError(message);
       return message;
     }
-    const fresh: ShopCardNumbers = { ...(data as Omit<ShopCardNumbers, 'week'>), week: week.from };
+    const answer: ShopCardNumbers = { ...(data as Omit<ShopCardNumbers, 'week'>), week: week.from };
+    // Photos changed while it was on its way are newer than its list: a removed one stays gone.
+    const changed = ask.changedSince() && uid ? appCache.peek<ShopCardNumbers>(cardsKey(uid, shopId))?.data.photos : undefined;
+    const fresh = changed ? { ...answer, photos: changed } : answer;
     setNumbers(fresh);
     setError(null);
     setSavedAt(Date.now());
