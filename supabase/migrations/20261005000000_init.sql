@@ -917,14 +917,14 @@ revoke execute on function public.km_between(double precision, double precision,
 -- only next_from set, so the app can say how far it has looked and offer
 -- to look further. When no cap is reached the pages are the same as
 -- working out every shop and filtering.
--- So a page costs about what it does without filters when most shops
--- match (4 ms against 3), 20 ms when none can (at ten to midnight, or on a
--- day nobody works, the hours step alone), and the most when nearly every
--- shop is open but booked up for the rest of the day: then each call works
--- out 128 next free times, about 16 ms with 1,000 shops (and page 2 the
--- same), where without the cap it was 145 ms and each page looked through
--- the ones before it again. 128 keeps that call at 15 to 20 ms; the README
--- says what to do if the cap shows.
+-- So with 1,000 shops a page costs about what it does without filters
+-- when most shops match (4 ms against 3), 15 ms when none can (at ten to
+-- midnight, or on a day nobody works, the hours step alone), and the most
+-- when nearly every shop is open but booked up for the rest of the day:
+-- then each call works out 128 next free times, about 16 ms (and page 2
+-- the same), where without the cap it was 110 ms and each page looked
+-- through the ones before it again. 128 keeps that call at 15 to 20 ms;
+-- the README has the numbers, and what to do if the cap shows.
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
