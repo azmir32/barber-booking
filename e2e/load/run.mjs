@@ -108,7 +108,8 @@ const SCENARIOS = {
         c.rpc('find_shops', {
           p_search: null,
           p_area: null,
-          p_limit: 21,
+          // As the app asks: a page with Open now or Free today, one more without.
+          p_limit: mix & 3 ? 20 : 21,
           p_offset: 0,
           ...(pick(3) === 1 ? { p_lat: around(2.99), p_lng: around(101.79) } : null),
           ...(mix & 1 ? { p_open_now: true } : null),

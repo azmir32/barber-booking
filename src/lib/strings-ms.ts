@@ -1328,4 +1328,11 @@ export const ms: Record<string, string> = {
   'Try again later, or clear the filters to see every barber.':
     'Cuba lagi nanti, atau buang penapis untuk melihat semua barber.',
   'Clear filters': 'Buang penapis',
+  // Open now and Free today look through so many barbers at a time:
+  // what they found so far, and a button to look further down the list.
+  '1 barber {filters} so far': '1 barber {filters} setakat ini',
+  '{count} barbers {filters} so far': '{count} barber {filters} setakat ini',
+  'Looked through {count} barbers so far': 'Sudah melihat {count} barber setakat ini',
+  'None of them is {filters}.': 'Tiada satu pun yang {filters}.',
+  'Look further': 'Cari lagi',
 };

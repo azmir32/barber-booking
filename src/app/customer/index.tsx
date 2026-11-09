@@ -61,8 +61,16 @@ type Area = { area: string; shops: number };
  * on, and what it finds stays nearest first.
  */
 type Near = 'off' | 'finding' | 'on';
-/** The first page for a search or area, as kept for next time. */
-type FirstPage = { shops: ShopListing[]; hasMore: boolean; listedOn: string };
+/**
+ * Whether the list goes on. With Open now or Free today the server works out only so many shops' hours
+ * and free times a call, and says how far into the list it looked: the next page carries on from there
+ * (`looked`), and `short` says the last page stopped there before it was full. Without them, one shop
+ * more than a page is asked for, to know whether there are more.
+ */
+type Paging = { hasMore: boolean; looked: number | null; short: boolean };
+const NO_MORE: Paging = { hasMore: false, looked: null, short: false };
+/** The first page for a search or area, as kept for next time (without `looked` and `short` from before they came in). */
+type FirstPage = { shops: ShopListing[]; listedOn: string; hasMore: boolean; looked?: number | null; short?: boolean };
 
 /**
  * Find a barber's filters, which combine with each other and with the rest:
@@ -73,7 +81,7 @@ type Filters = { open: boolean; free: boolean; walkIns: boolean };
 const NO_FILTERS: Filters = { open: false, free: false, walkIns: false };
 const FILTER_NAMES = ['open', 'free', 'walkIns'] as const;
 
-/** Shops per page. One more is asked for, to know whether there are more. */
+/** Shops per page. Without Open now or Free today one more is asked for, to know whether there are more. */
 const PAGE = 20;
 /** The area a customer picked last time, so they land on their own area. */
 const AREA_KEY = 'potongku.area';
@@ -81,6 +89,8 @@ const AREA_KEY = 'potongku.area';
 const FILTERS_KEY = 'potongku.findFilters';
 
 const filtersOn = (f: Filters) => FILTER_NAMES.filter((name) => f[name]);
+/** Open now and Free today are worked out shop by shop, so the server goes down the list a stretch at a time. */
+const stepwise = (f: Filters) => f.open || f.free;
 function readFilters(saved: string | null): Filters {
   const names = (saved ?? '').split(',');
   return { open: names.includes('open'), free: names.includes('free'), walkIns: names.includes('walkIns') };
@@ -94,6 +104,16 @@ function filterWords(f: Filters): string {
   if (words.length === 3) return t('{a}, {b} and {c}', { a: words[0], b: words[1], c: words[2] });
   if (words.length === 2) return t('{a} and {b}', { a: words[0], b: words[1] });
   return words[0] ?? '';
+}
+
+/** A page as find_shops sends it: its shops, and whether and from where the list goes on. */
+function readPage(data: unknown, filters: Filters): { shops: ShopListing[] } & Paging {
+  const rows = (data ?? []) as (ShopListing & { next_from?: number | null })[];
+  // A row without a shop only says how far a page that found none looked.
+  const shops = rows.filter((row) => row.id != null);
+  if (!stepwise(filters)) return { shops: shops.slice(0, PAGE), hasMore: shops.length > PAGE, looked: null, short: false };
+  const looked = rows[0]?.next_from ?? null;
+  return { shops, hasMore: looked != null, looked, short: looked != null && shops.length < PAGE };
 }
 
 /**
@@ -121,7 +141,7 @@ export default function Explore() {
   // Keeps "Open now" and "Free now" right while the list stays on screen.
   const now = useNow();
   const [shops, setShops] = useState<ShopListing[]>([]);
-  const [hasMore, setHasMore] = useState(false);
+  const [paging, setPaging] = useState<Paging>(NO_MORE);
   const [areas, setAreas] = useState<Area[]>(() => appCache.peek<Area[]>(cacheKey(uid ?? GUEST, 'areas'))?.data ?? []);
   const [area, setArea] = useState<string | null>(null);
   const [areaRestored, setAreaRestored] = useState(false);
@@ -172,7 +192,7 @@ export default function Explore() {
     const kept = appCache.peek<FirstPage>(key);
     if (kept && shown?.key !== key) {
       setShops(kept.data.shops);
-      setHasMore(kept.data.hasMore);
+      setPaging({ hasMore: kept.data.hasMore, looked: kept.data.looked ?? null, short: kept.data.short ?? false });
       setListedOn(kept.data.listedOn);
       setShown({ key, at: kept.at, fresh: false });
       setError(null);
@@ -253,12 +273,14 @@ export default function Explore() {
 
   const at = near === 'on' ? here : null;
   const fetchPage = useCallback(
-    (offset: number) =>
+    // After the shops shown, or with Open now or Free today from where the server last stopped looking.
+    (from: number) =>
       supabase.rpc('find_shops', {
         p_search: query.trim() || null,
         p_area: area,
-        p_limit: PAGE + 1,
-        p_offset: offset,
+        p_limit: stepwise(filters) ? PAGE : PAGE + 1,
+        p_offset: stepwise(filters) ? 0 : from,
+        ...(stepwise(filters) && from > 0 ? { p_from: from } : null),
         // Sent in the request's body, never its address, so it stays out of server logs.
         ...(at ? { p_lat: at.latitude, p_lng: at.longitude } : null),
         // Only the filters that are on, so a list without them is asked for as before.
@@ -284,10 +306,10 @@ export default function Explore() {
     setLoading(false);
     if (error) return setError(errorMessage(error));
     setError(null);
-    const rows = (data ?? []) as ShopListing[];
-    const first: FirstPage = { shops: rows.slice(0, PAGE), hasMore: rows.length > PAGE, listedOn: localDateString(new Date()) };
-    setShops(first.shops);
-    setHasMore(first.hasMore);
+    const { shops: found, ...more } = readPage(data, filters);
+    const first: FirstPage = { shops: found, ...more, listedOn: localDateString(new Date()) };
+    setShops(found);
+    setPaging(more);
     setListedOn(first.listedOn);
     const key = pageKey(uidRef.current, area, query, at !== null, filters);
     setShown({ key, at: Date.now(), fresh: true });
@@ -299,13 +321,15 @@ export default function Explore() {
   async function loadMore() {
     const request = latest.current;
     setLoadingMore(true);
-    const { data, error } = await fetchPage(shops.length);
+    // With Open now or Free today, from where the server stopped looking rather than after the shops
+    // shown, as some of those may have closed since and gone from the list: no shop is skipped.
+    const { data, error } = await fetchPage(stepwise(filters) ? (paging.looked ?? 0) : shops.length);
     setLoadingMore(false);
     if (request !== latest.current) return;
     if (error) return setError(errorMessage(error));
-    const rows = (data ?? []) as ShopListing[];
-    setShops((prev) => [...prev, ...rows.slice(0, PAGE).filter((r) => !prev.some((p) => p.id === r.id))]);
-    setHasMore(rows.length > PAGE);
+    const { shops: found, ...more } = readPage(data, filters);
+    setShops((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
+    setPaging(more);
   }
 
   const loadAreas = useCallback(async () => {
@@ -400,17 +424,25 @@ export default function Explore() {
     if (filters.open && open.state !== 'open') return false;
     return !(filters.free && open.state === 'closed');
   });
+  // With Open now or Free today, the server stopped before the end of the list: what the list has is
+  // what it found so far, and it can look further.
+  const soFar = stepwise(filters) && paging.hasMore;
+  const lookedLine = t('Looked through {count} barbers so far', { count: paging.looked ?? 0 });
   // With a filter on, the list says how many it found, and a screen reader hears it change.
   const countLine =
     filtering && !loading && !error && listed.length
-      ? hasMore
-        ? t('More than {count} barbers {filters}', { count: listed.length, filters: filterText })
-        : listed.length === 1
-          ? t('1 barber {filters}', { filters: filterText })
-          : t('{count} barbers {filters}', { count: listed.length, filters: filterText })
+      ? soFar
+        ? listed.length === 1
+          ? t('1 barber {filters} so far', { filters: filterText })
+          : t('{count} barbers {filters} so far', { count: listed.length, filters: filterText })
+        : paging.hasMore
+          ? t('More than {count} barbers {filters}', { count: listed.length, filters: filterText })
+          : listed.length === 1
+            ? t('1 barber {filters}', { filters: filterText })
+            : t('{count} barbers {filters}', { count: listed.length, filters: filterText })
       : null;
   const nothing = filtering && !loading && !error && listed.length === 0;
-  const news = countLine ?? (nothing ? t('No barbers {filters}', { filters: filterText }) : null);
+  const news = countLine ?? (nothing ? (soFar ? lookedLine : t('No barbers {filters}', { filters: filterText })) : null);
   useEffect(() => {
     // iOS has no live regions, so VoiceOver is told what the filters found out loud.
     if (news && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(news);
@@ -533,15 +565,23 @@ export default function Explore() {
         {nothing ? (
           // Said out loud when the filters leave nothing, as the count is otherwise.
           <View role="status" accessibilityLiveRegion="polite">
-            <Empty
-              title={t('No barbers {filters}', { filters: filterText })}
-              body={
-                searching || area
-                  ? t('Try fewer filters, or another name or area.')
-                  : t('Try again later, or clear the filters to see every barber.')
-              }>
-              <Button title={t('Clear filters')} variant="secondary" onPress={clearFilters} />
-            </Empty>
+            {soFar ? (
+              // Nothing yet, but only so far: the rest of the list is a tap away, never "no barbers".
+              <Empty title={lookedLine} body={t('None of them is {filters}.', { filters: filterText })}>
+                <Button title={t('Look further')} variant="secondary" loading={loadingMore} onPress={loadMore} />
+                <Button title={t('Clear filters')} variant="ghost" onPress={clearFilters} />
+              </Empty>
+            ) : (
+              <Empty
+                title={t('No barbers {filters}', { filters: filterText })}
+                body={
+                  searching || area
+                    ? t('Try fewer filters, or another name or area.')
+                    : t('Try again later, or clear the filters to see every barber.')
+                }>
+                <Button title={t('Clear filters')} variant="secondary" onPress={clearFilters} />
+              </Empty>
+            )}
           </View>
         ) : !loading && !error && shops.length === 0 ? (
           searching || area ? (
@@ -644,8 +684,19 @@ export default function Explore() {
             </Card>
           );
         })}
-        {hasMore && !error ? (
-          <Button title={t('Show more barbers')} variant="secondary" loading={loadingMore} onPress={loadMore} />
+        {/* Not while the list is empty: the empty state has its own way on, or there is none. */}
+        {paging.hasMore && !error && !nothing ? (
+          soFar && paging.short ? (
+            // The last page stopped before it was full: say how far it looked, and carry on from there.
+            <View style={{ gap: Spacing.sm }}>
+              <T variant="small" style={{ textAlign: 'center' }}>
+                {lookedLine}
+              </T>
+              <Button title={t('Look further')} variant="secondary" loading={loadingMore} onPress={loadMore} />
+            </View>
+          ) : (
+            <Button title={t('Show more barbers')} variant="secondary" loading={loadingMore} onPress={loadMore} />
+          )
         ) : null}
       </ScrollView>
     </SafeAreaView>
