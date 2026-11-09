@@ -42,3 +42,10 @@ example
 # generated native folders
 /ios
 /android
+
+# Playwright
+/test-results/
+/playwright-report/
+
+# Demo build (scripts/build-demo.mjs)
+/dist-demo/
