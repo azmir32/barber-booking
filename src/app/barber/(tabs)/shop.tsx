@@ -24,7 +24,6 @@ import { t } from '@/lib/lang';
 import { useMyShop } from '@/lib/my-shop';
 import { barberWithoutHours, goLiveGap, type GoLiveGap, type ShopSetup, type StepId } from '@/lib/ready';
 import { useShopCards } from '@/lib/shop-cards';
-import { useShopPhotos } from '@/lib/shop-photos';
 import { useShopReady } from '@/lib/shop-ready';
 import { errorMessage, supabase } from '@/lib/supabase';
 import { formatDay } from '@/lib/time';
@@ -54,12 +53,10 @@ function billingText(shop: Shop): { label: string; tone: 'success' | 'warning' |
 export default function MyShop() {
   const { shop, fresh, staleSince: shopStaleSince, reload } = useMyShop();
   const now = useNow();
-  // Takings, customers, reviews and closed days: last time's at once, then the server's.
+  // Takings, customers, reviews, closed days and photos: last time's at once, then the server's.
   const cards = useShopCards(shop);
   // A new shop's steps to its first booking, and what Go live still needs.
   const ready = useShopReady(shop, now);
-  // Photos of the shop's cuts: last time's at once, then the server's.
-  const photos = useShopPhotos(shop?.id);
   // The shop itself is asked for once when the app opens. If that failed, last visit's
   // status and details stay, so it is asked for again on coming here and with Try again.
   const [askingShop, setAskingShop] = useState(false);
@@ -79,7 +76,7 @@ export default function MyShop() {
     }, [askShop]),
   );
   // Any part kept from last visit and not refreshed: said once, with the oldest time.
-  const stale = [cards.staleSince, shopStaleSince, ready.staleSince, photos.staleSince].filter(
+  const stale = [cards.staleSince, shopStaleSince, ready.staleSince].filter(
     (at): at is number => at != null,
   );
   const staleSince = stale.length ? Math.min(...stale) : null;
@@ -212,7 +209,7 @@ export default function MyShop() {
     <Screen scrollRef={scroll}>
       <ScreenTitle
         title={t('My shop')}
-        refreshing={cards.refreshing || askingShop || ready.refreshing || photos.refreshing}
+        refreshing={cards.refreshing || askingShop || ready.refreshing}
       />
       {staleSince ? (
         <StaleNote
@@ -221,9 +218,7 @@ export default function MyShop() {
             cards.reload();
             if (shopStaleSince != null) askShop();
             if (ready.staleSince != null) ready.reload();
-            if (photos.staleSince != null) photos.reload();
           }}
-          // Not the photos: they come again on their own, and a slow answer to the last try mustn't hold this one.
           retrying={cards.loading || askingShop || ready.loading}
           timeZone={shop.time_zone}
         />
@@ -311,10 +306,10 @@ export default function MyShop() {
 
       <ShopPhotosCard
         shopId={shop.id}
-        photos={photos.photos}
-        change={photos.change}
-        loadError={photos.error}
-        reload={photos.reload}
+        photos={cards.photos}
+        change={cards.changePhotos}
+        loadError={cards.error}
+        reload={cards.reload}
       />
 
       <View ref={linkRef}>

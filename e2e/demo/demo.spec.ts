@@ -910,6 +910,105 @@ test('a customer rates their cut, it shows on the shop’s page, and the owner r
   await snap(page, 'demo-23-owner-reviews');
 });
 
+test('Ali reports an unfair review once, and sees it waiting for the team', async ({ page }) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await app.getByRole('link', { name: /^Reviews: Rated / }).click();
+
+  // Ravi's one star about parking came already reported, so it says so and offers no Report.
+  const ravis = app.getByText(/^Couldn’t find parking anywhere/);
+  await expect(ravis).toBeVisible();
+  // Read as one, the owner's note too.
+  const reportedOne = app.getByLabel(
+    'Reported. About something else. It stays on your page until the PotongKu team decides. ' +
+      'Your note: “About parking on the road, not our cut. He was served on time.”',
+    { exact: true },
+  );
+  await expect(reportedOne).toBeVisible();
+  await expect(app.getByText('Your note: “About parking on the road, not our cut. He was served on time.”')).toBeVisible();
+  // His other review, three stars a while back, can still be reported; both can be answered.
+  await expect(button(app, 'Report Ravi’s review')).toHaveCount(1);
+  await expect(button(app, /^(Reply to|Edit your reply to) Ravi$/)).toHaveCount(2);
+
+  // Aiman's: Report opens a short form with focus on its heading.
+  const report = button(app, 'Report Aiman’s review');
+  await report.click();
+  const heading = app.getByRole('heading', { name: 'Report this review' });
+  await expect(heading).toBeFocused();
+  const send = button(app, 'Send report');
+  await expect(send).toBeDisabled();
+  // Cancel puts focus back on the card's Reply, not the top of the list.
+  await button(app, 'Cancel').click();
+  await expect(heading).toHaveCount(0);
+  await expect(button(app, 'Reply to Aiman')).toBeFocused();
+
+  await report.click();
+  const reasons = app.getByRole('radiogroup', { name: 'Why is it unfair?' });
+  await reasons.getByRole('radio', { name: 'Not a real customer', exact: true }).click();
+  await expect(reasons.getByRole('radio', { name: 'Not a real customer', exact: true })).toBeChecked();
+  await app.getByRole('textbox', { name: 'Note (optional)' }).fill('No cut in our book for this name that day.');
+  await snap(page, 'demo-reports-01-form');
+  await send.click();
+  // Reported, with the reason and the note, and focus on that line; it can't be reported again.
+  const status = app.getByLabel(
+    'Reported. Not a real customer. It stays on your page until the PotongKu team decides. ' +
+      'Your note: “No cut in our book for this name that day.”',
+    { exact: true },
+  );
+  await expect(status).toBeFocused();
+  await expect(app.getByText('Your note: “No cut in our book for this name that day.”')).toBeVisible();
+  await expect(report).toHaveCount(0);
+  await expect(button(app, 'Reply to Aiman')).toBeVisible();
+  await snap(page, 'demo-reports-02-reported');
+
+  // It still counts, and stays on the shop's page for customers until the team decides.
+  await page.reload();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await app.getByRole('link', { name: /^Reviews: Rated / }).click();
+  await expect(status).toBeVisible();
+  await expect(reportedOne).toBeVisible();
+});
+
+test('a review reported meanwhile from another tab shows that report, saying it was already reported', async ({
+  page,
+  context,
+}) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await app.getByRole('link', { name: /^Reviews: Rated / }).click();
+  await button(app, 'Report Aiman’s review').click();
+  await app
+    .getByRole('radiogroup', { name: 'Why is it unfair?' })
+    .getByRole('radio', { name: 'Not a real customer', exact: true })
+    .click();
+
+  // Meanwhile Ali reports it from another tab, as rude.
+  // Signed in there too, as the tabs share the browser's storage.
+  const other = await context.newPage();
+  await other.goto('/host');
+  const second = other.frameLocator('#app');
+  await second.getByRole('tab', { name: /My shop/ }).click();
+  await second.getByRole('link', { name: /^Reviews: Rated / }).click();
+  await button(second, 'Report Aiman’s review').click();
+  await second.getByRole('radiogroup', { name: 'Why is it unfair?' }).getByRole('radio', { name: 'Rude or hateful', exact: true }).click();
+  await button(second, 'Send report').click();
+  await expect(second.getByLabel(/^Reported\. Rude or hateful\. /)).toBeVisible();
+  await other.close();
+
+  // Sending here finds it reported, and shows that report as it is.
+  await button(app, 'Send report').click();
+  const status = app.getByLabel(
+    'This review has already been reported. Reported. Rude or hateful. It stays on your page until the PotongKu team decides.',
+    { exact: true },
+  );
+  await expect(status).toBeFocused();
+  await expect(app.getByText('This review has already been reported.', { exact: true })).toBeVisible();
+  await expect(app.getByText('That name or link is already taken.')).toHaveCount(0);
+  await expect(button(app, 'Report Aiman’s review')).toHaveCount(0);
+});
+
 /** Answers Google Maps here, so the tests stay offline, and returns what a press of `press` opened it at. */
 async function opensGoogleMaps(page: Page, press: () => Promise<void>) {
   await page.context().route('https://www.google.com/maps/**', (route) =>
@@ -1307,6 +1406,9 @@ test('My shop asks for all its cards at once, and opens with last time’s, clos
   for (const before of ['shop_summary', 'shop_customers', 'shop_closed_days']) {
     expect(await asked(page, `/rest/v1/rpc/${before}`)).toBe(0);
   }
+  // The photos of the cuts came with them, not on their own.
+  await expect(app.getByText('7 of 24', { exact: true })).toBeVisible();
+  expect(await asked(page, '/rest/v1/shop_photos')).toBe(0);
 
   // A day closed shows on coming back.
   await button(app, 'Close for a few days').click();

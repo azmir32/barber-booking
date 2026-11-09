@@ -1337,4 +1337,36 @@ export const ms: Record<string, string> = {
   'Turn on reminders': 'Hidupkan peringatan',
   'Notifications are off, so no reminders will come. You can turn them on in Settings.':
     'Pemberitahuan dimatikan, jadi tiada peringatan akan datang. Anda boleh menghidupkannya di Tetapan.',
+
+  // Round 15, reporting an unfair review. The reasons, as the form and the review's card say them.
+  'Not a real customer': 'Bukan pelanggan sebenar',
+  'Rude or hateful': 'Kasar atau berunsur kebencian',
+  'About something else': 'Tentang perkara lain',
+  'Other': 'Lain-lain',
+  // Where a report is, on the owner's Reviews.
+  'Reported': 'Dilaporkan',
+  'Kept': 'Dikekalkan',
+  'Removed': 'Dibuang',
+  '{reason}. It stays on your page until the {app} team decides.':
+    '{reason}. Ulasan ini kekal di halaman anda sehingga pasukan {app} membuat keputusan.',
+  'The {app} team looked at your report and kept this review.':
+    'Pasukan {app} telah menyemak laporan anda dan mengekalkan ulasan ini.',
+  'Removed by the {app} team. Customers don’t see it, and it doesn’t count in your stars.':
+    'Dibuang oleh pasukan {app}. Pelanggan tidak melihatnya, dan ia tidak dikira dalam bintang anda.',
+  // The form on the owner's Reviews.
+  Report: 'Laporkan',
+  'Report {name}’s review': 'Laporkan ulasan {name}',
+  'Report this review': 'Laporkan ulasan ini',
+  'The {app} team reads every report. The review stays on your page until they decide.':
+    'Pasukan {app} membaca setiap laporan. Ulasan ini kekal di halaman anda sehingga mereka membuat keputusan.',
+  'Why is it unfair?': 'Kenapa ia tidak adil?',
+  'Anything that helps the team decide. Customers never see it.':
+    'Apa-apa yang membantu pasukan membuat keputusan. Pelanggan tidak akan melihatnya.',
+  'Send report': 'Hantar laporan',
+  'Your note: “{note}”': 'Nota anda: “{note}”',
+  // The database's answers.
+  'Pick a reason.': 'Pilih satu sebab.',
+  'Please keep your note under 200 characters.': 'Sila pastikan nota kurang daripada 200 aksara.',
+  'This review has already been reported.': 'Ulasan ini sudah dilaporkan.',
+  "This review was removed, so it can't have a reply.": 'Ulasan ini telah dibuang, jadi ia tidak boleh dibalas.',
 };

@@ -70,6 +70,8 @@ export function ShopReviews({
         .from('reviews')
         .select(REVIEW_COLUMNS)
         .match(reviewsOf(shopId, pickedId))
+        // Customers never get one the team removed; this keeps them off the owner's own page too.
+        .eq('removed', false)
         .order('created_at', { ascending: false })
         .order('booking_id')
         .range(offset, offset + size),

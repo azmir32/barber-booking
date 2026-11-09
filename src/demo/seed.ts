@@ -520,6 +520,19 @@ function seed() {
   review(cutAtAli(jason, -25), 5, 30);
   review(cutAtAli(hakim, -26), 5, 6, 'Neat cut and friendly service.');
   review(cutAtAli(aiman, -1), 5, 3, 'Pantas dan kemas. Recommended!');
+  // Ravi took a bad day's parking out on the shop, and Ali reported it the
+  // next morning: it stays up, and counts, until the team decides.
+  const parking = cutAtAli(ravi, -20);
+  review(parking, 1, 5, 'Couldn’t find parking anywhere and was late for my slot. Never again.');
+  if (parking) {
+    insertRow('review_reports', {
+      booking_id: parking.id,
+      shop_id: sa.id,
+      reason: 'off_topic',
+      note: 'About parking on the road, not our cut. He was served on time.',
+      created_at: new Date(Math.min(now(), Date.parse(String(parking.ends_at)) + 18 * HOUR)).toISOString(),
+    });
+  }
 
   // A cut at another shop for a review. Its id stays the same whichever chair
   // or day it lands on, so a demo saved on another day keeps its review.

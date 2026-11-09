@@ -315,6 +315,10 @@ create table public.shop_closures (
 -- reviewer's first name is copied in when they rate, so a shop's page
 -- shows it without reading their profile (and never their surname or
 -- number). updated_at is when the customer last changed their rating.
+-- removed is the PotongKu team's decision on an owner's report (kept in
+-- step with review_reports by review_reports_removed): a removed review is
+-- left out of the shop's page, its counts and stars, and seen only by the
+-- shop's owner.
 create table public.reviews (
   booking_id uuid primary key references public.bookings (id) on delete cascade,
   shop_id uuid not null references public.shops (id) on delete cascade,
@@ -325,6 +329,7 @@ create table public.reviews (
   first_name text not null check (length(first_name) <= 40),
   reply text check (length(reply) <= 280),
   replied_at timestamptz,
+  removed boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check ((reply is null) = (replied_at is null))
@@ -332,13 +337,33 @@ create table public.reviews (
 -- A shop's newest reviews, a page at a time, and its newest with a comment
 -- (My shop's card), each one index lookup however many it has.
 create index reviews_shop_created_idx on public.reviews (shop_id, created_at desc, booking_id);
-create index reviews_shop_commented_idx on public.reviews (shop_id, created_at desc) where comment is not null;
+create index reviews_shop_commented_idx on public.reviews (shop_id, created_at desc)
+  where comment is not null and not removed;
 -- One barber's reviews, newest first, when a shop's reviews are narrowed to
 -- them: one index lookup however many the shop has. Also what deleting a
 -- barber checks for reviews of their cuts.
 create index reviews_barber_created_idx on public.reviews (barber_id, created_at desc, booking_id);
 -- So deleting an account finds its reviews without reading everyone's.
 create index reviews_customer_idx on public.reviews (customer_id);
+
+-- An owner's report of a review they find unfair, one a review, for the
+-- PotongKu team to decide by hand (see README, "Running the business side
+-- by hand"). outcome is null while open, then 'kept' or 'removed', and
+-- decided_at says when (set by review_reports_decided). The review stays
+-- on the shop's page until the team removes it. shop_id is the review's,
+-- copied in for the policy; it goes with the review, not on its own, so
+-- deleting a shop never meets a report before its review. Written only by
+-- report_review, and read only by the shop's owner, never the customer.
+create table public.review_reports (
+  booking_id uuid primary key references public.reviews (booking_id) on delete cascade,
+  shop_id uuid not null,
+  reason text not null check (reason in ('not_customer', 'rude', 'off_topic', 'other')),
+  note text check (length(note) <= 200),
+  outcome text check (outcome in ('kept', 'removed')),
+  decided_at timestamptz,
+  created_at timestamptz not null default now(),
+  check ((outcome is null) = (decided_at is null))
+);
 
 -- The waiting list: a customer who found a day full asks to hear if a time
 -- frees up, for one service with a chosen barber (or any). day is the
@@ -487,8 +512,9 @@ create trigger shop_photos_check
 
 -- Keeps shops.rating_count and rating_sum in step with the shop's reviews,
 -- and each barber's with the reviews of their cuts, also when a review
--- moves to another barber. Runs as the tables' owner, since nobody else may
--- write those columns.
+-- moves to another barber. A removed review counts for nobody: removing it
+-- takes it off, and putting it back adds it again. Runs as the tables'
+-- owner, since nobody else may write those columns.
 create function public.reviews_count()
 returns trigger
 language plpgsql
@@ -497,11 +523,24 @@ set search_path = public
 as $$
 begin
   if tg_op = 'INSERT' then
-    update shops set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.shop_id;
-    update barbers set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.barber_id;
+    if not new.removed then
+      update shops set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.shop_id;
+      update barbers set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.barber_id;
+    end if;
   elsif tg_op = 'DELETE' then
+    if not old.removed then
+      update shops set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.shop_id;
+      update barbers set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.barber_id;
+    end if;
+  elsif old.removed and new.removed then
+    -- Changed while removed: it still counts for nobody.
+    null;
+  elsif new.removed then
     update shops set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.shop_id;
     update barbers set rating_count = rating_count - 1, rating_sum = rating_sum - old.rating where id = old.barber_id;
+  elsif old.removed then
+    update shops set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.shop_id;
+    update barbers set rating_count = rating_count + 1, rating_sum = rating_sum + new.rating where id = new.barber_id;
   else
     if new.rating <> old.rating then
       update shops set rating_sum = rating_sum - old.rating + new.rating where id = new.shop_id;
@@ -519,8 +558,76 @@ $$;
 revoke execute on function public.reviews_count() from public, anon, authenticated;
 
 create trigger reviews_count
-  after insert or delete or update of rating, barber_id on public.reviews
+  after insert or delete or update of rating, barber_id, removed on public.reviews
   for each row execute function public.reviews_count();
+
+-- A report's decided_at follows its outcome, so the team only sets the outcome.
+create function public.review_reports_decided()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.outcome is null then
+    new.decided_at := null;
+  elsif tg_op = 'INSERT' or new.outcome is distinct from old.outcome then
+    new.decided_at := now();
+  end if;
+  return new;
+end;
+$$;
+revoke execute on function public.review_reports_decided() from public, anon, authenticated;
+
+create trigger review_reports_decided
+  before insert or update of outcome on public.review_reports
+  for each row execute function public.review_reports_decided();
+
+-- The review drops out when the team removes it, and comes back when they
+-- keep it after all, open the report again or delete it; reviews_count
+-- follows.
+create function public.review_reports_removed()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'DELETE' then
+    update reviews set removed = false where booking_id = old.booking_id and removed;
+  else
+    update reviews set removed = (new.outcome is not distinct from 'removed')
+    where booking_id = new.booking_id and removed <> (new.outcome is not distinct from 'removed');
+  end if;
+  return null;
+end;
+$$;
+revoke execute on function public.review_reports_removed() from public, anon, authenticated;
+
+create trigger review_reports_removed
+  after insert or delete or update of outcome on public.review_reports
+  for each row execute function public.review_reports_removed();
+
+-- A review the team kept and its customer then changes (rate_booking allows
+-- that for 14 days) is theirs to look at again, so its report is open again.
+-- One they removed stays removed, whatever it now says.
+create function public.reviews_reopen_report()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update review_reports set outcome = null where booking_id = new.booking_id and outcome = 'kept';
+  return null;
+end;
+$$;
+revoke execute on function public.reviews_reopen_report() from public, anon, authenticated;
+
+create trigger reviews_reopen_report
+  after update of rating, comment, first_name on public.reviews
+  for each row
+  when ((old.rating, old.comment, old.first_name) is distinct from (new.rating, new.comment, new.first_name))
+  execute function public.reviews_reopen_report();
 
 -- A review is of the cut with the barber who did it. The booking functions
 -- never move a cut once it is done, but should a rated booking's barber be
@@ -558,6 +665,7 @@ alter table public.reviews enable row level security;
 alter table public.waitlist enable row level security;
 alter table public.queue_entries enable row level security;
 alter table public.shop_photos enable row level security;
+alter table public.review_reports enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -613,12 +721,19 @@ create policy "customers and shop owners read bookings" on public.bookings
 
 -- Anyone reads the reviews of a live shop, and its owner all of theirs (the
 -- shops policy decides inside the subquery). Reviewers always see their own.
+-- A review the PotongKu team removed only the shop's owner sees.
 -- A scalar subquery rather than exists: Postgres turned exists into a scan
 -- of every shop on each request, where this looks up the one shop per row.
 create policy "read reviews of visible shops, and your own" on public.reviews
   for select using (
-    coalesce((select true from public.shops s where s.id = shop_id), false) or customer_id = (select auth.uid())
+    (not removed
+     and (coalesce((select true from public.shops s where s.id = shop_id), false) or customer_id = (select auth.uid())))
+    or (removed and shop_id = (select public.my_shop_id()))
   );
+
+-- Only the shop's owner reads its reports; customers never see them.
+create policy "owners read their shop's reports" on public.review_reports
+  for select using (shop_id = (select public.my_shop_id()));
 
 -- Anyone sees a live shop's photos, and its owner all of theirs, in the same
 -- way. Only the owner adds, changes or removes them.
@@ -655,8 +770,12 @@ revoke all on public.queue_entries from anon, authenticated;
 -- without who wrote them: an account id would tie one person's reviews
 -- together across shops.
 revoke all on public.reviews from anon, authenticated;
-grant select (booking_id, shop_id, barber_id, rating, comment, first_name, reply, replied_at, created_at, updated_at)
+grant select (booking_id, shop_id, barber_id, rating, comment, first_name, reply, replied_at, removed, created_at,
+              updated_at)
   on public.reviews to anon, authenticated;
+-- Reports are written through report_review, and the decisions by the team.
+revoke all on public.review_reports from anon, authenticated;
+grant select (booking_id, reason, note, outcome, decided_at, created_at) on public.review_reports to authenticated;
 -- A photo's files and shop never change: a new photo is a new row. Its
 -- place in the order is set by shop_photos_check on the way in.
 revoke insert, update on public.shop_photos from anon, authenticated;
@@ -2143,8 +2262,10 @@ revoke execute on function public.shop_customer_counts(uuid) from public, anon, 
 -- Everything My shop's cards show, in one answer: the totals shop_summary
 -- gives for p_from to p_to (the app asks for this week), how many customers
 -- and how many are due (shop_customer_counts), the review count and total
--- with the newest comment, and the days the shop is closed from today to 60
--- days ahead with the reason (the closures shop_closed_days gives). It was
+-- with the newest comment (never a removed one), the days the shop is
+-- closed from today to 60 days ahead with the reason (the closures
+-- shop_closed_days gives), and the photos of its cuts in order with each
+-- one's barber, as the owner's select of shop_photos gave them. It was
 -- four requests, one of them making the whole customer list to read two
 -- numbers from it: on the e2e/load data they took 23 ms of database time
 -- for each visit, now 4. Only the caller's own shop.
@@ -2202,7 +2323,7 @@ begin
       'newest', (
         select jsonb_build_object('rating', r.rating, 'comment', r.comment, 'first_name', r.first_name)
         from reviews r
-        where r.shop_id = v_shop.id and r.comment is not null
+        where r.shop_id = v_shop.id and r.comment is not null and not r.removed
         order by r.created_at desc
         limit 1
       )
@@ -2211,6 +2332,21 @@ begin
       select jsonb_agg(jsonb_build_object('day', c.day, 'reason', c.reason) order by c.day)
       from shop_closures c
       where c.shop_id = v_shop.id and c.day between v_today and v_today + 60
+    ), '[]'::jsonb),
+    -- Off shop_photos_shop_order_idx, as the shop's page reads them.
+    'photos', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', ph.id, 'barber_id', ph.barber_id, 'caption', ph.caption, 'path', ph.path,
+               'thumb_path', ph.thumb_path, 'width', ph.width, 'height', ph.height, 'sort_order', ph.sort_order,
+               'barber', case when b.id is not null then jsonb_build_object('name', b.name) end
+             ) order by ph.sort_order, ph.created_at, ph.id)
+      from (
+        select * from shop_photos ph
+        where ph.shop_id = v_shop.id
+        order by ph.sort_order, ph.created_at, ph.id
+        limit 24
+      ) ph
+      left join barbers b on b.id = ph.barber_id
     ), '[]'::jsonb)
   );
 end;
@@ -3170,7 +3306,8 @@ end;
 $$;
 
 -- The shop's owner replies under a review, or changes their reply. An empty
--- reply takes it away.
+-- reply takes it away. A review the team removed shows nowhere, so it takes
+-- no reply.
 create function public.reply_to_review(p_booking_id uuid, p_reply text)
 returns public.reviews
 language plpgsql
@@ -3184,6 +3321,9 @@ begin
   select * into v_review from reviews where booking_id = p_booking_id;
   if not found or not public.owns_shop(v_review.shop_id) then
     raise exception 'Review not found.' using errcode = 'P0002';
+  end if;
+  if v_review.removed then
+    raise exception 'This review was removed, so it can''t have a reply.' using errcode = '42501';
   end if;
   if length(v_reply) > 280 then
     raise exception 'Please keep your reply under 280 characters.' using errcode = '22001';
@@ -3230,6 +3370,42 @@ begin
     ) u
     cross join lateral (select x.name, x.time_zone from shops x where x.id = u.shop_id offset 0) s
   ), '[]'::jsonb);
+end;
+$$;
+
+-- The shop's owner reports a review they find unfair, with a reason and an
+-- optional note, for the PotongKu team to decide. One report a review: a
+-- second, say from another phone, is refused, and the app shows the one
+-- there is. The review stays on the page meanwhile.
+create function public.report_review(p_booking_id uuid, p_reason text, p_note text default null)
+returns public.review_reports
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_note text := nullif(btrim(p_note, E' \t\r\n'), '');
+  v_review reviews;
+  v_report review_reports;
+begin
+  select * into v_review from reviews where booking_id = p_booking_id;
+  if not found or not public.owns_shop(v_review.shop_id) then
+    raise exception 'Review not found.' using errcode = 'P0002';
+  end if;
+  if p_reason is null or p_reason not in ('not_customer', 'rude', 'off_topic', 'other') then
+    raise exception 'Pick a reason.' using errcode = '22023';
+  end if;
+  if length(v_note) > 200 then
+    raise exception 'Please keep your note under 200 characters.' using errcode = '22001';
+  end if;
+  insert into review_reports (booking_id, shop_id, reason, note)
+  values (v_review.booking_id, v_review.shop_id, p_reason, v_note)
+  on conflict (booking_id) do nothing
+  returning * into v_report;
+  if not found then
+    raise exception 'This review has already been reported.' using errcode = '23505';
+  end if;
+  return v_report;
 end;
 $$;
 
@@ -3393,7 +3569,7 @@ begin
              'barbers', jsonb_build_object('name', b.name)) as item
     from (
       select * from reviews r
-      where r.shop_id = v_shop.id
+      where r.shop_id = v_shop.id and not r.removed
       order by r.created_at desc, r.booking_id
       limit 4
     ) r
@@ -3642,6 +3818,8 @@ revoke execute on function public.rate_booking(uuid, int, text, text) from publi
 grant execute on function public.rate_booking(uuid, int, text, text) to authenticated;
 revoke execute on function public.reply_to_review(uuid, text) from public, anon;
 grant execute on function public.reply_to_review(uuid, text) to authenticated;
+revoke execute on function public.report_review(uuid, text, text) from public, anon;
+grant execute on function public.report_review(uuid, text, text) to authenticated;
 revoke execute on function public.max_waiting_per_customer() from public, anon, authenticated;
 revoke execute on function public.join_waitlist(uuid, date, uuid) from public, anon;
 grant execute on function public.join_waitlist(uuid, date, uuid) to authenticated;

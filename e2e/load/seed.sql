@@ -98,12 +98,18 @@ select b.id, b.shop_id, b.barber_id, b.customer_id,
        'Customer', b.ends_at + interval '3 hours', b.ends_at + interval '3 hours'
 from public.bookings b
 where b.status = 'completed' and b.customer_id is not null and random() < 0.15;
+-- One review in two hundred was reported by its shop's owner, and the team
+-- removed half of those, which leaves them out of the counts.
+insert into public.review_reports (booking_id, shop_id, reason, outcome)
+select r.booking_id, r.shop_id, 'not_customer', case when random() < 0.5 then 'removed' end
+from public.reviews r
+where random() < 0.005;
 alter table public.reviews enable trigger reviews_count;
 update public.shops s set rating_count = x.n, rating_sum = x.total
-from (select shop_id, count(*)::int as n, sum(rating)::int as total from public.reviews group by shop_id) x
+from (select shop_id, count(*)::int as n, sum(rating)::int as total from public.reviews where not removed group by shop_id) x
 where x.shop_id = s.id;
 update public.barbers b set rating_count = x.n, rating_sum = x.total
-from (select barber_id, count(*)::int as n, sum(rating)::int as total from public.reviews group by barber_id) x
+from (select barber_id, count(*)::int as n, sum(rating)::int as total from public.reviews where not removed group by barber_id) x
 where x.barber_id = b.id;
 
 \echo › waiting lists

@@ -2650,6 +2650,377 @@ do $$ begin
 end $$;
 rollback;
 
+-- Reporting unfair reviews ----------------------------------------------------------
+-- The shop's owner reports a review they find unfair, with a reason and an
+-- optional note, once. It stays on the shop's page until the PotongKu team
+-- decides by hand (README, "Running the business side by hand"). A removed
+-- review drops out of the page, the lists, My shop's newest comment and
+-- every count and star, takes no reply, and comes back with its stars when
+-- the team puts it back. A kept review its customer then changes is open
+-- again. Customers never see reports. Ben and Chong rate cuts with Faiz and
+-- Zul, chairs added for this part; Rahman owns another shop.
+begin;
+reset role;
+update shops set is_published = true, subscription_status = 'active' where id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000000b2', 'owner2@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug, is_published, subscription_status) values
+  ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000b2', 'Kemas Cuts', 'kemas-cuts', true, 'active');
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000000a6', '00000000-0000-0000-0000-00000000005a', 'Faiz'),
+  ('00000000-0000-0000-0000-0000000000a7', '00000000-0000-0000-0000-00000000005a', 'Zul'),
+  ('00000000-0000-0000-0000-0000000000a9', '00000000-0000-0000-0000-00000000005b', 'Rahman');
+insert into bookings (id, shop_id, barber_id, customer_id, service_name, price, starts_at, ends_at, status)
+select x.id::uuid, x.shop::uuid, x.barber::uuid, x.customer::uuid, 'Haircut', 25, x.at, x.at + interval '30 minutes',
+       'completed'
+from (values
+  -- Ben's with Faiz two days ago, Chong's with Zul three days ago, Ben's with Zul four days ago, and Ben's at Kemas.
+  ('00000000-0000-0000-0000-0000000000f1', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a6',
+   '00000000-0000-0000-0000-0000000000c1', now() - interval '2 days'),
+  ('00000000-0000-0000-0000-0000000000f2', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a7',
+   '00000000-0000-0000-0000-0000000000c2', now() - interval '3 days'),
+  ('00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a7',
+   '00000000-0000-0000-0000-0000000000c1', now() - interval '4 days'),
+  ('00000000-0000-0000-0000-0000000000f4', '00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-0000000000a9',
+   '00000000-0000-0000-0000-0000000000c1', now() - interval '1 day')
+) x(id, shop, barber, customer, at);
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f1', 1, 'Parking here is a nightmare. Never again.');
+  perform rate_booking('00000000-0000-0000-0000-0000000000f3', 4, 'Neat fade');
+  perform rate_booking('00000000-0000-0000-0000-0000000000f4', 2, 'Meh');
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 5, 'Great, quick');
+end $$;
+-- Each left an hour after the cut, so the newest is Ben's about parking.
+reset role;
+update reviews r set created_at = b.ends_at + interval '1 hour' from bookings b where b.id = r.booking_id;
+
+-- What the stars say everywhere: the shop's, each barber's, Find a barber's and My shop's.
+create function pg_temp.stars() returns text language sql as $$
+  select format('shop %s/%s, Faiz %s/%s, Zul %s/%s, list %s, cards %s/%s',
+    s.rating_count, s.rating_sum, f.rating_count, f.rating_sum, z.rating_count, z.rating_sum,
+    (select l.rating_count from find_shops() l where l.id = s.id),
+    shop_cards(current_date, current_date) #>> '{reviews,count}', shop_cards(current_date, current_date) #>> '{reviews,sum}')
+  from shops s, barbers f, barbers z
+  where s.id = '00000000-0000-0000-0000-00000000005a'
+    and f.id = '00000000-0000-0000-0000-0000000000a6' and z.id = '00000000-0000-0000-0000-0000000000a7';
+$$;
+
+-- The owner reports Ben's: it stays on the page, with every count as it was.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  r review_reports;
+begin
+  assert pg_temp.stars() = 'shop 3/10, Faiz 1/1, Zul 2/9, list 3, cards 3/10', 'before: ' || pg_temp.stars();
+  r := report_review('00000000-0000-0000-0000-0000000000f1', 'off_topic', E'  About parking, not the cut \n');
+  assert r.reason = 'off_topic' and r.note = 'About parking, not the cut' and r.outcome is null and r.decided_at is null
+     and r.shop_id = '00000000-0000-0000-0000-00000000005a' and r.created_at = now(), 'the report: ' || row(r.*)::text;
+  assert pg_temp.stars() = 'shop 3/10, Faiz 1/1, Zul 2/9, list 3, cards 3/10', 'reported, it still counts: ' || pg_temp.stars();
+  assert shop_cards(current_date, current_date) #>> '{reviews,newest,comment}' = 'Parking here is a nightmare. Never again.',
+    'and is still the newest comment';
+  -- The owner sees it reported on their Reviews, each review with its report or none.
+  assert (select jsonb_agg(jsonb_build_object('id', right(v.booking_id::text, 2), 'outcome', rr.outcome, 'reason', rr.reason)
+                           order by v.created_at desc)
+          from reviews v left join review_reports rr on rr.booking_id = v.booking_id
+          where v.shop_id = '00000000-0000-0000-0000-00000000005a')
+         = '[{"id": "f1", "reason": "off_topic", "outcome": null}, {"id": "f2", "reason": null, "outcome": null},
+             {"id": "f3", "reason": null, "outcome": null}]',
+    'each review with its report';
+
+  -- Once: again, from another phone or with another reason, is refused.
+  begin
+    perform report_review('00000000-0000-0000-0000-0000000000f1', 'rude');
+    raise exception 'a review is reported once';
+  exception when sqlstate '23505' then
+    assert sqlerrm = 'This review has already been reported.', 'unexpected message: ' || sqlerrm;
+  end;
+  assert (select reason from review_reports where booking_id = '00000000-0000-0000-0000-0000000000f1') = 'off_topic',
+    'the first report stands';
+  -- A reason from the list, and a note of up to 200 characters.
+  foreach r.reason in array array['', 'spam', 'Rude', null] loop
+    begin
+      perform report_review('00000000-0000-0000-0000-0000000000f2', r.reason);
+      raise exception 'reason % should be refused', r.reason;
+    exception when sqlstate '22023' then
+      assert sqlerrm = 'Pick a reason.', 'unexpected message: ' || sqlerrm;
+    end;
+  end loop;
+  begin
+    perform report_review('00000000-0000-0000-0000-0000000000f2', 'other', repeat('x', 201));
+    raise exception 'a note over 200 characters should be refused';
+  exception when sqlstate '22001' then
+    assert sqlerrm = 'Please keep your note under 200 characters.', 'unexpected message: ' || sqlerrm;
+  end;
+  assert not exists (select 1 from review_reports where booking_id = '00000000-0000-0000-0000-0000000000f2'),
+    'nothing is kept of a refused report';
+  r := report_review('00000000-0000-0000-0000-0000000000f2', 'not_customer', repeat('x', 200));
+  assert length(r.note) = 200, 'a note of 200 characters';
+  -- Not another shop's review, nor one that doesn't exist.
+  foreach r.booking_id in array array['00000000-0000-0000-0000-0000000000f4', gen_random_uuid()]::uuid[] loop
+    begin
+      perform report_review(r.booking_id, 'rude');
+      raise exception 'the owner should not report %', r.booking_id;
+    exception when sqlstate 'P0002' then
+      assert sqlerrm = 'Review not found.', 'unexpected message: ' || sqlerrm;
+    end;
+  end loop;
+  -- Only through report_review, and only the team decides.
+  begin
+    insert into review_reports (booking_id, shop_id, reason)
+    values ('00000000-0000-0000-0000-0000000000f3', '00000000-0000-0000-0000-00000000005a', 'rude');
+    raise exception 'reports should not be written directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update review_reports set outcome = 'removed';
+    raise exception 'owners should not decide their own reports';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    delete from review_reports;
+    raise exception 'owners should not take a report back';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform shop_id from review_reports;
+    raise exception 'the app reads the report, not its shop';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
+-- Customers never see reports, the reviewer included, and can't report; nor can guests or another owner.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert (select count(*) from review_reports) = 0, 'the reviewer sees no report';
+  assert strpos(my_bookings()::text, 'off_topic') = 0 and strpos(my_bookings()::text, 'About parking') = 0
+     and strpos(my_bookings()::text, 'outcome') = 0, 'nor anything of it in My bookings';
+  assert (select count(*) from reviews where shop_id = '00000000-0000-0000-0000-00000000005a') = 3, 'all three show';
+  begin
+    perform report_review('00000000-0000-0000-0000-0000000000f3', 'rude');
+    raise exception 'customers should not report reviews';
+  exception when sqlstate 'P0002' then null;
+  end;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  assert (select count(*) from review_reports) = 0, 'other customers see none';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert (select count(*) from review_reports) = 0, 'nor does another shop''s owner';
+  begin
+    perform report_review('00000000-0000-0000-0000-0000000000f3', 'rude');
+    raise exception 'another owner should not report Ali''s reviews';
+  exception when sqlstate 'P0002' then null;
+  end;
+end $$;
+set request.jwt.claim.sub = '';
+set role anon;
+do $$ begin
+  begin
+    perform report_review('00000000-0000-0000-0000-0000000000f3', 'rude');
+    raise exception 'guests must not call report_review';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform count(*) from review_reports;
+    raise exception 'guests must not read reports';
+  exception when insufficient_privilege then null;
+  end;
+  assert (select count(*) from reviews where shop_id = '00000000-0000-0000-0000-00000000005a') = 3,
+    'a reported review still shows to guests';
+  assert jsonb_array_length(shop_page('ali-cuts') -> 'reviews') = 3, 'on the shop''s page too';
+end $$;
+
+-- The team removes Ben's (by hand, as the README says): decided now, and gone
+-- from the page, the barber's reviews and every count, for everyone but the owner.
+reset role;
+update review_reports set outcome = 'removed' where booking_id = '00000000-0000-0000-0000-0000000000f1';
+do $$ begin
+  assert (select decided_at = now() from review_reports where booking_id = '00000000-0000-0000-0000-0000000000f1'),
+    'decided now';
+  assert (select removed from reviews where booking_id = '00000000-0000-0000-0000-0000000000f1'), 'the review is removed';
+end $$;
+set role anon;
+do $$
+declare
+  p jsonb := shop_page('ali-cuts');
+begin
+  assert (select count(*) from reviews where shop_id = '00000000-0000-0000-0000-00000000005a') = 2, 'gone for guests';
+  assert (select count(*) from reviews where barber_id = '00000000-0000-0000-0000-0000000000a6') = 0,
+    'and from Faiz''s reviews';
+  assert jsonb_array_length(p -> 'reviews') = 2 and strpos((p -> 'reviews')::text, 'Parking') = 0,
+    'and from the shop''s page: ' || (p -> 'reviews')::text;
+  assert (select rating_count = 2 and rating_avg = 4.5 from find_shops() where id = '00000000-0000-0000-0000-00000000005a'),
+    'Find a barber''s stars leave it out';
+  assert (select (rating_count, rating_sum) = (0, 0) from barbers where id = '00000000-0000-0000-0000-0000000000a6'),
+    'and so do Faiz''s';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  assert not exists (select 1 from reviews where booking_id = '00000000-0000-0000-0000-0000000000f1'),
+    'the reviewer doesn''t see it on the page either';
+  assert (select e #>> '{review,rating}' = '1' from jsonb_array_elements(my_bookings() -> 'bookings') e
+          where e ->> 'id' = '00000000-0000-0000-0000-0000000000f1'), 'but still has their rating in My bookings';
+  assert strpos(my_bookings()::text, 'removed') = 0, 'told nothing of the report';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert not exists (select 1 from reviews where booking_id = '00000000-0000-0000-0000-0000000000f1'),
+    'nor does another shop''s owner';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  answer text;
+begin
+  assert pg_temp.stars() = 'shop 2/9, Faiz 0/0, Zul 2/9, list 2, cards 2/9', 'removed, it counts nowhere: ' || pg_temp.stars();
+  assert shop_cards(current_date, current_date) #>> '{reviews,newest,comment}' = 'Great, quick',
+    'My shop''s newest comment is the next one';
+  assert jsonb_array_length(shop_page('ali-cuts') -> 'reviews') = 2, 'the owner''s own page leaves it out too';
+  -- The owner still has it on their Reviews, with the outcome.
+  assert (select v.removed and rr.outcome = 'removed' and rr.decided_at = now()
+          from reviews v join review_reports rr on rr.booking_id = v.booking_id
+          where v.booking_id = '00000000-0000-0000-0000-0000000000f1'), 'the owner sees it removed';
+  -- A removed review takes no reply, nor a change to one.
+  foreach answer in array array['Sorry, Ben', ''] loop
+    begin
+      perform reply_to_review('00000000-0000-0000-0000-0000000000f1', answer);
+      raise exception 'a removed review should take no reply';
+    exception when sqlstate '42501' then
+      assert sqlerrm = 'This review was removed, so it can''t have a reply.', 'unexpected message: ' || sqlerrm;
+    end;
+  end loop;
+  assert (select reply is null from reviews where booking_id = '00000000-0000-0000-0000-0000000000f1'), 'no reply';
+end $$;
+
+-- Ben changes his removed review: it stays removed, and still counts nowhere.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f1', 2, 'Cut was fine, parking still bad');
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert (select outcome from review_reports where booking_id = '00000000-0000-0000-0000-0000000000f1') = 'removed',
+    'a removed review stays removed when changed';
+  assert pg_temp.stars() = 'shop 2/9, Faiz 0/0, Zul 2/9, list 2, cards 2/9', 'changed while removed: ' || pg_temp.stars();
+end $$;
+-- Its cut put right to Zul: still nobody's stars.
+reset role;
+update bookings set barber_id = '00000000-0000-0000-0000-0000000000a7' where id = '00000000-0000-0000-0000-0000000000f1';
+set role authenticated;
+do $$ begin
+  assert pg_temp.stars() = 'shop 2/9, Faiz 0/0, Zul 2/9, list 2, cards 2/9', 'moved while removed: ' || pg_temp.stars();
+end $$;
+reset role;
+update bookings set barber_id = '00000000-0000-0000-0000-0000000000a6' where id = '00000000-0000-0000-0000-0000000000f1';
+
+-- The team puts it back after all: it shows again with the stars it has now (2).
+update review_reports set outcome = 'kept' where booking_id = '00000000-0000-0000-0000-0000000000f1';
+set role authenticated;
+do $$ begin
+  assert pg_temp.stars() = 'shop 3/11, Faiz 1/2, Zul 2/9, list 3, cards 3/11', 'put back: ' || pg_temp.stars();
+  assert (select not v.removed and rr.outcome = 'kept' from reviews v join review_reports rr using (booking_id)
+          where booking_id = '00000000-0000-0000-0000-0000000000f1'), 'kept';
+  assert jsonb_array_length(shop_page('ali-cuts') -> 'reviews') = 3, 'on the page again';
+  assert (reply_to_review('00000000-0000-0000-0000-0000000000f1', 'Sorry about the parking, Ben')).reply is not null,
+    'and it can have a reply again';
+end $$;
+-- Undone, the report is open again; removed and then deleted, the review is back.
+reset role;
+update review_reports set outcome = null where booking_id = '00000000-0000-0000-0000-0000000000f1';
+do $$ begin
+  assert (select outcome is null and decided_at is null from review_reports
+          where booking_id = '00000000-0000-0000-0000-0000000000f1'), 'open again';
+end $$;
+update review_reports set outcome = 'removed' where booking_id = '00000000-0000-0000-0000-0000000000f1';
+set role authenticated;
+do $$ begin
+  assert pg_temp.stars() = 'shop 2/9, Faiz 0/0, Zul 2/9, list 2, cards 2/9', 'removed again: ' || pg_temp.stars();
+end $$;
+reset role;
+delete from review_reports where booking_id = '00000000-0000-0000-0000-0000000000f1';
+set role authenticated;
+do $$ begin
+  assert pg_temp.stars() = 'shop 3/11, Faiz 1/2, Zul 2/9, list 3, cards 3/11', 'report deleted: ' || pg_temp.stars();
+  -- With no report left, the owner can report it again.
+  perform report_review('00000000-0000-0000-0000-0000000000f1', 'rude');
+end $$;
+
+-- A kept review its customer changes goes back to the team, and the owner sees it reported again.
+reset role;
+update review_reports set outcome = 'kept' where booking_id = '00000000-0000-0000-0000-0000000000f2';
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+set role authenticated;
+do $$ begin
+  -- The same again changes nothing.
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 5, '  Great, quick ');
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert (select outcome = 'kept' and decided_at is not null from review_reports
+          where booking_id = '00000000-0000-0000-0000-0000000000f2'), 'unchanged, it stays kept';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 5, 'Great, quick. Ali Cuts is the best!');
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert (select outcome is null and decided_at is null and reason = 'not_customer' from review_reports
+          where booking_id = '00000000-0000-0000-0000-0000000000f2'), 'a changed comment opens it again';
+  assert pg_temp.stars() = 'shop 3/11, Faiz 1/2, Zul 2/9, list 3, cards 3/11', 'still counted meanwhile: ' || pg_temp.stars();
+end $$;
+reset role;
+update review_reports set outcome = 'kept' where booking_id = '00000000-0000-0000-0000-0000000000f2';
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+set role authenticated;
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 4);
+end $$;
+reset role;
+do $$ begin
+  assert (select outcome is null from review_reports where booking_id = '00000000-0000-0000-0000-0000000000f2'),
+    'and so do changed stars';
+end $$;
+update review_reports set outcome = 'kept' where booking_id = '00000000-0000-0000-0000-0000000000f2';
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+set role authenticated;
+do $$ begin
+  perform rate_booking('00000000-0000-0000-0000-0000000000f2', 4, null, 'Chong the Real Customer');
+end $$;
+reset role;
+do $$ begin
+  assert (select outcome is null from review_reports where booking_id = '00000000-0000-0000-0000-0000000000f2'),
+    'and a changed name';
+end $$;
+
+-- A deleted review takes its report with it, removed or not, and the counts stay right.
+update review_reports set outcome = 'removed' where booking_id = '00000000-0000-0000-0000-0000000000f2';
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
+set role authenticated;
+do $$ begin perform delete_my_account(); end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert pg_temp.stars() = 'shop 2/6, Faiz 1/2, Zul 1/4, list 2, cards 2/6', 'Chong''s removed review counted nowhere: '
+    || pg_temp.stars();
+  assert (select array_agg(right(booking_id::text, 2)) from review_reports) = array['f1'], 'Chong''s report went with it';
+end $$;
+-- An owner deleting their account takes the shop's reports with its reviews.
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert (select count(*) from review_reports) = 0 and (select count(*) from reviews) = 1, 'only Kemas''s review is left';
+end $$;
+rollback;
+
 -- Near me ------------------------------------------------------------------------
 -- Owners set where their shop is. Given the customer's position, the shop
 -- list goes nearest first with each shop's distance, shops without a
@@ -3125,6 +3496,7 @@ declare
   list jsonb;
   seen_due int := 0;
   seen_matched int := 0;
+  seen_removed int := 0;
 begin
   for seed in 1 .. 8 loop
     perform setseed(seed / 10.0);
@@ -3166,6 +3538,11 @@ begin
     from (select b.*, row_number() over () as n from bookings b
           where b.shop_id = shop and b.status = 'completed' and b.customer_id is not null) b
     where random() < 0.2;
+    -- One in four is reported, and the team kept some and removed some, which count for nothing.
+    insert into review_reports (booking_id, shop_id, reason, outcome)
+    select booking_id, shop_id, 'off_topic', (array[null, 'kept', 'removed'])[1 + floor(random() * 3)::int]
+    from reviews where shop_id = shop and random() < 0.25;
+    seen_removed := seen_removed + (select count(*) from reviews where shop_id = shop and removed);
 
     perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', true);
     cards := shop_cards(monday, monday + 6);
@@ -3187,17 +3564,19 @@ begin
         format('seed %s: takings %s to %s', seed, periods[2 * i - 1], periods[2 * i]);
     end loop;
     assert cards -> 'reviews' = jsonb_build_object(
-        'count', (select count(*) from reviews where shop_id = shop),
-        'sum', (select coalesce(sum(rating), 0) from reviews where shop_id = shop),
+        'count', (select count(*) from reviews where shop_id = shop and not removed),
+        'sum', (select coalesce(sum(rating), 0) from reviews where shop_id = shop and not removed),
         'newest', (select jsonb_build_object('rating', rating, 'comment', comment, 'first_name', first_name)
-                   from reviews where shop_id = shop and comment is not null order by created_at desc limit 1)),
+                   from reviews where shop_id = shop and comment is not null and not removed
+                   order by created_at desc limit 1)),
       format('seed %s: reviews %s', seed, cards -> 'reviews');
 
     perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b3', true);
     assert shop_cards(monday, monday + 6) -> 'customers' = '{"total": 2, "due": 2}',
       'the other shop counts its own two: ' || (shop_cards(monday, monday + 6) -> 'customers')::text;
   end loop;
-  assert seen_due > 0 and seen_matched > 0, 'the diaries had people due, and walk-ins matched to an account';
+  assert seen_due > 0 and seen_matched > 0 and seen_removed > 0,
+    'the diaries had people due, walk-ins matched to an account and reviews removed';
 
   -- Days the shop is closed, from today to 60 days ahead, as Holidays lists them.
   perform set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000b1', true);
@@ -4420,6 +4799,25 @@ end $$;
 rollback;
 
 -- Whole screens in one request ------------------------------------------------------
+-- What My shop asked for its photos before they came with shop_cards: the
+-- owner's select of their shop's photos, each with who did it, in order, as
+-- the app sent it. Security invoker, so row-level security decides what it
+-- sees. For this part and the photos'.
+reset role;
+create function public.test_owner_photos()
+returns jsonb
+language sql
+as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', ph.id, 'barber_id', ph.barber_id, 'caption', ph.caption, 'path', ph.path,
+           'thumb_path', ph.thumb_path, 'width', ph.width, 'height', ph.height, 'sort_order', ph.sort_order,
+           'barber', (select jsonb_build_object('name', b.name) from barbers b where b.id = ph.barber_id))
+         order by ph.sort_order, ph.created_at, ph.id), '[]')
+  from (select ph.* from shop_photos ph
+        where ph.shop_id = (select s.id from shops s where s.owner_id = auth.uid())
+        order by ph.sort_order, ph.created_at, ph.id limit 24) ph;
+$$;
+
 -- The shop's page (shop_page) and the barber's day (shop_day) each come in one
 -- answer, part for part what the requests they replace give the same caller:
 -- the selects under row-level security as the app sent them, and the
@@ -4501,6 +4899,9 @@ begin
             case when n % 2 = 0 then 'Hakim' else 'Ben' end, case when n = 1 then 'Terima kasih' end,
             case when n = 1 then now() end, b.ends_at + interval '1 hour');
   end loop;
+  -- Hakim's two weeks ago was reported, and the team removed it: no page shows it, the owner's included.
+  insert into review_reports (booking_id, shop_id, reason, outcome)
+  select booking_id, shop_id, 'rude', 'removed' from reviews where shop_id = shop and comment = 'Kemas 2';
   -- Today: Ben's online cut with a note, a walk-in with a number, Danial's break, and one Siti cancelled.
   insert into bookings (shop_id, barber_id, service_id, customer_id, service_name, price, starts_at, ends_at,
                         customer_note, customer_changed_at, customer_change)
@@ -4569,7 +4970,7 @@ begin
          order by r.created_at desc, r.booking_id), '[]')
     into page
   from (select r.booking_id, r.rating, r.comment, r.first_name, r.reply, r.replied_at, r.created_at, r.barber_id
-        from reviews r where r.shop_id = s.id order by r.created_at desc, r.booking_id limit 4) r;
+        from reviews r where r.shop_id = s.id and not r.removed order by r.created_at desc, r.booking_id limit 4) r;
   return jsonb_build_object(
     'shop', to_jsonb(s),
     'services', coalesce((select jsonb_agg(to_jsonb(v) order by v.sort_order, v.name, v.id)
@@ -4708,6 +5109,14 @@ begin
     assert p -> part = before -> part, format('the owner''s %s: %s, not %s', part, p -> part, before -> part);
   end loop;
   assert strpos(p::text, 'Kenduri') > 0 and strpos(p::text, 'Hari Raya') > 0, 'the owner''s reasons: ' || (p -> 'closed_days')::text;
+  assert strpos((p -> 'reviews')::text, 'Kemas 2') = 0 and p #>> '{reviews,1,comment}' is null
+     and p #>> '{reviews,2,comment}' = 'Kemas 4', 'not the removed review: ' || (p -> 'reviews')::text;
+  -- My shop's photos come with its cards, as the owner's own select gave them.
+  assert shop_cards(current_date, current_date) -> 'photos' = test_owner_photos(),
+    format('the photos: %s, not %s', shop_cards(current_date, current_date) -> 'photos', test_owner_photos());
+  assert (select array_agg(split_part(ph ->> 'path', '/', 2) || ' ' || coalesce(ph #>> '{barber,name}', '-'))
+          from jsonb_array_elements(shop_cards(current_date, current_date) -> 'photos') ph)
+         = array['2.jpg Danial', '4.jpg Ali', '3.jpg -', '1.jpg Ali'], 'in order, each with who did it';
 end $$;
 -- A shop with no queue sends none, and its reviews are none yet.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000001c1';
@@ -4748,6 +5157,8 @@ declare
 begin
   assert p = test_shop_requests('ali-cuts') and p #>> '{shop,name}' = 'Ali Cuts', 'the owner''s paused shop: ' || p::text;
   assert p #> '{queue,open}' = 'false', 'with its queue shut while paused';
+  assert jsonb_array_length(shop_cards(current_date, current_date) -> 'photos') = 4
+     and shop_cards(current_date, current_date) -> 'photos' = test_owner_photos(), 'My shop still has its photos';
 end $$;
 reset role;
 update shops set is_published = true where id = '00000000-0000-0000-0000-00000000005a';
@@ -5075,6 +5486,12 @@ where path = current_setting('test.shop') || '/cut2.jpg';
 update shop_photos
 set sort_order = (select min(sort_order) - 1 from shop_photos where shop_id = current_setting('test.shop')::uuid)
 where path = current_setting('test.shop') || '/cut2.jpg';
+do $$ begin
+  assert shop_cards(current_date, current_date) -> 'photos' = test_owner_photos()
+     and shop_cards(current_date, current_date) #>> '{photos,0,barber,name}' = 'Faiz'
+     and shop_cards(current_date, current_date) #>> '{photos,0,caption}' = 'Low taper',
+    'My shop has them in the new order, as its select did: ' || (shop_cards(current_date, current_date) -> 'photos')::text;
+end $$;
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c1';
 do $$ begin
   assert (select array_agg(caption order by sort_order, created_at, id) from shop_photos)
@@ -5092,6 +5509,8 @@ do $$ begin
   assert (select barber_id is null and caption = 'Low taper' from shop_photos
           where path = current_setting('test.shop') || '/cut2.jpg'),
     'the photo stays, without its barber';
+  assert shop_cards(current_date, current_date) -> 'photos' = test_owner_photos()
+     and shop_cards(current_date, current_date) #> '{photos,0,barber}' = 'null', 'and My shop names nobody';
 end $$;
 
 -- 24 at most, however they come.
@@ -5116,9 +5535,15 @@ begin
   insert into shop_photos (shop_id, path, thumb_path, width, height)
   values (shop::uuid, shop || '/25.jpg', shop || '/25-thumb.jpg', 800, 800);
   assert (select count(*) from shop_photos) = 24, 'removing one makes room';
+  assert jsonb_array_length(shop_cards(current_date, current_date) -> 'photos') = 24
+     and shop_cards(current_date, current_date) -> 'photos' = test_owner_photos(), 'My shop has all 24';
 end $$;
 -- The limit is per shop: Rahman's shop starts at none.
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b2';
+do $$ begin
+  assert shop_cards(current_date, current_date) -> 'photos' = '[]' and test_owner_photos() = '[]',
+    'none of Ali''s photos for Rahman';
+end $$;
 insert into shop_photos (shop_id, path, thumb_path, width, height)
 values ('00000000-0000-0000-0000-00000000005b', '00000000-0000-0000-0000-00000000005b/first.jpg',
         '00000000-0000-0000-0000-00000000005b/first-thumb.jpg', 800, 800);
@@ -5232,6 +5657,8 @@ begin
     'reads the (bucket_id, name collate "C") index for the folder''s range: ' || plan;
 end $$;
 rollback;
+reset role;
+drop function public.test_owner_photos();
 
 -- Deleting an account ------------------------------------------------------
 reset role;

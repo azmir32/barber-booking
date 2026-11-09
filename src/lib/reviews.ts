@@ -3,6 +3,7 @@
 
 import { daysSince, timeSpan } from './customers.ts';
 import { t } from './lang.ts';
+import type { ReviewReport } from './review-reports.ts';
 import { formatCount } from './time.ts';
 
 /** Days after a cut starts that its customer can rate it, or change their rating (as rate_booking allows). */
@@ -36,6 +37,9 @@ export type ShopReview = {
   barbers: { name: string } | null;
   /** Only the shop's owner gets these: the cut that was rated. */
   bookings?: { service_name: string; starts_at: string } | null;
+  /** Whether the team removed it, and the owner's report of it (null if none). */
+  removed?: boolean;
+  report?: ReviewReport | null;
 };
 
 /** When the customer can no longer rate this cut, or change their rating. */

@@ -6,6 +6,8 @@
 import { kmBetween, shopPoint } from '../lib/distance.ts';
 import { toWhatsAppNumber } from '../lib/phone.ts';
 import { queueEstimate } from '../lib/queue.ts';
+import { PHOTO_COLUMNS } from '../lib/photos.ts';
+import { REPORT_NOTE_MAX_LENGTH, REPORT_REASONS } from '../lib/review-reports.ts';
 import { firstName, REVIEW_WINDOW_DAYS, reviewName } from '../lib/reviews.ts';
 import { addDays, dayBounds, localClock, localDateString } from '../lib/time.ts';
 import {
@@ -13,6 +15,7 @@ import {
   deleteRows,
   findById,
   insertRow,
+  MAX_SHOP_PHOTOS,
   now,
   ownsShop,
   parseTime,
@@ -1106,14 +1109,16 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
  * shop_cards: everything My shop's cards show, in one answer: shop_summary's
  * totals for p_from to p_to, how many customers shop_customers lists and how
  * many of them are due, the shop's review count and sum with its newest
- * comment, and the days closed from today to 60 days ahead.
+ * comment (never a removed one), the days closed from today to 60 days
+ * ahead, and the photos of its cuts with each one's barber, as the owner's
+ * select of them gave them.
  */
 export function shopCards(c: Caller, fromArg: unknown, toArg: unknown) {
   const shop = myShop(c);
   const { totals } = shopSummary(c, fromArg, toArg);
   const customers = customersOf(shop, null);
   const newest = tables()
-    .reviews.filter((r) => r.shop_id === shop.id && r.comment != null)
+    .reviews.filter((r) => r.shop_id === shop.id && r.comment != null && r.removed !== true)
     .sort((a, b) => ms(b.created_at) - ms(a.created_at))[0];
   const today = localDateString(new Date(now()), String(shop.time_zone));
   const last = addDays(today, 60);
@@ -1129,6 +1134,12 @@ export function shopCards(c: Caller, fromArg: unknown, toArg: unknown) {
       .shop_closures.filter((cl) => cl.shop_id === shop.id && String(cl.day) >= today && String(cl.day) <= last)
       .map((cl) => ({ day: String(cl.day), reason: (cl.reason as string | null) ?? null }))
       .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0)),
+    photos: selectAs(c, 'shop_photos', {
+      select: `${PHOTO_COLUMNS},barber:barbers(name)`,
+      shop_id: `eq.${String(shop.id)}`,
+      order: 'sort_order,created_at,id',
+      limit: String(MAX_SHOP_PHOTOS),
+    }),
   };
 }
 
@@ -1808,11 +1819,15 @@ export function rateBooking(
   });
 }
 
-/** The shop's owner replies under a review, or changes their reply. An empty reply takes it away. */
+/**
+ * The shop's owner replies under a review, or changes their reply. An empty
+ * reply takes it away. A review the team removed takes no reply.
+ */
 export function replyToReview(c: Caller, bookingId: unknown, replyArg: unknown) {
   const id = toColumnValue('reviews', 'booking_id', bookingId);
   const review = tables().reviews.find((r) => r.booking_id === id);
   if (!review || !ownsShop(review.shop_id, c.uid)) throw new PgError('P0002', 'Review not found.', 500);
+  if (review.removed === true) throw new PgError('42501', 'This review was removed, so it can\'t have a reply.', 403);
   const reply = trimmedText(replyArg);
   if (reply != null && [...reply].length > 280) {
     throw new PgError('22001', 'Please keep your reply under 280 characters.', 400);
@@ -1821,6 +1836,25 @@ export function replyToReview(c: Caller, bookingId: unknown, replyArg: unknown) 
     reply,
     replied_at: reply != null ? new Date(now()).toISOString() : null,
   })[0];
+}
+
+/**
+ * The shop's owner reports a review they find unfair, with a reason and an
+ * optional note, for the PotongKu team to decide. One report a review.
+ */
+export function reportReview(c: Caller, bookingId: unknown, reasonArg: unknown, noteArg: unknown = null) {
+  const id = toColumnValue('reviews', 'booking_id', bookingId);
+  const review = tables().reviews.find((r) => r.booking_id === id);
+  if (!review || !ownsShop(review.shop_id, c.uid)) throw new PgError('P0002', 'Review not found.', 500);
+  if (!(REPORT_REASONS as readonly unknown[]).includes(reasonArg)) throw new PgError('22023', 'Pick a reason.', 400);
+  const note = trimmedText(noteArg);
+  if (note != null && [...note].length > REPORT_NOTE_MAX_LENGTH) {
+    throw new PgError('22001', 'Please keep your note under 200 characters.', 400);
+  }
+  if (tables().review_reports.some((r) => r.booking_id === review.booking_id)) {
+    throw new PgError('23505', 'This review has already been reported.', 409);
+  }
+  return insertRow('review_reports', { booking_id: review.booking_id, shop_id: review.shop_id, reason: reasonArg, note });
 }
 
 export function deleteMyAccount(c: Caller) {
@@ -1899,6 +1933,7 @@ export function shopPage(c: Caller, slug: unknown) {
   const reviews = selectAs(c, 'reviews', {
     select: 'booking_id,rating,comment,first_name,reply,replied_at,created_at,barbers(name)',
     ...forShop,
+    removed: 'eq.false',
     order: 'created_at.desc,booking_id',
     limit: '4',
   });
@@ -2006,6 +2041,7 @@ const SIGNED_IN_ONLY = new Set([
   'my_bookings',
   'rate_booking',
   'reply_to_review',
+  'report_review',
   'my_shops',
   'my_upcoming_bookings',
   'join_waitlist',
@@ -2085,6 +2121,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       };
     case 'reply_to_review':
       return { status: 200, body: replyToReview(c, args.p_booking_id, args.p_reply) };
+    case 'report_review':
+      return { status: 200, body: reportReview(c, args.p_booking_id, args.p_reason, args.p_note ?? null) };
     case 'my_shops':
       return { status: 200, body: myShops(c) };
     case 'my_upcoming_bookings':

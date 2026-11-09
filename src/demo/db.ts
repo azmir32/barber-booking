@@ -16,6 +16,7 @@ export type TableName =
   | 'bookings'
   | 'shop_closures'
   | 'reviews'
+  | 'review_reports'
   | 'waitlist'
   | 'queue_entries'
   | 'shop_photos';
@@ -183,8 +184,20 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     first_name: req('text'),
     reply: opt('text'),
     replied_at: opt('timestamptz'),
+    // Kept in step with its report by the review_reports_removed trigger (reviewRemoved below).
+    removed: req('bool', () => false),
     created_at: createdAt,
     updated_at: req('timestamptz', nowIso),
+  },
+  // An owner's report of a review: open while outcome is null, then the team's 'kept' or 'removed'.
+  review_reports: {
+    booking_id: req('uuid'),
+    shop_id: req('uuid'),
+    reason: req('text', undefined, ['not_customer', 'rude', 'off_topic', 'other']),
+    note: opt('text'),
+    outcome: opt('text'),
+    decided_at: opt('timestamptz'),
+    created_at: createdAt,
   },
   waitlist: {
     id,
@@ -236,6 +249,7 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
 const PRIMARY_KEY: Partial<Record<TableName, string[]>> = {
   shop_closures: ['shop_id', 'day'],
   reviews: ['booking_id'],
+  review_reports: ['booking_id'],
 };
 
 /** Postgres trim(): spaces only, unlike String.prototype.trim. */
@@ -307,6 +321,11 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['reviews_first_name_check', (r) => atMost(r.first_name, 40)],
     ['reviews_reply_check', (r) => atMost(r.reply, 280)],
     ['reviews_check', (r) => (r.reply == null) === (r.replied_at == null)],
+  ],
+  review_reports: [
+    ['review_reports_note_check', (r) => atMost(r.note, 200)],
+    ['review_reports_outcome_check', (r) => r.outcome == null || ['kept', 'removed'].includes(String(r.outcome))],
+    ['review_reports_check', (r) => (r.outcome == null) === (r.decided_at == null)],
   ],
   queue_entries: [
     ['queue_entries_guest_name_check', (r) => atMost(r.guest_name, 80)],
@@ -381,8 +400,13 @@ export type ForeignKey = {
   table: TableName;
   column: string;
   references: TableName;
+  /** The column it points at, when that isn't the table's id. */
+  key?: string;
   onDelete: 'cascade' | 'set null' | 'restrict';
 };
+
+/** The column a foreign key points at. */
+export const keyOf = (fk: ForeignKey) => fk.key ?? 'id';
 
 export const FOREIGN_KEYS: ForeignKey[] = [
   { name: 'profiles_id_fkey', table: 'profiles', column: 'id', references: 'users', onDelete: 'cascade' },
@@ -427,6 +451,14 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     table: 'reviews',
     column: 'customer_id',
     references: 'profiles',
+    onDelete: 'cascade',
+  },
+  {
+    name: 'review_reports_booking_id_fkey',
+    table: 'review_reports',
+    column: 'booking_id',
+    references: 'reviews',
+    key: 'booking_id',
     onDelete: 'cascade',
   },
   { name: 'waitlist_shop_id_fkey', table: 'waitlist', column: 'shop_id', references: 'shops', onDelete: 'cascade' },
@@ -639,7 +671,8 @@ function moveToToday(saved: Tables, savedOn: string, version: number) {
   const has = new Set((saved.users ?? []).map((u) => u.email));
   const newcomers = Object.keys(CAME_IN).filter((email) => CAME_IN[email] > version && !has.has(email));
   const hadQueue = Array.isArray(saved.queue_entries);
-  if (!Number.isFinite(days) || (days === 0 && Array.isArray(saved.reviews) && hadQueue && newcomers.length === 0)) {
+  const settled = Array.isArray(saved.reviews) && Array.isArray(saved.review_reports) && hadQueue;
+  if (!Number.isFinite(days) || (days === 0 && settled && newcomers.length === 0)) {
     return;
   }
   for (const [table, columns] of Object.entries(COLUMNS) as [TableName, Record<string, Column>][]) {
@@ -721,6 +754,18 @@ function moveToToday(saved: Tables, savedOn: string, version: number) {
       ),
   ].map((r) => ({ ...r, barber_id: byId.get(r.booking_id)!.barber_id }));
 
+  // A report stays with its review, and a sample review laid out again
+  // brings its sample report; each review is removed as its report says.
+  const rated = new Set(saved.reviews.map((r) => r.booking_id));
+  const reports = (saved.review_reports ?? []).filter((r) => rated.has(r.booking_id));
+  const reported = new Set(reports.map((r) => r.booking_id));
+  saved.review_reports = [
+    ...reports,
+    ...sample.review_reports.filter((r) => rated.has(r.booking_id) && !reported.has(r.booking_id)),
+  ];
+  const outcomes = new Map(saved.review_reports.map((r) => [r.booking_id, r.outcome]));
+  for (const r of saved.reviews) r.removed = outcomes.get(r.booking_id) === 'removed';
+
   // The walk-in queue is today's. One from a day gone by is over, as the
   // shop's page leaves it out, so today's sample queue takes its place at
   // the shops that still take walk-ins in turn; a demo saved before the
@@ -796,6 +841,7 @@ export function tables(): Tables {
       const hadReviews = Array.isArray(parsed.tables.reviews);
       const hadQueue = Array.isArray(parsed.tables.queue_entries);
       const hadPhotos = Array.isArray(parsed.tables.shop_photos);
+      const hadReports = Array.isArray(parsed.tables.review_reports);
       const version = Number(parsed.version) || 0;
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn, version);
       // A demo saved before a table was added has no list for it yet,
@@ -811,7 +857,9 @@ export function tables(): Tables {
       recountReviews(current);
       if (!hadPhotos) current.shop_photos = samplePhotos(current);
       seededOn = today();
-      if (parsed.seededOn !== seededOn || !hadReviews || !hadQueue || !hadPhotos || version < VERSION) save();
+      if (parsed.seededOn !== seededOn || !hadReviews || !hadQueue || !hadPhotos || !hadReports || version < VERSION) {
+        save();
+      }
     }
   } catch {
     // Unreadable or blocked storage: start fresh.
@@ -899,7 +947,7 @@ function checkRow(table: TableName, row: Row) {
   }
   for (const fk of FOREIGN_KEYS) {
     if (fk.table !== table || row[fk.column] == null) continue;
-    if (!all[fk.references].some((target) => target.id === row[fk.column])) {
+    if (!all[fk.references].some((target) => target[keyOf(fk)] === row[fk.column])) {
       throw new PgError(
         '23503',
         `insert or update on table "${table}" violates foreign key constraint "${fk.name}"`,
@@ -925,6 +973,7 @@ export function insertRow(table: TableName, values: Row, guard?: (row: Row) => v
   tables()[table].push(row);
   if (table === 'users') handleNewUser(row);
   if (table === 'reviews') countReview(row, 1);
+  if (table === 'review_reports') reviewRemoved(row);
   return row;
 }
 
@@ -941,7 +990,7 @@ export function updateRows(table: TableName, rows: Row[], patch: Row, guard?: (r
     if (next.id !== row.id) {
       // ON UPDATE NO ACTION: an id other rows point at can't change.
       for (const fk of FOREIGN_KEYS) {
-        if (fk.references === table && tables()[fk.table].some((r) => r[fk.column] === row.id)) {
+        if (fk.references === table && keyOf(fk) === 'id' && tables()[fk.table].some((r) => r[fk.column] === row.id)) {
           throw new PgError(
             '23503',
             `update or delete on table "${table}" violates foreign key constraint "${fk.name}" on table "${fk.table}"`,
@@ -962,7 +1011,11 @@ export function updateRows(table: TableName, rows: Row[], patch: Row, guard?: (r
     if (table === 'reviews') {
       countReview(row, -1);
       countReview(next, 1);
+      if (next.rating !== row.rating || next.comment !== row.comment || next.first_name !== row.first_name) {
+        reopenReport(next);
+      }
     }
+    if (table === 'review_reports' && next.outcome !== row.outcome) reviewRemoved(next);
     if (table === 'bookings' && next.barber_id !== row.barber_id) reviewFollowsCut(next);
     updated.push(next);
   }
@@ -981,7 +1034,7 @@ export function deleteRows(table: TableName, rows: Row[]) {
       set.add(row);
       for (const fk of FOREIGN_KEYS) {
         if (fk.references !== t || fk.onDelete !== 'cascade') continue;
-        mark(fk.table, all[fk.table].filter((r) => r[fk.column] === row.id));
+        mark(fk.table, all[fk.table].filter((r) => r[fk.column] === row[keyOf(fk)]));
       }
     }
   };
@@ -990,7 +1043,7 @@ export function deleteRows(table: TableName, rows: Row[]) {
   for (const fk of FOREIGN_KEYS) {
     const gone = doomed.get(fk.references);
     if (!gone || gone.size === 0) continue;
-    const ids = new Set([...gone].map((r) => r.id));
+    const ids = new Set([...gone].map((r) => r[keyOf(fk)]));
     for (const ref of all[fk.table]) {
       if (!ids.has(ref[fk.column]) || doomed.get(fk.table)?.has(ref)) continue;
       if (fk.onDelete === 'set null') ref[fk.column] = null;
@@ -1004,19 +1057,39 @@ export function deleteRows(table: TableName, rows: Row[]) {
     }
   }
   for (const review of doomed.get('reviews') ?? []) countReview(review, -1);
+  // A report deleted on its own puts its review back; one going with its review changes nothing.
+  const reviewsGone = doomed.get('reviews') ?? new Set<Row>();
+  const putBack = [...(doomed.get('review_reports') ?? [])].filter(
+    (report) => ![...reviewsGone].some((r) => r.booking_id === report.booking_id),
+  );
   for (const [t, set] of doomed) all[t] = all[t].filter((r) => !set.has(r));
+  for (const report of putBack) reviewRemoved({ ...report, outcome: null });
 }
 
 /**
  * The reviews_count trigger: adds a review to its shop's and its barber's
- * count and total, or (sign -1) takes it off.
+ * count and total, or (sign -1) takes it off. A removed review counts for nobody.
  */
 function countReview(review: Row, sign: 1 | -1) {
+  if (review.removed === true) return;
   for (const row of [findById('shops', review.shop_id), findById('barbers', review.barber_id)]) {
     if (!row) continue;
     row.rating_count = (row.rating_count as number) + sign;
     row.rating_sum = (row.rating_sum as number) + sign * (review.rating as number);
   }
+}
+
+/** The review_reports_removed trigger: the review is removed while its report says so, and back otherwise. */
+function reviewRemoved(report: Row) {
+  const review = tables().reviews.find((r) => r.booking_id === report.booking_id);
+  const removed = report.outcome === 'removed';
+  if (review && review.removed !== removed) updateRows('reviews', [review], { removed });
+}
+
+/** The reviews_reopen_report trigger: a kept review its customer changes goes back to the team. */
+function reopenReport(review: Row) {
+  const report = tables().review_reports.find((r) => r.booking_id === review.booking_id && r.outcome === 'kept');
+  if (report) updateRows('review_reports', [report], { outcome: null });
 }
 
 /** The bookings_review_barber trigger: a rated cut put right to another barber takes its review along. */
@@ -1033,6 +1106,7 @@ function recountReviews(all: Tables) {
     row.rating_sum = 0;
   }
   for (const review of all.reviews) {
+    if (review.removed === true) continue;
     for (const row of [byId.get(review.shop_id), byId.get(review.barber_id)]) {
       if (!row) continue;
       row.rating_count = (row.rating_count as number) + 1;
@@ -1042,13 +1116,19 @@ function recountReviews(all: Tables) {
 }
 
 /**
- * The shops' before triggers: shops_first_published notes when a shop first
- * goes live and keeps it while paused, and shops_ready_to_go_live (on an
- * update, `before` being the row as it was) only lets a shop go live with
- * something customers can book.
+ * The before triggers: shop_photos_check, review_reports_decided, and the
+ * shops': shops_first_published notes when a shop first goes live and keeps
+ * it while paused, and shops_ready_to_go_live (on an update, `before` being
+ * the row as it was) only lets a shop go live with something customers can book.
  */
 function beforeWrite(table: TableName, row: Row, before?: Row) {
   if (table === 'shop_photos') return shopPhotosCheck(row, before);
+  // review_reports_decided: decided_at follows the outcome.
+  if (table === 'review_reports') {
+    if (row.outcome == null) row.decided_at = null;
+    else if (!before || row.outcome !== before.outcome) row.decided_at = nowIso();
+    return;
+  }
   if (table !== 'shops') return;
   if (row.is_published === true && row.published_at == null) row.published_at = nowIso();
   if (before && row.is_published === true && before.is_published !== true) readyToGoLive(row);
