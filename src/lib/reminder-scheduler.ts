@@ -54,9 +54,21 @@ function permissionOf(p: Notifications.NotificationPermissionsStatus): ReminderP
   return p.canAskAgain ? 'ask' : 'blocked';
 }
 
+/**
+ * Android: notifications allowed, but the "Booking reminders" channel turned
+ * off in the phone's Settings, which stops them all the same; said as
+ * blocked, so Account says they are off and offers Settings.
+ */
+async function withChannel(permission: ReminderPermission): Promise<ReminderPermission> {
+  if (Platform.OS !== 'android' || permission !== 'granted') return permission;
+  const channel = await Notifications.getNotificationChannelAsync(CHANNEL).catch(() => null);
+  return channel?.importance === Notifications.AndroidImportance.NONE ? 'blocked' : permission;
+}
+
 async function readPermission(): Promise<ReminderPermission> {
   const permission = await Notifications.getPermissionsAsync()
     .then(permissionOf)
+    .then(withChannel)
     .catch((): ReminderPermission => 'unknown');
   setReminderState({ permission });
   return permission;
@@ -140,6 +152,7 @@ export async function allowReminders(): Promise<ReminderPermission> {
     ios: { allowAlert: true, allowSound: true, allowBadge: false },
   })
     .then(permissionOf)
+    .then(withChannel)
     .catch(() => readPermission());
   setReminderState({ permission });
   if (permission === 'granted') await refreshReminders();
