@@ -954,6 +954,45 @@ test('Ali reports an unfair review once, and sees it waiting for the team', asyn
   await expect(reportedOne).toBeVisible();
 });
 
+test('a review reported meanwhile from another tab shows that report, saying it was already reported', async ({
+  page,
+  context,
+}) => {
+  const app = await open(page);
+  await button(app, 'Try as a barber').click();
+  await app.getByRole('tab', { name: /My shop/ }).click();
+  await app.getByRole('link', { name: /^Reviews: Rated / }).click();
+  await button(app, 'Report Aiman’s review').click();
+  await app
+    .getByRole('radiogroup', { name: 'Why is it unfair?' })
+    .getByRole('radio', { name: 'Not a real customer', exact: true })
+    .click();
+
+  // Meanwhile Ali reports it from another tab, as rude.
+  // Signed in there too, as the tabs share the browser's storage.
+  const other = await context.newPage();
+  await other.goto('/host');
+  const second = other.frameLocator('#app');
+  await second.getByRole('tab', { name: /My shop/ }).click();
+  await second.getByRole('link', { name: /^Reviews: Rated / }).click();
+  await button(second, 'Report Aiman’s review').click();
+  await second.getByRole('radiogroup', { name: 'Why is it unfair?' }).getByRole('radio', { name: 'Rude or hateful', exact: true }).click();
+  await button(second, 'Send report').click();
+  await expect(second.getByLabel(/^Reported\. Rude or hateful\. /)).toBeVisible();
+  await other.close();
+
+  // Sending here finds it reported, and shows that report as it is.
+  await button(app, 'Send report').click();
+  const status = app.getByLabel(
+    'This review has already been reported. Reported. Rude or hateful. It stays on your page until the PotongKu team decides.',
+    { exact: true },
+  );
+  await expect(status).toBeFocused();
+  await expect(app.getByText('This review has already been reported.', { exact: true })).toBeVisible();
+  await expect(app.getByText('That name or link is already taken.')).toHaveCount(0);
+  await expect(button(app, 'Report Aiman’s review')).toHaveCount(0);
+});
+
 /** Answers Google Maps here, so the tests stay offline, and returns what a press of `press` opened it at. */
 async function opensGoogleMaps(page: Page, press: () => Promise<void>) {
   await page.context().route('https://www.google.com/maps/**', (route) =>

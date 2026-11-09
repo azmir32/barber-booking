@@ -261,7 +261,7 @@ function OwnerReview({
             ref={status}
             accessible
             tabIndex={-1}
-            accessibilityLabel={[notice, statusText.badge, statusText.line].filter(Boolean).join('. ')}
+            accessibilityLabel={sentences([notice, statusText.badge, statusText.line])}
             style={[styles.status, { borderColor: theme.border }]}>
             {notice ? <T variant="small">{notice}</T> : null}
             {/* Side by side, or the line under the badge once text is big, so it isn't a narrow column. */}
@@ -390,11 +390,13 @@ function ReportForm({
       p_note: note,
     });
     if (error?.code === '23505') {
-      // Reported already: what the team made of it, rather than guessing.
+      // Reported already: what the team made of it, rather than guessing. Said in
+      // the database's words, as errorMessage reads 23505 as a name or link taken.
+      const already = t('This review has already been reported.');
       const real = await supabase.from('review_reports').select(REPORT_COLUMNS).eq('booking_id', review.booking_id).maybeSingle();
       setSending(false);
-      if (real.data) return onSent(real.data as ReviewReport, errorMessage(error));
-      return setError(errorMessage(real.error ?? error));
+      if (real.data) return onSent(real.data as ReviewReport, already);
+      return setError(real.error ? errorMessage(real.error) : already);
     }
     setSending(false);
     if (error || !data) return setError(errorMessage(error));
@@ -433,6 +435,12 @@ function ReportForm({
       </Row>
     </View>
   );
+}
+
+/** Parts read as one label, "This review has already been reported. Kept. The …", never with a full stop twice. */
+function sentences(parts: (string | null)[]) {
+  const said = parts.filter((p): p is string => Boolean(p));
+  return said.map((p, i) => (i < said.length - 1 ? p.replace(/\.\s*$/, '') : p)).join('. ');
 }
 
 /** Moves a screen reader, or the keyboard on the web, to `node`. */
