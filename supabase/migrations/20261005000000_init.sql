@@ -909,11 +909,22 @@ revoke execute on function public.km_between(double precision, double precision,
 -- today the next free time of the rest (today only); until the page is
 -- full. A batch is the page's size at first, then what is still missing,
 -- twice over; when few shops match it grows fourfold each time, to 1,024.
+-- One call works out at most 128 shops' next free times and looks at
+-- most 1,024 shops' hours, and says in next_from how far into the list it
+-- got, so the next page carries on from there (p_from) instead of looking
+-- through the earlier shops again. A call that stops at a cap can list
+-- fewer shops than asked for, or none, and then it returns one row with
+-- only next_from set, so the app can say how far it has looked and offer
+-- to look further. When no cap is reached the pages are the same as
+-- working out every shop and filtering.
 -- So a page costs about what it does without filters when most shops
 -- match (4 ms against 3), 20 ms when none can (at ten to midnight, or on a
--- day nobody works, the hours step alone), and the most, about 145 ms,
--- when nearly every shop is open but booked up for the rest of the day:
--- then every shop's next free time is worked out, as the naive way does.
+-- day nobody works, the hours step alone), and the most when nearly every
+-- shop is open but booked up for the rest of the day: then each call works
+-- out 128 next free times, about 16 ms with 1,000 shops (and page 2 the
+-- same), where without the cap it was 145 ms and each page looked through
+-- the ones before it again. 128 keeps that call at 15 to 20 ms; the README
+-- says what to do if the cap shows.
 create function public.find_shops(
   p_search text default null,
   p_area text default null,
@@ -923,7 +934,8 @@ create function public.find_shops(
   p_lng double precision default null,
   p_open_now boolean default false,
   p_free_today boolean default false,
-  p_walk_ins boolean default false
+  p_walk_ins boolean default false,
+  p_from int default 0
 )
 returns table (
   id uuid,
@@ -946,7 +958,13 @@ returns table (
   -- How many are waiting in its walk-in queue today; null when it has none.
   queue_waiting int,
   -- Its first photo's thumbnail (a path in the shop-photos bucket); null without photos.
-  photo_thumb text
+  photo_thumb text,
+  -- With Open now or Free today: how many shops into the list this call
+  -- looked, the same on every row, to send back as p_from for the next
+  -- page; null once it reached the end of the list, and without them. A
+  -- call that stops at a cap before finding any shop returns one row with
+  -- only this set.
+  next_from int
 )
 language plpgsql
 stable
@@ -956,6 +974,11 @@ set plan_cache_mode = force_generic_plan
 as $$
 #variable_conflict use_column
 declare
+  -- With Free today, at most this many shops' next free times are worked
+  -- out in one call, and with Open now or Free today at most this many
+  -- shops' hours are looked at (see above).
+  c_free_cap constant int := 128;
+  c_hours_cap constant int := 1024;
   v_search text := lower(trim(p_search));
   v_area text := lower(trim(p_area));
   v_near boolean := coalesce(p_lat between -90 and 90 and p_lng between -180 and 180, false);
@@ -977,9 +1000,17 @@ declare
   v_o time[];
   v_c time[];
   v_n timestamptz[];
+  -- Where each listed shop is in v_cands, and in the batch.
+  v_places int[];
+  v_p int[];
   v_want int := v_offset + v_limit;
-  v_at int := 1;
+  v_from int := greatest(coalesce(p_from, 0), 0);
+  v_at int := greatest(coalesce(p_from, 0), 0) + 1;
+  v_end int;
+  v_last int;
   v_size int := v_offset + v_limit;
+  v_budget int := c_free_cap;
+  v_next_from int;
 begin
   if not (v_open or v_free) then
     -- With nothing to narrow or measure by, the page comes straight off
@@ -1035,33 +1066,57 @@ begin
     v_opens := '{}';
     v_closes := '{}';
     v_next := '{}';
+    v_places := '{}';
+    v_end := least(cardinality(v_cands), v_from + c_hours_cap);
     loop
-      exit when v_at > cardinality(v_cands) or cardinality(v_page) >= v_want;
-      v_batch := v_cands[v_at : v_at + v_size - 1];
-      v_at := v_at + v_size;
+      exit when v_at > v_end or cardinality(v_page) >= v_want or v_budget = 0;
+      if v_free then
+        v_size := least(v_size, greatest(v_budget * 2, 16));
+      end if;
+      v_batch := v_cands[v_at : least(v_at + v_size - 1, v_end)];
+      v_last := v_at + cardinality(v_batch) - 1;
       -- Open until later today by the shop's clock, and (Open now) open already.
       select coalesce(array_agg(b.id order by b.n), '{}'), coalesce(array_agg(h.opens_today order by b.n), '{}'),
-             coalesce(array_agg(h.closes_today order by b.n), '{}')
-      into v_ids, v_o, v_c
+             coalesce(array_agg(h.closes_today order by b.n), '{}'), coalesce(array_agg(v_at - 1 + b.n::int order by b.n), '{}')
+      into v_ids, v_o, v_c, v_p
       from unnest(v_batch) with ordinality as b (id, n)
       join public.shops_hours_today(v_batch) h on h.shop_id = b.id
       join shops s on s.id = b.id
       cross join lateral (select (now() at time zone s.time_zone)::time as clock) l
       where l.clock < h.closes_today and (not v_open or l.clock >= h.opens_today);
       if v_free and cardinality(v_ids) > 0 then
+        -- No more next free times than the budget allows: the shops after
+        -- the last one worked out are looked at again on the next page.
+        if cardinality(v_ids) > v_budget then
+          v_last := v_p[v_budget];
+          v_ids := v_ids[1 : v_budget];
+          v_o := v_o[1 : v_budget];
+          v_c := v_c[1 : v_budget];
+          v_p := v_p[1 : v_budget];
+        end if;
+        v_budget := v_budget - cardinality(v_ids);
         select coalesce(array_agg(b.id order by b.n), '{}'), coalesce(array_agg(b.o order by b.n), '{}'),
-               coalesce(array_agg(b.c order by b.n), '{}'), coalesce(array_agg(f.next_free_at order by b.n), '{}')
-        into v_ids, v_o, v_c, v_n
-        from unnest(v_ids, v_o, v_c) with ordinality as b (id, o, c, n)
+               coalesce(array_agg(b.c order by b.n), '{}'), coalesce(array_agg(f.next_free_at order by b.n), '{}'),
+               coalesce(array_agg(b.p order by b.n), '{}')
+        into v_ids, v_o, v_c, v_n, v_p
+        from unnest(v_ids, v_o, v_c, v_p) with ordinality as b (id, o, c, p, n)
         join public.shops_next_free(v_ids, 1) f on f.shop_id = b.id;
         v_next := v_next || v_n;
       end if;
       v_page := v_page || v_ids;
       v_opens := v_opens || v_o;
       v_closes := v_closes || v_c;
-      v_size := case when cardinality(v_page) * 4 < v_at - 1 then least(v_size * 4, 1024)
+      v_places := v_places || v_p;
+      v_at := v_last + 1;
+      v_size := case when cardinality(v_page) * 4 < v_at - 1 - v_from then least(v_size * 4, 1024)
                      else least(greatest(v_want - cardinality(v_page), 8) * 2, 1024) end;
     end loop;
+    -- How far into the list this page looked: to its last shop when it is
+    -- full, else as far as it got before the list or a cap ran out.
+    v_next_from := case when cardinality(v_page) >= v_want then v_places[v_want] else v_at - 1 end;
+    if v_next_from >= cardinality(v_cands) then
+      v_next_from := null;
+    end if;
     v_page := v_page[v_offset + 1 : v_want];
     v_opens := v_opens[v_offset + 1 : v_want];
     v_closes := v_closes[v_offset + 1 : v_want];
@@ -1083,7 +1138,8 @@ begin
          case when v_near then public.km_between(p_lat, p_lng, s.latitude, s.longitude) end,
          s.latitude, s.longitude,
          case when s.queue_enabled then q.waiting end,
-         ph.thumb_path
+         ph.thumb_path,
+         v_next_from
   from unnest(v_page, v_opens, v_closes, v_next) with ordinality as page (id, opens_today, closes_today, next_free_at, n)
   join shops s on s.id = page.id
   -- One lookup of queue_entries_shop_day_idx per shop, only for queue shops.
@@ -1102,6 +1158,15 @@ begin
     limit 1
   ) ph on true
   order by page.n;
+  -- Nothing found as far as this page looked, with more of the list to
+  -- look at: one row with only next_from, so the app can say how far it
+  -- looked and carry on from there.
+  if cardinality(v_page) = 0 and v_next_from is not null then
+    return query
+    select null::uuid, null::text, null::text, null::text, null::text, null::text, null::numeric, null::int,
+           null::time, null::time, null::timestamptz, null::int, null::numeric, null::double precision,
+           null::double precision, null::double precision, null::int, null::text, v_next_from;
+  end if;
 end;
 $$;
 
