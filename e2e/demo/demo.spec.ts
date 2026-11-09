@@ -1070,6 +1070,29 @@ test('Free today says how far it looked when it stops with nothing yet, and look
   await expect(button(app, 'Show more barbers')).toHaveCount(0);
 });
 
+test('Free today carries on from where it stopped when the barbers shown have closed since', async ({ page }) => {
+  // 3 pm in Kajang: Free today stops at Kemas, three shops in, having found Ali's and Kemas.
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+  await page.clock.install({ time: new Date(`${today}T15:00:00+08:00`) });
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await button(app.getByRole('group', { name: 'Filters', exact: true }), 'Free today').click();
+  await expect(app.getByRole('status').filter({ hasText: /^2 barbers free today so far$/ })).toBeVisible();
+
+  // Left open past nine, when both have closed: they leave the list, and rather than "no barbers"
+  // with Show more under it, it says how far it has looked, with one way on.
+  await page.clock.fastForward('06:01:00');
+  await expect(app.getByRole('heading', { name: 'Looked through 3 barbers so far', exact: true })).toBeVisible();
+  for (const shop of ['Ali Barber Sungai Chua', 'Kemas Barber Kajang']) await expect(listed(app, shop)).toHaveCount(0);
+  await expect(button(app, 'Look further')).toHaveCount(1);
+  await expect(button(app, 'Show more barbers')).toHaveCount(0);
+  await snap(page, 'demo-filters-05-closed-since');
+  await button(app, 'Look further').click();
+  await expect(app.getByRole('heading', { name: 'No barbers free today', exact: true })).toBeVisible();
+  await expect(button(app, 'Look further')).toHaveCount(0);
+});
+
 test('Near me says how to allow location when the browser blocks it, and the list stays as it was', async ({
   page,
   context,
