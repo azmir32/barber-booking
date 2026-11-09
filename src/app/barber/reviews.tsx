@@ -253,6 +253,7 @@ function OwnerReview({
   }
 
   const statusText = report ? reportStatus(report, APP_NAME) : null;
+  const noteText = report?.note ? t('Your note: “{note}”', { note: report.note }) : null;
   return (
     <Card>
       <ReviewItem review={review} now={now} timeZone={timeZone} replyTitle={t('Your reply')}>
@@ -261,7 +262,8 @@ function OwnerReview({
             ref={status}
             accessible
             tabIndex={-1}
-            accessibilityLabel={sentences([notice, statusText.badge, statusText.line])}
+            // One label stands for everything inside to VoiceOver and TalkBack, the note too.
+            accessibilityLabel={sentences([notice, statusText.badge, statusText.line, noteText])}
             style={[styles.status, { borderColor: theme.border }]}>
             {notice ? <T variant="small">{notice}</T> : null}
             {/* Side by side, or the line under the badge once text is big, so it isn't a narrow column. */}
@@ -271,7 +273,7 @@ function OwnerReview({
                 {statusText.line}
               </T>
             </Row>
-            {report.note ? <T variant="small">{t('Your note: “{note}”', { note: report.note })}</T> : null}
+            {noteText ? <T variant="small">{noteText}</T> : null}
           </View>
         ) : null}
         {reporting ? (

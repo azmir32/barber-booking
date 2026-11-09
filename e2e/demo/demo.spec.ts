@@ -906,8 +906,10 @@ test('Ali reports an unfair review once, and sees it waiting for the team', asyn
   // Ravi's one star about parking came already reported, so it says so and offers no Report.
   const ravis = app.getByText(/^Couldn’t find parking anywhere/);
   await expect(ravis).toBeVisible();
+  // Read as one, the owner's note too.
   const reportedOne = app.getByLabel(
-    'Reported. About something else. It stays on your page until the PotongKu team decides.',
+    'Reported. About something else. It stays on your page until the PotongKu team decides. ' +
+      'Your note: “About parking on the road, not our cut. He was served on time.”',
     { exact: true },
   );
   await expect(reportedOne).toBeVisible();
@@ -937,7 +939,8 @@ test('Ali reports an unfair review once, and sees it waiting for the team', asyn
   await send.click();
   // Reported, with the reason and the note, and focus on that line; it can't be reported again.
   const status = app.getByLabel(
-    'Reported. Not a real customer. It stays on your page until the PotongKu team decides.',
+    'Reported. Not a real customer. It stays on your page until the PotongKu team decides. ' +
+      'Your note: “No cut in our book for this name that day.”',
     { exact: true },
   );
   await expect(status).toBeFocused();
