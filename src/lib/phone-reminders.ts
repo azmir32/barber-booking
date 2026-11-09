@@ -50,6 +50,12 @@ export const MAX_REMINDED_BOOKINGS = 30;
 /** When the evening reminder goes, on the shop's clock. */
 export const EVENING_CLOCK = '20:00';
 const HOUR_MS = 60 * 60_000;
+/**
+ * How long after its time a reminder is left scheduled: without an exact
+ * alarm Android can hold one up to an hour (more with battery saver), and a
+ * sync in that time mustn't take it away before it shows.
+ */
+export const LATE_MS = HOUR_MS;
 
 /** A short fingerprint of what a reminder says and when, for its identifier. */
 function fingerprint(text: string): string {
@@ -71,6 +77,26 @@ function fingerprint(text: string): string {
  * language at the time.
  */
 export function plannedReminders(bookings: ReminderBooking[], settings: ReminderSettings, now: number): PlannedReminder[] {
+  return remindersAfter(bookings, settings, now, now);
+}
+
+/**
+ * The reminders whose time passed less than an hour ago (LATE_MS) and that
+ * are still right for their booking, as plannedReminders would have planned
+ * them then: Android may still be holding one, so the sync leaves these
+ * scheduled rather than cancelling them, and doesn't schedule them again.
+ */
+export function lateReminders(bookings: ReminderBooking[], settings: ReminderSettings, now: number): PlannedReminder[] {
+  return remindersAfter(bookings, settings, now, now - LATE_MS).filter((r) => r.at <= now);
+}
+
+/** The reminders of the bookings still to come at `now` that go off after `from`. */
+function remindersAfter(
+  bookings: ReminderBooking[],
+  settings: ReminderSettings,
+  now: number,
+  from: number,
+): PlannedReminder[] {
   const coming = bookings
     .filter((b) => (b.status ?? 'confirmed') === 'confirmed' && Date.parse(b.starts_at) > now)
     .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at) || (a.id < b.id ? -1 : 1))
@@ -82,7 +108,7 @@ export function plannedReminders(bookings: ReminderBooking[], settings: Reminder
     const startsAt = Date.parse(b.starts_at);
     const vars = { service: b.service_name, time: formatTime(b.starts_at, timeZone) };
     const add = (kind: ReminderKind, at: number, body: string) => {
-      if (at <= now) return;
+      if (at <= from) return;
       const title = b.shop_name;
       const id = `${REMINDER_ID_PREFIX}${kind}-${b.id}-${fingerprint(`${at}|${title}|${body}`)}`;
       planned.push({ id, bookingId: b.id, kind, at, title, body, service: b.service_name, timeZone });
@@ -110,7 +136,7 @@ export function plannedReminders(bookings: ReminderBooking[], settings: Reminder
  * What to change on the phone: the reminders scheduled there that are no
  * longer wanted (a booking moved, cancelled or done, a setting turned off),
  * and the wanted ones not there yet. Notifications that aren't reminders are
- * left alone.
+ * left alone, and so are `late` ones (lateReminders), which may yet show.
  *
  * `again` (Android) schedules every wanted reminder, not only the new ones.
  * There the list of what is scheduled is expo-notifications' own, kept apart
@@ -122,9 +148,9 @@ export function plannedReminders(bookings: ReminderBooking[], settings: Reminder
 export function reminderChanges(
   wanted: PlannedReminder[],
   scheduledIds: string[],
-  options: { again?: boolean } = {},
+  options: { again?: boolean; late?: string[] } = {},
 ): { cancel: string[]; schedule: PlannedReminder[] } {
-  const want = new Set(wanted.map((r) => r.id));
+  const want = new Set([...wanted.map((r) => r.id), ...(options.late ?? [])]);
   const have = new Set(scheduledIds);
   return {
     cancel: scheduledIds.filter((id) => id.startsWith(REMINDER_ID_PREFIX) && !want.has(id)),

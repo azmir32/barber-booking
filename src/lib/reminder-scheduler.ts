@@ -12,6 +12,7 @@ import { Platform } from 'react-native';
 
 import { t } from '@/lib/lang';
 import {
+  lateReminders,
   plannedReminders,
   reminderChanges,
   remindersOfKind,
@@ -78,14 +79,18 @@ async function apply() {
   if (!last || (await readPermission()) !== 'granted') return;
   // An answer that lands after its customer signed out schedules nothing.
   if ((await signedInAs()) !== last.uid) return;
-  const wanted = plannedReminders(last.bookings, reminderState().settings, Date.now());
+  const now = Date.now();
+  const { settings } = reminderState();
+  const wanted = plannedReminders(last.bookings, settings, now);
+  // Ones whose time passed in the last hour stay: Android may not have shown them yet.
+  const late = lateReminders(last.bookings, settings, now).map((r) => r.id);
   await ensureChannel();
   const scheduled = await Notifications.getAllScheduledNotificationsAsync();
   // Android: all of them again, as its alarms can be gone while the list still has them (reminderChanges).
   const { cancel, schedule } = reminderChanges(
     wanted,
     scheduled.map((r) => r.identifier),
-    { again: Platform.OS === 'android' },
+    { again: Platform.OS === 'android', late },
   );
   for (const id of cancel) await Notifications.cancelScheduledNotificationAsync(id);
   for (const r of schedule) {

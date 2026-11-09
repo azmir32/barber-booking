@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { setCurrentLang } from './lang.ts';
 import {
   DEFAULT_REMINDER_SETTINGS,
+  lateReminders,
   MAX_REMINDERS,
   parseReminderPrefs,
   plannedReminders,
@@ -189,6 +190,47 @@ test('a moved booking swaps its reminders; the others stay as they are, and othe
   assert.deepEqual(reminderChanges(cancelled, after.map((r) => r.id)).cancel.length, 2);
   // Turning one kind off takes those, whatever booking they are for.
   assert.deepEqual(remindersOfKind('evening', scheduled).length, 2);
+});
+
+test('a reminder Android may still be holding, past its time by under an hour, is left to show', () => {
+  setCurrentLang('en');
+  // Booked for Thu 8 Oct at 4:30 pm; scheduled on Tuesday.
+  const cut = booking('2026-10-08T16:30:00+08:00', { id: 'b1' });
+  const scheduled = plannedReminders([cut], both, at('2026-10-06T10:00:00+08:00'));
+  const [evening, hour] = scheduled;
+  const ids = scheduled.map((r) => r.id);
+  // At 8:10 pm the evening before Hakim opens the app, and the 8 pm one hasn't come yet: it stays,
+  // isn't scheduled again (its time has gone), and the hour-before one stays as it was.
+  const tenPast = at('2026-10-07T20:10:00+08:00');
+  assert.deepEqual(lateReminders([cut], both, tenPast), [evening]);
+  for (const again of [false, true]) {
+    assert.deepEqual(
+      reminderChanges(plannedReminders([cut], both, tenPast), ids, {
+        again,
+        late: lateReminders([cut], both, tenPast).map((r) => r.id),
+      }),
+      { cancel: [], schedule: again ? [hour] : [] },
+    );
+  }
+  // At 8:59 pm still; at 9:01 pm it is over an hour late, and goes.
+  assert.deepEqual(lateReminders([cut], both, at('2026-10-07T20:59:00+08:00')), [evening]);
+  const nineOhOne = at('2026-10-07T21:01:00+08:00');
+  assert.deepEqual(lateReminders([cut], both, nineOhOne), []);
+  assert.deepEqual(
+    reminderChanges(plannedReminders([cut], both, nineOhOne), ids, { late: [] }).cancel,
+    [evening.id],
+  );
+  // The hour-before one, 20 minutes late at 3:50 pm: left, while the cut is still to come.
+  assert.deepEqual(lateReminders([cut], both, at('2026-10-08T15:50:00+08:00')), [hour]);
+  // Not left when it is no longer right: the cut cancelled, moved, or that reminder turned off.
+  assert.deepEqual(lateReminders([{ ...cut, status: 'cancelled' }], both, tenPast), []);
+  const moved = { ...cut, starts_at: new Date('2026-10-08T17:00:00+08:00').toISOString() };
+  assert.notEqual(lateReminders([moved], both, tenPast)[0].id, evening.id);
+  const changes = reminderChanges(plannedReminders([moved], both, tenPast), ids, {
+    late: lateReminders([moved], both, tenPast).map((r) => r.id),
+  });
+  assert.deepEqual(changes.cancel.sort(), ids.slice().sort());
+  assert.deepEqual(lateReminders([cut], { evening: false, hour: true }, tenPast), []);
 });
 
 test('on Android every wanted reminder is scheduled again, as a force stop can drop its alarm but not its entry', () => {
