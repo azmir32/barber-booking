@@ -1090,6 +1090,121 @@ test('Near me puts the closest barbers first, says how far each is, and is kept 
   await expect(nearMe).not.toBeChecked();
 });
 
+test('Find a barber filters to shops open now, free today or taking walk-ins, says what it found, and keeps them', async ({
+  page,
+}) => {
+  // 3 pm in Kajang: Gunting Pak Mat is shut today, and The Fade Room is booked up (or, on Sundays, shut).
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+  const sunday = new Date(`${today}T12:00:00Z`).getUTCDay() === 0;
+  await page.clock.install({ time: new Date(`${today}T15:00:00+08:00`) });
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  const filters = app.getByRole('group', { name: 'Filters', exact: true });
+  const [openNow, free, walkIns] = ['Open now', 'Free today', 'Walk-ins'].map((name) => button(filters, name));
+  for (const chip of [openNow, free, walkIns]) await expect(chip).toHaveAttribute('aria-pressed', 'false');
+  const shopNames = app.getByRole('heading', { level: 2 });
+  // How many the filters found, said as the list changes.
+  const found = app.getByRole('status').filter({ hasText: /^\d+ barbers? / });
+
+  // A filter tapped is looking for something else, like an area: the list alone, saying how many.
+  await walkIns.click();
+  await expect(walkIns).toHaveAttribute('aria-pressed', 'true');
+  await expect(found).toHaveText('2 barbers taking walk-ins');
+  await expect(shopNames).toHaveText(['Ali Barber Sungai Chua', 'Gunting Pak Mat']);
+  await snap(page, 'demo-filters-01-walk-ins');
+  await free.click();
+  await expect(found).toHaveText('1 barber free today and taking walk-ins');
+  await expect(shopNames).toHaveText(['Ali Barber Sungai Chua']);
+  await walkIns.click();
+  // The demo works out two shops' free times a call (the database 128), so Free today stops three
+  // shops in, at Kemas: it says what it found so far and how far it looked, with a way on.
+  await expect(found).toHaveText('2 barbers free today so far');
+  await expect(shopNames).toHaveText(['Ali Barber Sungai Chua', 'Kemas Barber Kajang']);
+  await expect(app.getByText('Looked through 3 barbers so far', { exact: true })).toBeVisible();
+  await expect(button(app, 'Show more barbers')).toHaveCount(0);
+  await snap(page, 'demo-filters-02-so-far');
+  // The rest of the list is The Fade Room, booked up (or on Sundays shut): now the count is whole.
+  await button(app, 'Look further').click();
+  await expect(found).toHaveText('2 barbers free today');
+  await expect(button(app, 'Look further')).toHaveCount(0);
+  await expect(app.getByText('Looked through 3 barbers so far', { exact: true })).toHaveCount(0);
+  await expect(shopNames).toHaveText(['Ali Barber Sungai Chua', 'Kemas Barber Kajang']);
+  await openNow.click();
+  await expect(found).toHaveText('2 barbers open now and free today so far');
+
+  // With a search too, nothing: it says which filters are on, and clears them in one tap.
+  await app.getByLabel('Search', { exact: true }).fill('fade');
+  await expect(app.getByRole('heading', { name: 'No barbers open now and free today', exact: true })).toBeVisible();
+  await snap(page, 'demo-filters-03-nothing');
+  await button(app, 'Clear filters').click();
+  for (const chip of [openNow, free, walkIns]) await expect(chip).toHaveAttribute('aria-pressed', 'false');
+  await expect(shopNames).toHaveText(['The Fade Room']);
+  await expect(found).toHaveCount(0);
+  await app.getByLabel('Search', { exact: true }).fill('');
+
+  // Kept for next time, like the area, with his next cut and barbers back on top.
+  await openNow.click();
+  await expect(found).toHaveText(sunday ? '2 barbers open now' : '3 barbers open now');
+  await page.reload();
+  await expect(app.getByRole('heading', { name: 'Your barbers' })).toBeVisible();
+  await expect(openNow).toHaveAttribute('aria-pressed', 'true');
+  await expect(app.getByRole('heading', { name: 'Barbers open now', exact: true })).toBeVisible();
+  await expect(listed(app, 'Gunting Pak Mat')).toHaveCount(0);
+  await expect(listed(app, 'Kemas Barber Kajang').last()).toBeVisible();
+});
+
+test('Free today says how far it looked when it stops with nothing yet, and looks further from there', async ({
+  page,
+}) => {
+  // Ten to nine in Kajang: Ali's and Kemas are open a little longer with no time left, and the demo
+  // works out two shops' free times a call. On Mondays Ali's has closed already, so it is Tuesday then.
+  const kl = (at: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(at);
+  let day = kl(new Date());
+  if (new Date(`${day}T12:00:00Z`).getUTCDay() === 1) day = kl(new Date(Date.now() + 86_400_000));
+  await page.clock.install({ time: new Date(`${day}T20:50:00+08:00`) });
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await button(app.getByRole('group', { name: 'Filters', exact: true }), 'Free today').click();
+
+  // Not "no barbers free today": only as far as it has looked, with one way on.
+  await expect(app.getByRole('heading', { name: 'Looked through 3 barbers so far', exact: true })).toBeVisible();
+  await expect(app.getByText('None of them is free today.', { exact: true })).toBeVisible();
+  for (const shop of ['Ali Barber Sungai Chua', 'Kemas Barber Kajang']) await expect(listed(app, shop)).toHaveCount(0);
+  await expect(button(app, 'Look further')).toHaveCount(1);
+  await expect(button(app, 'Show more barbers')).toHaveCount(0);
+  await snap(page, 'demo-filters-04-looked-so-far');
+  // The Fade Room, the last, is booked up too: now it can say so.
+  await button(app, 'Look further').click();
+  await expect(app.getByRole('heading', { name: 'No barbers free today', exact: true })).toBeVisible();
+  await expect(button(app, 'Look further')).toHaveCount(0);
+  await expect(button(app, 'Show more barbers')).toHaveCount(0);
+});
+
+test('Free today carries on from where it stopped when the barbers shown have closed since', async ({ page }) => {
+  // 3 pm in Kajang: Free today stops at Kemas, three shops in, having found Ali's and Kemas.
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+  await page.clock.install({ time: new Date(`${today}T15:00:00+08:00`) });
+  const app = await open(page);
+  await button(app, 'Try as a customer').click();
+  await expect(listed(app, 'Kemas Barber Kajang')).toBeVisible();
+  await button(app.getByRole('group', { name: 'Filters', exact: true }), 'Free today').click();
+  await expect(app.getByRole('status').filter({ hasText: /^2 barbers free today so far$/ })).toBeVisible();
+
+  // Left open past nine, when both have closed: they leave the list, and rather than "no barbers"
+  // with Show more under it, it says how far it has looked, with one way on.
+  await page.clock.fastForward('06:01:00');
+  await expect(app.getByRole('heading', { name: 'Looked through 3 barbers so far', exact: true })).toBeVisible();
+  for (const shop of ['Ali Barber Sungai Chua', 'Kemas Barber Kajang']) await expect(listed(app, shop)).toHaveCount(0);
+  await expect(button(app, 'Look further')).toHaveCount(1);
+  await expect(button(app, 'Show more barbers')).toHaveCount(0);
+  await snap(page, 'demo-filters-05-closed-since');
+  await button(app, 'Look further').click();
+  await expect(app.getByRole('heading', { name: 'No barbers free today', exact: true })).toBeVisible();
+  await expect(button(app, 'Look further')).toHaveCount(0);
+});
+
 test('Near me says how to allow location when the browser blocks it, and the list stays as it was', async ({
   page,
   context,

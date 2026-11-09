@@ -317,6 +317,12 @@ begin
     assert (select next_free_at from shops_next_free(array[shop])) is not distinct from want,
       format('at %s:00 next free should be %s, got %s', hour, want,
              (select next_free_at from shops_next_free(array[shop])));
+    -- Today only, for the Free today filter.
+    assert (select next_free_at from shops_next_free(array[shop], 1))
+           is not distinct from (select min(starts_at) from available_slots(svc, today)),
+      format('at %s:00 the next free time today should be %s, got %s', hour,
+             (select min(starts_at) from available_slots(svc, today)),
+             (select next_free_at from shops_next_free(array[shop], 1)));
     k := k + (want is not null)::int;
   end loop;
   assert k > 12, 'most hours should have a free time to compare';
@@ -3264,6 +3270,253 @@ begin
             from (select lower(s.area) as k, mode() within group (order by s.area) as area, count(*)::int as n
                   from shops s where shop_is_live(s) group by lower(s.area)) x),
     'areas as mode() would have them';
+end $$;
+rollback;
+
+-- Filters on Find a barber --------------------------------------------------------
+-- Open now, Free today and Walk-ins, each on its own and together, with a
+-- search, an area, Near me and pages. Each shop's clock is set with a zone
+-- where it reads the hour wanted, so the answers hold at any time of day.
+-- With no filter on, the list is what it was before the filters.
+begin;
+reset role;
+create function pg_temp.zone_at(p_hour int) returns text
+language sql as $f$
+  select z
+  from generate_series(-12, 14) o,
+       lateral (select 'Etc/GMT' || case when o > 0 then '-' || o when o < 0 then '+' || -o else '' end as z) n
+  where extract(hour from now() at time zone z) = p_hour
+  order by o
+  limit 1;
+$f$;
+-- A live shop where it is now p_hour o'clock, with one barber in 09:00-18:00
+-- every day and a 30-minute haircut.
+create function pg_temp.add_shop(p_n int, p_name text, p_hour int, p_area text default 'Kajang',
+                                 p_queue boolean default false, p_lat float8 default null, p_lng float8 default null)
+returns uuid language plpgsql as $f$
+declare
+  v_owner uuid := md5('filters-owner' || p_n)::uuid;
+  v_shop uuid := md5('filters-shop' || p_n)::uuid;
+  v_barber uuid := md5('filters-barber' || p_n)::uuid;
+begin
+  insert into auth.users (id, email, raw_user_meta_data)
+  values (v_owner, 'filters' || p_n || '@test', '{"role":"barber","full_name":"Owner"}');
+  insert into shops (id, owner_id, name, slug, area, time_zone, queue_enabled, latitude, longitude, is_published)
+  values (v_shop, v_owner, p_name, 'filters-' || p_n, p_area, pg_temp.zone_at(p_hour), p_queue, p_lat, p_lng, true);
+  insert into barbers (id, shop_id, name) values (v_barber, v_shop, 'Barber ' || p_n);
+  insert into working_hours (barber_id, weekday, opens_at, closes_at)
+  select v_barber, d, '09:00', '18:00' from generate_series(0, 6) d;
+  insert into services (shop_id, name, duration_min, price) values (v_shop, 'Haircut', 30, 20);
+  return v_shop;
+end $f$;
+-- The names find_shops lists, in order.
+create function pg_temp.listed(p_open boolean, p_free boolean, p_walk boolean, p_search text default null,
+                               p_area text default null, p_limit int default 50, p_offset int default 0,
+                               p_lat float8 default null, p_lng float8 default null, p_from int default 0)
+returns text[] language sql as $f$
+  select coalesce(array_agg(f.name order by f.ordinality) filter (where f.id is not null), '{}')
+  from public.find_shops(p_search, p_area, p_limit, p_offset, p_lat, p_lng, p_open, p_free, p_walk, p_from)
+       with ordinality f;
+$f$;
+-- How far into the list a page looked (next_from), the same on every row it has.
+create function pg_temp.looked(p_open boolean, p_free boolean, p_walk boolean, p_limit int default 50,
+                               p_from int default 0)
+returns int[] language sql as $f$
+  select array(select distinct coalesce(f.next_from, -1)
+               from public.find_shops(null, null, p_limit, 0, null, null, p_open, p_free, p_walk, p_from) f);
+$f$;
+-- find_shops as it was before the filters, one shop at a time: the page,
+-- then each shop's columns.
+create function pg_temp.find_shops_before(p_search text default null, p_area text default null,
+                                          p_limit int default 20, p_offset int default 0,
+                                          p_lat float8 default null, p_lng float8 default null)
+returns text[] language plpgsql as $f$
+declare
+  v_near boolean := coalesce(p_lat between -90 and 90 and p_lng between -180 and 180, false);
+  v_page uuid[] := array(
+    select s.id
+    from shops s
+    where shop_is_live(s)
+      and (coalesce(lower(trim(p_area)), '') = '' or lower(s.area) = lower(trim(p_area)))
+      and (coalesce(lower(trim(p_search)), '') = ''
+           or strpos(lower(s.name || ' ' || s.area || ' ' || coalesce(s.address, '')), lower(trim(p_search))) > 0)
+    order by case when v_near then km_between(p_lat, p_lng, s.latitude, s.longitude) end nulls last, lower(s.name), s.id
+    limit least(greatest(coalesce(p_limit, 20), 1), 50) offset greatest(coalesce(p_offset, 0), 0));
+begin
+  return array(
+    select row(s.id, s.name, s.slug, s.area, s.address, s.about,
+               (select min(v.price) from services v where v.shop_id = s.id and v.is_active),
+               (select count(*)::int from barbers b where b.shop_id = s.id and b.is_active),
+               h.opens_today, h.closes_today, f.next_free_at,
+               s.rating_count, round(s.rating_sum::numeric / nullif(s.rating_count, 0), 1),
+               case when v_near then km_between(p_lat, p_lng, s.latitude, s.longitude) end,
+               s.latitude, s.longitude,
+               case when s.queue_enabled then
+                 (select count(*)::int from queue_entries e
+                  where e.shop_id = s.id and e.state = 'waiting' and e.day = (now() at time zone s.time_zone)::date) end,
+               (select p.thumb_path from shop_photos p where p.shop_id = s.id order by p.sort_order, p.created_at, p.id limit 1)
+           )::text
+    from unnest(v_page) with ordinality as page (id, n)
+    join shops s on s.id = page.id
+    left join lateral shops_hours_today(array[s.id]) h on true
+    left join lateral shops_next_free(array[s.id]) f on true
+    order by page.n);
+end $f$;
+create function pg_temp.rows_of(p_search text default null, p_area text default null, p_limit int default 20,
+                                p_offset int default 0, p_lat float8 default null, p_lng float8 default null,
+                                p_open boolean default false, p_free boolean default false, p_walk boolean default false)
+returns text[] language sql as $f$
+  select array(select row(f.id, f.name, f.slug, f.area, f.address, f.about, f.from_price, f.barber_count,
+                          f.opens_today, f.closes_today, f.next_free_at, f.rating_count, f.rating_avg,
+                          f.distance_km, f.latitude, f.longitude, f.queue_waiting, f.photo_thumb)::text
+               from public.find_shops(p_search, p_area, p_limit, p_offset, p_lat, p_lng, p_open, p_free, p_walk) f);
+$f$;
+
+update shops set is_published = false;
+do $$
+declare
+  anggun uuid := pg_temp.add_shop(1, 'Anggun Cuts', 12, p_queue => true, p_lat => 2.990, p_lng => 101.790);
+  bistari uuid := pg_temp.add_shop(2, 'Bistari Cuts', 12, p_queue => true, p_lat => 2.985, p_lng => 101.780);
+  cekap uuid := pg_temp.add_shop(3, 'Cekap Cuts', 7);
+  dapur uuid := pg_temp.add_shop(4, 'Dapur Gunting', 20, p_queue => true);
+  elok uuid := pg_temp.add_shop(5, 'Elok Cuts', 12);
+  fesyen uuid := pg_temp.add_shop(6, 'Fesyen Cuts', 12, 'Bangi', p_lat => 2.9834, p_lng => 101.7668);
+  gaya uuid := pg_temp.add_shop(7, 'Gaya Cuts', 12, p_queue => true);
+  everyone constant text[] := array['Anggun Cuts', 'Bistari Cuts', 'Cekap Cuts', 'Dapur Gunting', 'Elok Cuts', 'Fesyen Cuts'];
+  lat constant float8 := 2.9833;
+  lng constant float8 := 101.7667;
+  want text[];
+  paged text[] := '{}';
+begin
+  -- Bistari is booked up to closing; Elok is shut today; Gaya isn't live.
+  insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+  select bistari, md5('filters-barber2')::uuid, true, 'Busy', 0,
+         ((now() at time zone time_zone)::date + time '09:00') at time zone time_zone,
+         ((now() at time zone time_zone)::date + time '18:00') at time zone time_zone
+  from shops where id = bistari;
+  insert into shop_closures (shop_id, day) select elok, (now() at time zone time_zone)::date from shops where id = elok;
+  update shops set is_published = false where id = gaya;
+
+  assert pg_temp.listed(false, false, false) = everyone, 'no filter: every live shop';
+  assert pg_temp.listed(true, false, false) = array['Anggun Cuts', 'Bistari Cuts', 'Fesyen Cuts'],
+    'open now: not before opening, after closing or on a day shut: ' || pg_temp.listed(true, false, false)::text;
+  assert pg_temp.listed(false, true, false) = array['Anggun Cuts', 'Cekap Cuts', 'Fesyen Cuts'],
+    'free today: still a free time today, even before opening: ' || pg_temp.listed(false, true, false)::text;
+  assert pg_temp.listed(false, false, true) = array['Anggun Cuts', 'Bistari Cuts', 'Dapur Gunting'],
+    'walk-ins: shops with a queue, open or not';
+  assert pg_temp.listed(true, true, false) = array['Anggun Cuts', 'Fesyen Cuts'], 'open now and free today';
+  assert pg_temp.listed(true, false, true) = array['Anggun Cuts', 'Bistari Cuts'], 'open now and walk-ins';
+  assert pg_temp.listed(false, true, true) = array['Anggun Cuts'], 'free today and walk-ins';
+  assert pg_temp.listed(true, true, true) = array['Anggun Cuts'], 'all three';
+
+  -- A listed shop's row is the one the list has for it without filters.
+  for i in 1..7 loop
+    want := array(select r.r from unnest(pg_temp.rows_of(p_limit => 50)) with ordinality r
+                  where split_part(trim(leading '(' from r.r), ',', 1)::uuid in
+                        (select f.id from find_shops(null, null, 50, 0, null, null, i & 1 = 1, i & 2 = 2, i & 4 = 4) f)
+                  order by r.ordinality);
+    assert pg_temp.rows_of(null, null, 50, 0, null, null, i & 1 = 1, i & 2 = 2, i & 4 = 4) = want,
+      format('filters %s: the same rows as without them', i);
+  end loop;
+  assert (select f.next_free_at at time zone s.time_zone = (now() at time zone s.time_zone)::date + 1 + time '09:00'
+          from find_shops(p_open_now => true) f join shops s on s.id = f.id where f.id = bistari),
+    'a shop booked up today is listed under Open now with tomorrow''s free time';
+
+  -- With a search, an area and Near me.
+  assert pg_temp.listed(false, true, false, 'cuts') = array['Anggun Cuts', 'Cekap Cuts', 'Fesyen Cuts'], 'search, free today';
+  assert pg_temp.listed(false, false, true, 'GUNTING') = array['Dapur Gunting'], 'search, walk-ins';
+  assert pg_temp.listed(true, false, true, 'gunting') = '{}', 'search, open now: none';
+  assert pg_temp.listed(false, true, false, null, 'bangi') = array['Fesyen Cuts'], 'an area, free today';
+  assert pg_temp.listed(true, false, false, null, ' KAJANG ') = array['Anggun Cuts', 'Bistari Cuts'], 'an area, open now';
+  assert pg_temp.listed(true, false, false, null, null, 50, 0, lat, lng) = array['Fesyen Cuts', 'Bistari Cuts', 'Anggun Cuts'],
+    'near me, open now: nearest first';
+  assert (select bool_and(distance_km is not null) from find_shops(p_lat => lat, p_lng => lng, p_open_now => true)),
+    'with their distances';
+  assert pg_temp.listed(false, true, false, null, null, 50, 0, lat, lng) = array['Fesyen Cuts', 'Anggun Cuts', 'Cekap Cuts'],
+    'near me, free today: the shops without a location after the rest';
+
+  -- A page at a time, every shop once.
+  for i in 0..3 loop
+    paged := paged || pg_temp.listed(true, false, false, null, null, 1, i);
+  end loop;
+  assert paged = array['Anggun Cuts', 'Bistari Cuts', 'Fesyen Cuts'], 'open now, one at a time: ' || paged::text;
+  assert pg_temp.listed(false, true, false, null, null, 2, 1) = array['Cekap Cuts', 'Fesyen Cuts'], 'free today, page 2 of 2';
+  assert pg_temp.listed(false, true, false, null, null, 2, 4) = '{}', 'past the end';
+
+  -- Sixty shops closed for the day come first by name: the list looks
+  -- further each time until the page is full.
+  for i in 1..60 loop
+    perform pg_temp.add_shop(100 + i, 'Aa Cuts ' || lpad(i::text, 2, '0'), 20);
+  end loop;
+  assert pg_temp.listed(true, false, false, null, null, 1) = array['Anggun Cuts'], 'open now, past sixty closed shops';
+  assert pg_temp.listed(false, true, false, null, null, 2, 1) = array['Cekap Cuts', 'Fesyen Cuts'],
+    'free today, page 2, past sixty closed shops';
+  assert pg_temp.listed(false, false, false, null, null, 2, 60) = array['Anggun Cuts', 'Bistari Cuts'],
+    'without filters they are listed';
+
+  -- With no filter on, the list is what it was before, and null is no filter.
+  assert pg_temp.rows_of() = pg_temp.find_shops_before(), 'no filter: as before';
+  assert pg_temp.rows_of(p_limit => 50) = pg_temp.find_shops_before(p_limit => 50), 'every shop: as before';
+  assert pg_temp.rows_of(null, null, 7, 58) = pg_temp.find_shops_before(null, null, 7, 58), 'a page: as before';
+  assert pg_temp.rows_of('cuts', null, 50) = pg_temp.find_shops_before('cuts', null, 50), 'a search: as before';
+  assert pg_temp.rows_of(null, 'kajang', 5, 60) = pg_temp.find_shops_before(null, 'kajang', 5, 60), 'an area: as before';
+  assert pg_temp.rows_of(null, null, 50, 0, lat, lng) = pg_temp.find_shops_before(null, null, 50, 0, lat, lng),
+    'near me: as before';
+  assert pg_temp.rows_of(null, null, 50, 0, null, null, null, null, null) = pg_temp.rows_of(p_limit => 50),
+    'filters left null are off';
+  assert pg_temp.rows_of(p_limit => 50) = pg_temp.rows_of(null, null, 50, 0, null, null, false, false, false),
+    'and so are filters left out';
+  assert (select bool_and(next_from is null) from find_shops(p_limit => 50))
+         and (select bool_and(next_from is null) from find_shops(p_limit => 2, p_walk_ins => true)),
+    'without Open now or Free today, no next_from';
+  assert pg_temp.looked(true, false, false, 2) = array[62] and pg_temp.looked(false, true, false) = array[-1],
+    'with them, how far the page looked: to its last shop when full, null at the end';
+
+  -- Free today works out at most 128 shops' next free times in one call.
+  -- With 130 shops open but booked up first in the list, the first page
+  -- stops at the cap having found nothing, and says how far it looked; the
+  -- next carries on from there. Open now has no such cap.
+  for i in 1..130 loop
+    perform pg_temp.add_shop(300 + i, 'Ab Cuts ' || lpad(i::text, 3, '0'), 12);
+    insert into bookings (shop_id, barber_id, is_block, service_name, price, starts_at, ends_at)
+    select s.id, md5('filters-barber' || (300 + i))::uuid, true, 'Busy', 0,
+           ((now() at time zone s.time_zone)::date + time '09:00') at time zone s.time_zone,
+           ((now() at time zone s.time_zone)::date + time '18:00') at time zone s.time_zone
+    from shops s where s.id = md5('filters-shop' || (300 + i))::uuid;
+  end loop;
+  assert (select count(*) = 1 and bool_and(id is null and name is null) and min(next_from) = 188
+          from find_shops(p_free_today => true)),
+    'stopped at the cap with nothing found: one row saying it looked through 188: '
+      || (select string_agg(coalesce(name, '-') || ' ' || coalesce(next_from::text, '-'), ', ') from find_shops(p_free_today => true));
+  assert pg_temp.listed(false, true, false, p_from => 188) = array['Anggun Cuts', 'Cekap Cuts', 'Fesyen Cuts']
+         and pg_temp.looked(false, true, false, p_from => 188) = array[-1],
+    'the next page carries on from there to the end';
+  paged := '{}';
+  declare
+    from_ int := 0;
+    seen int := 0;
+  begin
+    loop
+      seen := seen + 1;
+      exit when seen > 10;
+      paged := paged || pg_temp.listed(false, true, false, p_limit => 1, p_from => from_);
+      from_ := (select max(next_from) from find_shops(null, null, 1, 0, null, null, false, true, false, from_));
+      exit when from_ is null;
+    end loop;
+    assert paged = array['Anggun Cuts', 'Cekap Cuts', 'Fesyen Cuts'] and seen = 4,
+      'one at a time across the cap, every shop once: ' || paged::text || ' in ' || seen;
+  end;
+  assert pg_temp.listed(true, false, false, p_limit => 2) = array['Ab Cuts 001', 'Ab Cuts 002']
+         and pg_temp.looked(true, false, false, 2) = array[62],
+    'open now: the page fills, so it says it looked to its last shop';
+  assert pg_temp.listed(false, true, true) = array['Anggun Cuts'], 'walk-ins narrows the list before the cap';
+end $$;
+
+-- Guests can filter too.
+set role anon;
+do $$ begin
+  assert (select array_agg(name) from find_shops(p_free_today => true, p_walk_ins => true)) = array['Anggun Cuts'],
+    'guests can filter';
 end $$;
 rollback;
 

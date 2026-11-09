@@ -1369,4 +1369,32 @@ export const ms: Record<string, string> = {
   'Please keep your note under 200 characters.': 'Sila pastikan nota kurang daripada 200 aksara.',
   'This review has already been reported.': 'Ulasan ini sudah dilaporkan.',
   "This review was removed, so it can't have a reply.": 'Ulasan ini telah dibuang, jadi ia tidak boleh dibalas.',
+  // Round 15, filters on Find a barber (customer/index.tsx): three chips
+  // that narrow the list, how many it found, and nothing found.
+  Filters: 'Penapis',
+  'Open now': 'Buka sekarang',
+  'Free today': 'Ada slot hari ini',
+  'Walk-ins': 'Walk-in',
+  // Joined into a sentence: "3 barbers open now and free today".
+  'open now': 'buka sekarang',
+  'free today': 'ada slot hari ini',
+  'taking walk-ins': 'terima walk-in',
+  '{a} and {b}': '{a} dan {b}',
+  '{a}, {b} and {c}': '{a}, {b} dan {c}',
+  '1 barber {filters}': '1 barber {filters}',
+  '{count} barbers {filters}': '{count} barber {filters}',
+  'More than {count} barbers {filters}': 'Lebih daripada {count} barber {filters}',
+  'Barbers {filters}': 'Barber {filters}',
+  'No barbers {filters}': 'Tiada barber {filters}',
+  'Try fewer filters, or another name or area.': 'Cuba kurangkan penapis, atau cari nama atau kawasan lain.',
+  'Try again later, or clear the filters to see every barber.':
+    'Cuba lagi nanti, atau buang penapis untuk melihat semua barber.',
+  'Clear filters': 'Buang penapis',
+  // Open now and Free today look through so many barbers at a time:
+  // what they found so far, and a button to look further down the list.
+  '1 barber {filters} so far': '1 barber {filters} setakat ini',
+  '{count} barbers {filters} so far': '{count} barber {filters} setakat ini',
+  'Looked through {count} barbers so far': 'Sudah melihat {count} barber setakat ini',
+  'None of them is {filters}.': 'Tiada satu pun yang {filters}.',
+  'Look further': 'Cari lagi',
 };
