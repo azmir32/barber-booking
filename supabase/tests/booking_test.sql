@@ -5237,6 +5237,8 @@ begin
     'today', today,
     'closed_days', coalesce((select jsonb_agg(to_jsonb(d)) from shop_closed_days(s.id, today, today + 13) d), '[]'),
     'hours_today', (select to_jsonb(h) from shop_hours_today(s.id) h),
+    -- Nobody here is stopped from booking in the app: that part has tests of its own below.
+    'book_on_whatsapp', false,
     'queue', case when s.queue_enabled then queue_status(s.id) end,
     'photos', coalesce((select jsonb_agg(to_jsonb(ph) - 'created_at' order by ph.sort_order, ph.created_at, ph.id)
                         from (select ph.id, ph.barber_id, ph.caption, ph.path, ph.thumb_path, ph.width, ph.height,
@@ -5289,6 +5291,18 @@ begin
         and b.starts_at < (today + 2)::timestamp at time zone s.time_zone), '[]') else '[]' end,
     'waiting', coalesce((select jsonb_agg(to_jsonb(w)) from shop_waitlist(p_day) w), '[]'),
     'queue', case when p_day = today then coalesce((select jsonb_agg(to_jsonb(q)) from shop_queue() q), '[]') else '[]' end,
+    -- The day's no-shows, each customer's counted over what the owner can read; nobody here is
+    -- stopped from booking in the app (tested below).
+    'no_shows', coalesce((
+      select jsonb_agg(jsonb_build_object('customer_id', c.customer_id, 'no_shows', (
+               select count(*) from bookings x
+               where x.customer_id = c.customer_id and x.shop_id = s.id and x.status = 'no_show'
+                 and x.starts_at >= now() - interval '2 years' and x.starts_at < now() + interval '1 year'),
+             'stopped', false) order by c.customer_id)
+      from (select distinct b.customer_id from bookings b
+            where b.shop_id = s.id and b.status = 'no_show' and b.customer_id is not null
+              and b.starts_at >= p_day::timestamp at time zone s.time_zone
+              and b.starts_at < (p_day + 1)::timestamp at time zone s.time_zone) c), '[]'),
     'changes', shop_changes(p_since, 5));
 end;
 $$;
@@ -5517,6 +5531,316 @@ do $$ begin
 exception when insufficient_privilege then null;
 end $$;
 reset role;
+rollback;
+
+-- Stopping a customer booking online ---------------------------------------------
+-- An owner stops a customer who keeps not turning up from booking at their
+-- shop in the app, and lets them again. At that shop only, booking, waiting
+-- for a time, joining the queue and moving a booking are refused with a
+-- line saying to WhatsApp the shop; cancelling, rating and everything at
+-- other shops still work, and bookings already made stay. Only the owner
+-- reads or changes the list, only for someone who has booked there, and
+-- the customer learns only their own state there. Ali works all day every
+-- day, so the queue is open and times are free at any hour. Hakim, Siti and
+-- Wei are customers, and Rahman owns Kemas Cuts, for this part only.
+begin;
+reset role;
+delete from bookings;
+delete from waitlist;
+delete from queue_entries;
+delete from working_hours
+where barber_id in ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-0000000000a2');
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000000a1', d, '00:00', '24:00' from generate_series(0, 6) d;
+update barbers set is_active = true where shop_id = '00000000-0000-0000-0000-00000000005a';
+update services set is_active = true where shop_id = '00000000-0000-0000-0000-00000000005a';
+update shops set is_published = true, subscription_status = 'active', queue_enabled = true, phone = '012-345 6789'
+where id = '00000000-0000-0000-0000-00000000005a';
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000003c1', 'hakim.s@test', '{"role":"customer","full_name":"Hakim","phone":"011-2233 4455"}'),
+  ('00000000-0000-0000-0000-0000000003c2', 'siti.s@test', '{"role":"customer","full_name":"Siti","phone":"019-555 1234"}'),
+  ('00000000-0000-0000-0000-0000000003c3', 'wei.s@test', '{"role":"customer","full_name":"Wei"}'),
+  ('00000000-0000-0000-0000-0000000003b1', 'rahman.s@test', '{"role":"barber","full_name":"Rahman"}');
+insert into shops (id, owner_id, name, slug, phone, is_published, subscription_status, queue_enabled) values
+  ('00000000-0000-0000-0000-00000000035b', '00000000-0000-0000-0000-0000000003b1', 'Kemas Cuts', 'kemas-cuts',
+   '013-220 4411', true, 'active', true);
+insert into barbers (id, shop_id, name) values
+  ('00000000-0000-0000-0000-0000000003a1', '00000000-0000-0000-0000-00000000035b', 'Rahman');
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000003a1', d, '00:00', '24:00' from generate_series(0, 6) d;
+insert into services (id, shop_id, name, duration_min, price) values
+  ('00000000-0000-0000-0000-0000000003e1', '00000000-0000-0000-0000-00000000035b', 'Fade', 30, 22);
+-- Hakim missed three cuts at Ali's and had one, and is booked there again
+-- in two days; he had a cut at Kemas too. Siti missed two at Ali's. A
+-- walk-in under Wei's name is all Ali's has of him, and Wei has no booking
+-- there of his own.
+insert into bookings (id, shop_id, barber_id, service_id, customer_id, guest_name, service_name, price,
+                      starts_at, ends_at, status)
+select f.id::uuid, f.shop_id::uuid, f.barber_id::uuid, f.service_id::uuid, f.customer_id::uuid, f.guest_name,
+       'Haircut', 25, x.at, x.at + interval '30 minutes', f.status::booking_status
+from (values
+  ('00000000-0000-0000-0000-0000000003f1', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000003c1', null, -40, '10:00', 'no_show'),
+  ('00000000-0000-0000-0000-0000000003f2', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000003c1', null, -20, '10:00', 'no_show'),
+  ('00000000-0000-0000-0000-0000000003f3', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000003c1', null, -3, '10:00', 'no_show'),
+  ('00000000-0000-0000-0000-0000000003f4', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000003c1', null, -5, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000003f5', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000003c1', null, 2, '10:00', 'confirmed'),
+  ('00000000-0000-0000-0000-0000000003f6', '00000000-0000-0000-0000-00000000035b', '00000000-0000-0000-0000-0000000003a1',
+   '00000000-0000-0000-0000-0000000003e1', '00000000-0000-0000-0000-0000000003c1', null, -8, '10:00', 'completed'),
+  ('00000000-0000-0000-0000-0000000003f7', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000003c2', null, -30, '11:00', 'no_show'),
+  ('00000000-0000-0000-0000-0000000003f8', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000003c2', null, -3, '11:00', 'no_show'),
+  ('00000000-0000-0000-0000-0000000003f9', '00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000000a1',
+   '00000000-0000-0000-0000-0000000000e1', null, 'Wei', -6, '12:00', 'completed')
+) f(id, shop_id, barber_id, service_id, customer_id, guest_name, days, clock, status),
+lateral (select ((now() at time zone 'Asia/Kuala_Lumpur')::date + f.days + f.clock::time)
+                at time zone 'Asia/Kuala_Lumpur' as at) x;
+create temporary table stop_before as select * from bookings;
+
+-- Before anything is stopped, Hakim books as ever.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003c1';
+do $$ begin
+  assert shop_page('ali-cuts') -> 'book_on_whatsapp' = 'false', 'not stopped yet: ' || shop_page('ali-cuts')::text;
+  assert (select bool_and(not (x ->> 'book_on_whatsapp')::boolean) from jsonb_array_elements(my_shops() -> 'shops') x),
+    'Book again everywhere: ' || my_shops()::text;
+end $$;
+
+-- The owner sees each one's no-shows, and stops Hakim.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  d jsonb;
+begin
+  assert (select no_shows = 3 and not stopped from shop_customers('Hakim')), 'Hakim''s three no-shows';
+  assert (select no_shows = 2 and not stopped from shop_customers('Siti')), 'Siti''s two';
+  assert stop_online_bookings('00000000-0000-0000-0000-0000000003c1'), 'stopping says he is stopped';
+  assert stop_online_bookings('00000000-0000-0000-0000-0000000003c1', true), 'twice is fine';
+  assert (select stopped and no_shows = 3 from shop_customers('Hakim')), 'his row says so';
+  assert (select not stopped from shop_customers('Siti')), 'Siti is not';
+  assert (select count(*) filter (where stopped) from shop_customers()) = 1, 'one stopped: ' ||
+    (select string_agg(name || ' ' || stopped, ', ') from shop_customers());
+  -- The barber's day says how many no-shows each of the day's no-show customers has here, and who is stopped.
+  d := shop_day(today - 3);
+  assert d -> 'no_shows' = jsonb_build_array(
+           jsonb_build_object('customer_id', '00000000-0000-0000-0000-0000000003c1', 'no_shows', 3, 'stopped', true),
+           jsonb_build_object('customer_id', '00000000-0000-0000-0000-0000000003c2', 'no_shows', 2, 'stopped', false)),
+    'the day''s no-shows: ' || (d -> 'no_shows')::text;
+  assert shop_day(today - 5) -> 'no_shows' = '[]' and shop_day(today + 2) -> 'no_shows' = '[]',
+    'a day without no-shows has none';
+end $$;
+-- Nobody can look up an account, or stop someone the shop has only as a walk-in.
+do $$ begin
+  perform stop_online_bookings('00000000-0000-0000-0000-0000000003c3');
+  raise exception 'Wei never booked at Ali''s online';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'Customer not found.', 'unexpected message: ' || sqlerrm;
+end $$;
+do $$ begin
+  perform stop_online_bookings('00000000-0000-0000-0000-0000000003b1');
+  raise exception 'an account that never booked here';
+exception when sqlstate 'P0002' then null;
+end $$;
+-- The list is only read and written through the functions, the owner's included.
+do $$ begin
+  perform 1 from stopped_customers;
+  raise exception 'owners must not read the table';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  insert into stopped_customers (shop_id, customer_id)
+  values ('00000000-0000-0000-0000-00000000005a', '00000000-0000-0000-0000-0000000003c2');
+  raise exception 'owners must not write the table';
+exception when insufficient_privilege then null;
+end $$;
+-- His bookings are as they were.
+reset role;
+do $$ begin
+  assert (select count(*) from bookings b join stop_before x using (id)
+          where b.status = x.status and b.starts_at = x.starts_at and b.barber_id = x.barber_id
+            and b.customer_id is not distinct from x.customer_id) = (select count(*) from stop_before),
+    'stopping changes no booking';
+end $$;
+set role authenticated;
+
+-- Another owner neither sees Ali's list nor changes it: letting Hakim book
+-- at Kemas leaves him stopped at Ali's, and he can't stop Siti, who never
+-- booked at Kemas.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003b1';
+do $$ begin
+  assert not stop_online_bookings('00000000-0000-0000-0000-0000000003c1', false), 'Kemas lets him';
+  assert (select count(*) from shop_customers()) = 1 and (select not stopped from shop_customers()),
+    'only his own customer, not stopped there';
+  perform stop_online_bookings('00000000-0000-0000-0000-0000000003c2');
+  raise exception 'Siti never booked at Kemas';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'Customer not found.', 'unexpected message: ' || sqlerrm;
+end $$;
+
+-- At Ali's, Hakim is told to WhatsApp the shop, and learns nothing more.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003c1';
+do $$
+declare
+  p jsonb := shop_page('ali-cuts');
+  m jsonb := my_shops();
+begin
+  assert p -> 'book_on_whatsapp' = 'true' and p #>> '{shop,name}' = 'Ali Cuts'
+     and jsonb_array_length(p -> 'services') > 0, 'the page, with WhatsApp in place of booking: ' || p::text;
+  assert strpos(p::text, 'stopped') = 0 and strpos(p::text, 'no_show') = 0, 'and nothing of why: ' || p::text;
+  assert shop_page('kemas-cuts') -> 'book_on_whatsapp' = 'false', 'Kemas takes his bookings as ever';
+  assert (select x ->> 'book_on_whatsapp' = 'true' and x ->> 'phone' = '012-345 6789'
+          from jsonb_array_elements(m -> 'shops') x where x ->> 'name' = 'Ali Cuts'),
+    'Find a barber offers WhatsApp for Ali''s: ' || m::text;
+  assert (select x ->> 'book_on_whatsapp' = 'false' from jsonb_array_elements(m -> 'shops') x where x ->> 'name' = 'Kemas Cuts'),
+    'and Book again for Kemas: ' || m::text;
+end $$;
+do $$ begin
+  perform book_appointment('00000000-0000-0000-0000-0000000000e1',
+    ((now() at time zone 'Asia/Kuala_Lumpur')::date + 4 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  raise exception 'a stopped customer must not book there';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'This shop takes your bookings on WhatsApp. Please message them there.', 'unexpected message: ' || sqlerrm;
+end $$;
+do $$ begin
+  perform join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date + 4);
+  raise exception 'a stopped customer must not wait for a time there';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'This shop takes your bookings on WhatsApp. Please message them there.', 'unexpected message: ' || sqlerrm;
+end $$;
+do $$ begin
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+  raise exception 'a stopped customer must not join the queue there';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'This shop takes your bookings on WhatsApp. Please message them there.', 'unexpected message: ' || sqlerrm;
+end $$;
+do $$ begin
+  perform reschedule_booking('00000000-0000-0000-0000-0000000003f5',
+    ((now() at time zone 'Asia/Kuala_Lumpur')::date + 2 + time '11:00') at time zone 'Asia/Kuala_Lumpur');
+  raise exception 'a stopped customer must not move a booking there';
+exception when sqlstate 'P0001' then
+  assert sqlerrm = 'Please WhatsApp the shop to change this booking. You can still cancel it.', 'unexpected message: ' || sqlerrm;
+end $$;
+do $$ begin
+  perform stop_online_bookings('00000000-0000-0000-0000-0000000003c1', false);
+  raise exception 'a customer has no list to change';
+exception when sqlstate 'P0002' then
+  assert sqlerrm = 'Set up your shop first.', 'unexpected message: ' || sqlerrm;
+end $$;
+do $$ begin
+  perform 1 from stopped_customers;
+  raise exception 'customers must not read the list';
+exception when insufficient_privilege then null;
+end $$;
+-- Nothing was written by the refusals, and his cut there can still be rated.
+reset role;
+do $$ begin
+  assert (select count(*) from bookings) = (select count(*) from stop_before)
+     and not exists (select 1 from waitlist) and not exists (select 1 from queue_entries),
+    'the refusals wrote nothing';
+end $$;
+set role authenticated;
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  b bookings;
+begin
+  assert (rate_booking('00000000-0000-0000-0000-0000000003f4', 4, 'Good cut')).rating = 4, 'he rates his cut';
+  -- Kemas still takes him, and the queue's own rules apply there.
+  b := book_appointment('00000000-0000-0000-0000-0000000003e1', (today + 4 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  assert b.shop_id = '00000000-0000-0000-0000-00000000035b', 'he books at Kemas';
+  perform join_waitlist('00000000-0000-0000-0000-0000000003e1', today + 5);
+end $$;
+
+-- The shop can still move his booking when he calls, and he can cancel it.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert (reschedule_booking('00000000-0000-0000-0000-0000000003f5',
+           ((now() at time zone 'Asia/Kuala_Lumpur')::date + 2 + time '11:00') at time zone 'Asia/Kuala_Lumpur')).status
+         = 'confirmed', 'the owner moves it';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003c1';
+do $$ begin
+  assert (set_booking_status('00000000-0000-0000-0000-0000000003f5', 'cancelled')).status = 'cancelled',
+    'he cancels it';
+end $$;
+
+-- Siti, Wei and guests are not affected.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003c2';
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+begin
+  assert shop_page('ali-cuts') -> 'book_on_whatsapp' = 'false', 'Siti books online';
+  perform book_appointment('00000000-0000-0000-0000-0000000000e1', (today + 4 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  perform join_queue('00000000-0000-0000-0000-0000000000e1');
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003c3';
+do $$ begin
+  perform join_waitlist('00000000-0000-0000-0000-0000000000e1', (now() at time zone 'Asia/Kuala_Lumpur')::date + 4);
+end $$;
+reset role;
+set role anon;
+do $$ begin
+  assert shop_page('ali-cuts') -> 'book_on_whatsapp' = 'false', 'a guest is not stopped';
+end $$;
+do $$ begin
+  perform stop_online_bookings('00000000-0000-0000-0000-0000000003c1', false);
+  raise exception 'guests must not call stop_online_bookings';
+exception when insufficient_privilege then null;
+end $$;
+do $$ begin
+  perform 1 from stopped_customers;
+  raise exception 'guests must not read the list';
+exception when insufficient_privilege then null;
+end $$;
+reset role;
+
+-- Ali lets him again, and he books as before.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin
+  assert not stop_online_bookings('00000000-0000-0000-0000-0000000003c1', false), 'allowed again';
+  assert not stop_online_bookings('00000000-0000-0000-0000-0000000003c1', false), 'twice is fine';
+  assert (select not stopped from shop_customers('Hakim')), 'his row says so';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003c1';
+do $$ begin
+  assert shop_page('ali-cuts') -> 'book_on_whatsapp' = 'false', 'the steps are back';
+  perform book_appointment('00000000-0000-0000-0000-0000000000e1',
+    ((now() at time zone 'Asia/Kuala_Lumpur')::date + 6 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+end $$;
+
+-- Stopped again, his account goes with its rows when he deletes it, and the shop's with its own.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000b1';
+do $$ begin perform stop_online_bookings('00000000-0000-0000-0000-0000000003c1'); end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003b1';
+do $$ begin perform stop_online_bookings('00000000-0000-0000-0000-0000000003c1'); end $$;
+reset role;
+do $$ begin
+  assert (select count(*) from stopped_customers where customer_id = '00000000-0000-0000-0000-0000000003c1') = 2,
+    'stopped at both';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003b1';
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert (select count(*) from stopped_customers where customer_id = '00000000-0000-0000-0000-0000000003c1') = 1,
+    'Kemas''s row went with the shop';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000003c1';
+do $$ begin perform delete_my_account(); end $$;
+reset role;
+do $$ begin
+  assert not exists (select 1 from stopped_customers), 'his own went with his account';
+end $$;
 rollback;
 
 -- Photos of the shop's cuts -----------------------------------------------------

@@ -370,6 +370,24 @@ create table public.review_reports (
   check ((outcome is null) = (decided_at is null))
 );
 
+-- Customers a shop takes bookings from on WhatsApp only: its owner stops
+-- someone who keeps not turning up from booking, waiting for a time,
+-- joining the queue or moving a booking there in the app
+-- (stop_online_bookings). They can still cancel, rate their cuts, message
+-- the shop and walk in, and bookings already made stay. One row per shop
+-- and customer, so each booking function checks it with one lookup of the
+-- primary key. Read and written only through the functions below: only
+-- the owner sees their list, and a customer learns only their own state at
+-- a shop (shop_page, my_shops and the refusals).
+create table public.stopped_customers (
+  shop_id uuid not null references public.shops (id) on delete cascade,
+  customer_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (shop_id, customer_id)
+);
+-- So deleting an account finds its rows without reading every shop's.
+create index stopped_customers_customer_idx on public.stopped_customers (customer_id);
+
 -- The waiting list: a customer who found a day full asks to hear if a time
 -- frees up, for one service with a chosen barber (or any). day is the
 -- shop's own date. The shop sees who asked and WhatsApps them a time;
@@ -671,6 +689,8 @@ alter table public.waitlist enable row level security;
 alter table public.queue_entries enable row level security;
 alter table public.shop_photos enable row level security;
 alter table public.review_reports enable row level security;
+-- No policies: read and written only through stop_online_bookings and the functions that check it.
+alter table public.stopped_customers enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -778,6 +798,9 @@ revoke all on public.reviews from anon, authenticated;
 grant select (booking_id, shop_id, barber_id, rating, comment, first_name, reply, replied_at, removed, created_at,
               updated_at)
   on public.reviews to anon, authenticated;
+-- Who a shop has stopped booking online is the owner's to know, not the
+-- customer's or anyone else's.
+revoke all on public.stopped_customers from anon, authenticated;
 -- Reports are written through report_review, and the decisions by the team.
 revoke all on public.review_reports from anon, authenticated;
 grant select (booking_id, reason, note, outcome, decided_at, created_at) on public.review_reports to authenticated;
@@ -1467,6 +1490,11 @@ begin
     raise exception 'This service is no longer available.' using errcode = 'P0002';
   end if;
 
+  -- The shop stopped them booking in the app (stopped_customers): never why.
+  if exists (select 1 from stopped_customers where shop_id = v_service.shop_id and customer_id = v_uid) then
+    raise exception 'This shop takes your bookings on WhatsApp. Please message them there.' using errcode = 'P0001';
+  end if;
+
   if length(p_note) > 280 then
     raise exception 'Please keep your note under 280 characters.' using errcode = '22001';
   end if;
@@ -1656,6 +1684,12 @@ begin
   v_by_customer := not public.owns_shop(v_booking.shop_id);
   if v_booking.status <> 'confirmed' or v_booking.starts_at <= now() then
     raise exception 'You can only change an upcoming booking.' using errcode = '42501';
+  end if;
+  -- A customer the shop stopped booking in the app can still cancel, but asks the shop to move it.
+  if v_by_customer and exists (
+    select 1 from stopped_customers where shop_id = v_booking.shop_id and customer_id = v_booking.customer_id
+  ) then
+    raise exception 'Please WhatsApp the shop to change this booking. You can still cancel it.' using errcode = 'P0001';
   end if;
 
   select * into v_service from services where id = v_booking.service_id and is_active;
@@ -2177,7 +2211,9 @@ $$;
 -- 40 ms. total_count and due_count are for every customer the search
 -- matches, not just the page. My shop's card gets the same two numbers from
 -- shop_customer_counts below, without the list: change the two together
--- (booking_test.sql checks they agree).
+-- (booking_test.sql checks they agree). stopped says the owner has stopped
+-- an online customer booking in the app (stopped_customers), read off its
+-- primary key for this shop.
 create function public.shop_customers(
   p_search text default null,
   p_limit int default 30,
@@ -2190,6 +2226,7 @@ returns table (
   phone text,
   visits int,
   no_shows int,
+  stopped boolean,
   last_visit_at timestamptz,
   next_booking_at timestamptz,
   usual_gap_days int,
@@ -2308,9 +2345,11 @@ begin
            case when p.customer_id is null then p.guest_phone else a.phone end as phone,
            p.visits, p.no_shows, p.last_visit_at, p.next_booking_at,
            case when p.visits >= 2 then greatest(p.median_gap, 7) else 28 end as gap,
-           p.last_day
+           p.last_day,
+           st.customer_id is not null as stopped
     from people p
     left join accounts a on a.customer_id = p.customer_id
+    left join stopped_customers st on st.shop_id = v_shop.id and st.customer_id = p.customer_id
   ),
   found as (
     select j.*,
@@ -2322,7 +2361,7 @@ begin
        or strpos(lower(j.name), v_search) > 0
        or strpos(regexp_replace(regexp_replace(coalesce(j.phone, ''), '\D', '', 'g'), '^0', '60'), v_digits) > 0
   )
-  select f.key, f.customer_id, f.name, f.phone, f.visits, f.no_shows, f.last_visit_at, f.next_booking_at,
+  select f.key, f.customer_id, f.name, f.phone, f.visits, f.no_shows, f.stopped, f.last_visit_at, f.next_booking_at,
          f.gap, f.due, (count(*) over ())::int, (count(*) filter (where f.due) over ())::int
   from found f
   order by f.due desc,
@@ -2331,6 +2370,41 @@ begin
            lower(f.name), f.key
   limit least(greatest(coalesce(p_limit, 30), 1), 50)
   offset greatest(coalesce(p_offset, 0), 0);
+end;
+$$;
+
+-- The owner stops a customer who keeps not turning up from booking at
+-- their shop in the app (p_stop true), or lets them again (false), and gets
+-- back whether they are stopped. Only someone who has booked there online,
+-- found by bookings_customer_idx: an owner can't look up other accounts,
+-- and a walk-in known only by a number has no account to stop. Bookings
+-- already made stay, for the owner to cancel if they want to. Letting
+-- someone again who isn't stopped is fine: another phone may have just
+-- done it.
+create function public.stop_online_bookings(p_customer_id uuid, p_stop boolean default true)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shop uuid := public.my_shop_id();
+begin
+  if v_shop is null then
+    raise exception 'Set up your shop first.' using errcode = 'P0002';
+  end if;
+  if not coalesce(p_stop, true) then
+    delete from stopped_customers where shop_id = v_shop and customer_id = p_customer_id;
+    return false;
+  end if;
+  if not exists (
+    select 1 from bookings where customer_id = p_customer_id and shop_id = v_shop
+  ) then
+    raise exception 'Customer not found.' using errcode = 'P0002';
+  end if;
+  insert into stopped_customers (shop_id, customer_id) values (v_shop, p_customer_id)
+  on conflict do nothing;
+  return true;
 end;
 $$;
 
@@ -2733,6 +2807,10 @@ begin
   if v_shop.id is null or not public.shop_is_live(v_shop) then
     raise exception 'This service is no longer available.' using errcode = 'P0002';
   end if;
+  -- As book_appointment: the shop stopped them booking in the app.
+  if exists (select 1 from stopped_customers where shop_id = v_shop.id and customer_id = v_uid) then
+    raise exception 'This shop takes your bookings on WhatsApp. Please message them there.' using errcode = 'P0001';
+  end if;
 
   if p_barber_id is not null and not exists (
     select 1 from barbers where id = p_barber_id and shop_id = v_shop.id and is_active
@@ -3065,6 +3143,10 @@ begin
   select * into v_shop from shops where id = v_service.shop_id;
   if v_shop.id is null or not public.shop_is_live(v_shop) then
     raise exception 'This service is no longer available.' using errcode = 'P0002';
+  end if;
+  -- As book_appointment: the shop stopped them booking in the app. Walking in still works.
+  if exists (select 1 from stopped_customers where shop_id = v_shop.id and customer_id = v_uid) then
+    raise exception 'This shop takes your bookings on WhatsApp. Please message them there.' using errcode = 'P0001';
   end if;
   if p_barber_id is not null and not exists (
     select 1 from barbers where id = p_barber_id and shop_id = v_shop.id and is_active
@@ -3600,7 +3682,8 @@ $$;
 -- gap there, worked out as shop_customers does; whether it still takes
 -- online bookings; and today's hours and next free time as the shop list
 -- has them. The app decides from these whether they are due for a cut
--- (lib/my-shops.ts). Only the caller's own online bookings, read through
+-- (lib/my-shops.ts), and whether it takes their bookings on WhatsApp only,
+-- with its number. Only the caller's own online bookings, read through
 -- bookings_customer_idx: walk-ins the shop added under their number are the
 -- shop's to see. Their shops and barbers are then looked up by id (offset
 -- 0 stops the planner reading every shop and barber on the platform
@@ -3631,7 +3714,7 @@ begin
   ),
   recent as materialized (
     -- The last cut at each shop, the three latest of those.
-    select l.*, s.name, s.slug, s.time_zone, s.is_live, br.name as barber_name
+    select l.*, s.name, s.slug, s.time_zone, s.phone, s.is_live, br.name as barber_name
     from (
       select * from (
         select distinct on (v.shop_id) v.* from visits v order by v.shop_id, v.starts_at desc, v.id
@@ -3640,7 +3723,8 @@ begin
       limit 3
     ) l
     cross join lateral (
-      select x.name, x.slug, x.time_zone, public.shop_is_live(x) as is_live from shops x where x.id = l.shop_id offset 0
+      select x.name, x.slug, x.time_zone, x.phone, public.shop_is_live(x) as is_live
+      from shops x where x.id = l.shop_id offset 0
     ) s
     cross join lateral (select x.name from barbers x where x.id = l.barber_id offset 0) br
   ),
@@ -3684,7 +3768,11 @@ begin
                'last_visit_at', r.starts_at, 'service_id', r.service_id, 'service_name', r.service_name,
                'barber_id', r.barber_id, 'barber_name', r.barber_name,
                'visits', hb.visits,
-               'usual_gap_days', case when hb.visits >= 2 then greatest(hb.median_gap, 7) else 28 end
+               'usual_gap_days', case when hb.visits >= 2 then greatest(hb.median_gap, 7) else 28 end,
+               -- A shop that stopped them booking in the app gets WhatsApp instead of Book again.
+               'book_on_whatsapp', exists (
+                 select 1 from stopped_customers st where st.shop_id = r.shop_id and st.customer_id = (select auth.uid())),
+               'phone', r.phone
              ) order by r.starts_at desc, r.shop_id)
       from recent r
       join habits hb on hb.shop_id = r.shop_id
@@ -3708,8 +3796,9 @@ $$;
 -- (shop_closed_days); today's hours (shop_hours_today) and the date they
 -- are for; while the shop runs a queue, its count and wait with the
 -- caller's own place (queue_status); the photos of its cuts, up to 24 in
--- the owner's order; and the newest reviews, three as the page shows them,
--- with whether there are more. The shop is there when the
+-- the owner's order; the newest reviews, three as the page shows them,
+-- with whether there are more; and whether the shop takes the caller's
+-- bookings on WhatsApp only (stopped_customers). The shop is there when the
 -- caller can see it, as the shops policy says: live, or their own. Any
 -- other shop gives only what shop_public_status gives, so its link can say
 -- whose shop it is and that it isn't taking bookings; an unknown link gives
@@ -3782,6 +3871,11 @@ begin
       from public.shop_closed_days(v_shop.id, v_today, v_today + 13) with ordinality d
     ), '[]'::jsonb),
     'hours_today', (select to_jsonb(h) from public.shop_hours_today(v_shop.id) h),
+    -- Whether the shop has stopped the caller booking in the app, so the page
+    -- offers WhatsApp in place of the steps: the caller's own row only.
+    'book_on_whatsapp', exists (
+      select 1 from stopped_customers st where st.shop_id = v_shop.id and st.customer_id = (select auth.uid())
+    ),
     'queue', case when v_shop.queue_enabled then public.queue_status(v_shop.id) end,
     -- Photos of the shop's cuts, first first, off shop_photos_shop_order_idx.
     'photos', coalesce((
@@ -3815,7 +3909,9 @@ $$;
 -- (shop_queue, which is empty unless the queue is on or someone is still
 -- in it); the day's waiting list (shop_waitlist); and what customers
 -- changed since p_since, as shop_changes counts it with p_since and
--- p_limit. Each part is an index lookup bounded by the shop. plpgsql with a
+-- p_limit. Since round 16, each online customer with a no-show that day
+-- with how many they have here and whether they are stopped from booking
+-- in the app. Each part is an index lookup bounded by the shop. plpgsql with a
 -- generic plan, so a connection plans it once.
 create function public.shop_day(p_day date, p_since timestamptz default null, p_limit int default 5)
 returns jsonb
@@ -3889,6 +3985,30 @@ begin
       select jsonb_agg(to_jsonb(q) - 'ordinality' order by q.ordinality)
       from public.shop_queue() with ordinality q
     ), '[]'::jsonb) else '[]'::jsonb end,
+    -- Each online customer with a no-show this day: their no-shows here in
+    -- the years shop_customers counts, read off bookings_customer_idx, and
+    -- whether the shop has stopped them booking in the app, so marking a
+    -- repeat no-show can offer to stop them. A day has few no-shows.
+    'no_shows', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'customer_id', c.customer_id,
+               'no_shows', (
+                 select count(*) from bookings x
+                 where x.customer_id = c.customer_id and x.shop_id = v_shop.id and x.status = 'no_show'
+                   and x.starts_at >= now() - interval '2 years' and x.starts_at < now() + interval '1 year'),
+               'stopped', exists (
+                 select 1 from stopped_customers st where st.shop_id = v_shop.id and st.customer_id = c.customer_id)
+             ) order by c.customer_id)
+      from (
+        select distinct b.customer_id
+        from bookings b
+        where b.shop_id = v_shop.id
+          and b.starts_at >= p_day::timestamp at time zone v_tz
+          and b.starts_at < (p_day + 1)::timestamp at time zone v_tz
+          and b.status = 'no_show'
+          and b.customer_id is not null
+      ) c
+    ), '[]'::jsonb),
     'changes', public.shop_changes(p_since, p_limit)
   );
 end;
@@ -3992,6 +4112,8 @@ revoke execute on function public.shop_summary(date, date) from public, anon;
 grant execute on function public.shop_summary(date, date) to authenticated;
 revoke execute on function public.shop_customers(text, int, int) from public, anon;
 grant execute on function public.shop_customers(text, int, int) to authenticated;
+revoke execute on function public.stop_online_bookings(uuid, boolean) from public, anon;
+grant execute on function public.stop_online_bookings(uuid, boolean) to authenticated;
 revoke execute on function public.shop_changes(timestamptz, int) from public, anon;
 grant execute on function public.shop_changes(timestamptz, int) to authenticated;
 revoke execute on function public.shop_setup() from public, anon;
