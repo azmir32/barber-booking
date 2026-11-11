@@ -35,6 +35,14 @@ export type MyShop = {
   barber_name: string;
   visits: number;
   usual_gap_days: number;
+  /**
+   * The shop takes their bookings on WhatsApp only (stop_online_bookings), so
+   * the card offers WhatsApp instead of Book again. Missing from an answer
+   * kept from before round 16.
+   */
+  book_on_whatsapp?: boolean;
+  /** The shop's number, for that WhatsApp. */
+  phone?: string | null;
 };
 
 export type MyShops = {

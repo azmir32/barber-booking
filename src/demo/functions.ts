@@ -4,6 +4,7 @@
 // decide for themselves what the caller may do.
 
 import { kmBetween, shopPoint } from '../lib/distance.ts';
+import { BOOK_ON_WHATSAPP, MOVE_ON_WHATSAPP } from '../lib/online-stops.ts';
 import { toWhatsAppNumber } from '../lib/phone.ts';
 import { queueEstimate } from '../lib/queue.ts';
 import { PHOTO_COLUMNS } from '../lib/photos.ts';
@@ -407,10 +408,20 @@ export function availableSlots(
     .map(({ barber_id, starts_at }) => ({ barber_id, starts_at }));
 }
 
+/** Whether a shop has stopped a customer booking in the app: one lookup of stopped_customers' key. */
+const isStopped = (shopId: unknown, customerId: unknown) =>
+  customerId != null && tables().stopped_customers.some((st) => st.shop_id === shopId && st.customer_id === customerId);
+
+/** book_appointment, join_waitlist and join_queue refuse a customer the shop stopped, never saying why. */
+function refuseStopped(shopId: unknown, customerId: unknown) {
+  if (isStopped(shopId, customerId)) throw new PgError('P0001', BOOK_ON_WHATSAPP, 400);
+}
+
 export function bookAppointment(c: Caller, serviceId: unknown, startsAt: unknown, barberId: unknown = null, note: unknown = null) {
   if (c.uid == null) throw new PgError('28000', 'Please sign in to book.', 403);
   const service = findById('services', serviceId);
   if (!service) throw new PgError('P0002', 'This service is no longer available.', 500);
+  refuseStopped(service.shop_id, c.uid);
   if (note != null && [...String(note)].length > 280) {
     throw new PgError('22001', 'Please keep your note under 280 characters.', 400);
   }
@@ -469,6 +480,8 @@ export function rescheduleBooking(c: Caller, bookingId: unknown, startsAt: unkno
   if (booking.status !== 'confirmed' || ms(booking.starts_at) <= now()) {
     throw new PgError('42501', 'You can only change an upcoming booking.', 403);
   }
+  // A customer the shop stopped booking in the app can still cancel, but asks the shop to move it.
+  if (byCustomer && isStopped(booking.shop_id, booking.customer_id)) throw new PgError('P0001', MOVE_ON_WHATSAPP, 400);
   const service = findById('services', booking.service_id);
   if (!service || !service.is_active) throw new PgError('P0002', 'This service is no longer available.', 500);
 
@@ -692,6 +705,9 @@ export function myShops(c: Caller) {
           barber_name: barber.name,
           visits: days.length,
           usual_gap_days: usualGapDays(days),
+          // A shop that stopped them booking in the app gets WhatsApp instead of Book again.
+          book_on_whatsapp: isStopped(shop.id, c.uid),
+          phone: shop.phone ?? null,
         },
       ];
     }),
@@ -1170,6 +1186,7 @@ function customersOf(shop: Row, search: string | null) {
           phone,
           visits: days.length,
           no_shows: bookings.filter((b) => b.status === 'no_show').length,
+          stopped: isStopped(shop.id, customerId),
           last_visit_at: visited.length ? String(visited.at(-1)!.starts_at) : null,
           next_booking_at: upcoming.length ? String(upcoming[0].starts_at) : null,
           usual_gap_days: gap,
@@ -1203,6 +1220,28 @@ export function shopCustomers(c: Caller, args: Record<string, unknown>) {
   return found
     .slice(offset, offset + limit)
     .map(({ row }) => ({ ...row, total_count: found.length, due_count: dueCount }));
+}
+
+/**
+ * stop_online_bookings: the owner stops a customer who has booked at their
+ * shop online from booking there in the app, or lets them again, and gets
+ * back whether they are stopped.
+ */
+export function stopOnlineBookings(c: Caller, customerId: unknown, stopArg: unknown = true) {
+  const shop = myShop(c);
+  const all = tables();
+  if (bool(stopArg) === false) {
+    deleteRows(
+      'stopped_customers',
+      all.stopped_customers.filter((st) => st.shop_id === shop.id && st.customer_id === customerId),
+    );
+    return false;
+  }
+  if (customerId == null || !all.bookings.some((b) => b.customer_id === customerId && b.shop_id === shop.id)) {
+    throw new PgError('P0002', 'Customer not found.', 500);
+  }
+  if (!isStopped(shop.id, customerId)) insertRow('stopped_customers', { shop_id: shop.id, customer_id: customerId });
+  return true;
 }
 
 // My shop's cards -------------------------------------------------------------
@@ -1327,6 +1366,7 @@ export function joinWaitlist(c: Caller, serviceId: unknown, dayArg: unknown, bar
   const service = findById('services', serviceId);
   const shop = service?.is_active ? findById('shops', service.shop_id) : undefined;
   if (!service || !shop || !shopIsLive(shop)) throw new PgError('P0002', 'This service is no longer available.', 500);
+  refuseStopped(shop.id, c.uid);
   if (
     barberId != null &&
     !tables().barbers.some((b) => b.id === barberId && b.shop_id === shop.id && b.is_active)
@@ -1627,6 +1667,8 @@ export function joinQueue(c: Caller, serviceId: unknown, barberId: unknown = nul
   const service = findById('services', serviceId);
   const shop = service?.is_active ? findById('shops', service.shop_id) : undefined;
   if (!service || !shop || !shopIsLive(shop)) throw new PgError('P0002', 'This service is no longer available.', 500);
+  // Walking in still works.
+  refuseStopped(shop.id, c.uid);
   if (barberId != null && !tables().barbers.some((b) => b.id === barberId && b.shop_id === shop.id && b.is_active)) {
     throw new PgError('P0002', 'Barber not found.', 500);
   }
@@ -2052,6 +2094,8 @@ export function shopPage(c: Caller, slug: unknown) {
     today,
     closed_days: shopClosedDays(c, shop.id, today, addDays(today, 13)),
     hours_today: shopHoursToday(c, shop.id)[0],
+    // Whether the shop has stopped the caller booking in the app: their own row only.
+    book_on_whatsapp: isStopped(shop.id, c.uid),
     queue: shop.queue_enabled ? queueStatus(c, shop.id) : null,
     photos: selectAs(c, 'shop_photos', {
       select: 'id,barber_id,caption,path,thumb_path,width,height,sort_order',
@@ -2069,7 +2113,9 @@ export function shopPage(c: Caller, slug: unknown) {
  * its separate requests give the owner: the day's bookings, how many services
  * customers can book, every barber with their hours, the strip's closed days,
  * on today tomorrow's bookings still to remind and today's queue, the day's
- * waiting list, and what customers changed since p_since.
+ * waiting list, each online customer with a no-show that day with how many
+ * they have here and whether they are stopped from booking in the app, and
+ * what customers changed since p_since.
  */
 export function shopDay(c: Caller, dayArg: unknown, sinceArg: unknown = null, limitArg: unknown = 5) {
   const shop = myShop(c);
@@ -2119,8 +2165,25 @@ export function shopDay(c: Caller, dayArg: unknown, sinceArg: unknown = null, li
         : [],
     waiting: day ? shopWaitlist(c, day) : [],
     queue: day === today ? shopQueue(c) : [],
+    no_shows: day ? dayNoShows(shop, day) : [],
     changes: shopChanges(c, sinceArg, limitArg),
   };
+}
+
+/** shop_day's no_shows: no-shows counted over the years shop_customers counts. */
+function dayNoShows(shop: Row, day: string) {
+  const { start, end } = dayBounds(day, String(shop.time_zone));
+  const from = yearsFromNow(-2);
+  const until = yearsFromNow(1);
+  const bookings = tables().bookings.filter((b) => b.shop_id === shop.id && b.status === 'no_show');
+  const missed = bookings.filter((b) => b.customer_id != null && ms(b.starts_at) >= +start && ms(b.starts_at) < +end);
+  return [...new Set(missed.map((b) => String(b.customer_id)))].sort().map((customerId) => ({
+    customer_id: customerId,
+    no_shows: bookings.filter(
+      (b) => b.customer_id === customerId && ms(b.starts_at) >= from && ms(b.starts_at) < until,
+    ).length,
+    stopped: isStopped(shop.id, customerId),
+  }));
 }
 
 /** Who may call what: the migration revokes these from anonymous callers. */
@@ -2137,6 +2200,7 @@ const SIGNED_IN_ONLY = new Set([
   'reopen_shop_days',
   'shop_summary',
   'shop_customers',
+  'stop_online_bookings',
   'shop_cards',
   'shop_changes',
   'shop_setup',
@@ -2208,6 +2272,8 @@ export function callFunction(name: string, args: Record<string, unknown>, c: Cal
       return { status: 200, body: shopSummary(c, args.p_from, args.p_to) };
     case 'shop_customers':
       return { status: 200, body: shopCustomers(c, args) };
+    case 'stop_online_bookings':
+      return { status: 200, body: stopOnlineBookings(c, args.p_customer_id, args.p_stop ?? true) };
     case 'shop_cards':
       return { status: 200, body: shopCards(c, args.p_from, args.p_to) };
     case 'shop_changes':

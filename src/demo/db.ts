@@ -19,7 +19,8 @@ export type TableName =
   | 'review_reports'
   | 'waitlist'
   | 'queue_entries'
-  | 'shop_photos';
+  | 'shop_photos'
+  | 'stopped_customers';
 export type Tables = Record<TableName, Row[]>;
 type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'float' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = {
@@ -243,6 +244,12 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     sort_order: req('int', () => 0),
     created_at: createdAt,
   },
+  // Customers a shop takes bookings from on WhatsApp only (stop_online_bookings in functions.ts).
+  stopped_customers: {
+    shop_id: req('uuid'),
+    customer_id: req('uuid'),
+    created_at: createdAt,
+  },
 };
 
 /** Tables keyed by something other than id. */
@@ -250,6 +257,7 @@ const PRIMARY_KEY: Partial<Record<TableName, string[]>> = {
   shop_closures: ['shop_id', 'day'],
   reviews: ['booking_id'],
   review_reports: ['booking_id'],
+  stopped_customers: ['shop_id', 'customer_id'],
 };
 
 /** Postgres trim(): spaces only, unlike String.prototype.trim. */
@@ -520,6 +528,20 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     references: 'barbers',
     onDelete: 'set null',
   },
+  {
+    name: 'stopped_customers_shop_id_fkey',
+    table: 'stopped_customers',
+    column: 'shop_id',
+    references: 'shops',
+    onDelete: 'cascade',
+  },
+  {
+    name: 'stopped_customers_customer_id_fkey',
+    table: 'stopped_customers',
+    column: 'customer_id',
+    references: 'profiles',
+    onDelete: 'cascade',
+  },
 ];
 
 // Values ---------------------------------------------------------------------
@@ -620,7 +642,7 @@ export function setSeed(fn: () => void) {
 export const HISTORY_ID = 'd0000000-0000-4000-9000-';
 
 /** Saved with the demo, so a later one can tell which sample customers it has had. */
-const VERSION = 3;
+const VERSION = 4;
 /**
  * The sample customers that came in after the first saved demos, with the
  * version that brought them (seed.ts). A demo saved before then gets them
@@ -633,6 +655,8 @@ const CAME_IN: Record<string, number> = {
   'izzat@demo.potongku.my': 3,
   'kevin@demo.potongku.my': 3,
   'nurul@demo.potongku.my': 3,
+  // Round 16: missed three cuts at Ali's, so Ali takes his bookings on WhatsApp only.
+  'azlan@demo.potongku.my': 4,
 };
 
 function storage(): Storage | null {
@@ -827,6 +851,22 @@ function samplePhotos(all: Tables): Row[] {
     .map((p) => ({ ...p, barber_id: barbers.has(p.barber_id) ? p.barber_id : null }));
 }
 
+/**
+ * For a demo saved before shops could stop a customer booking online: the
+ * sample's stopped customers, found again by their email, at the shops it
+ * still has.
+ */
+function sampleStops(all: Tables): Row[] {
+  const sample = sampleTables();
+  const emails = new Map(sample.users.map((u) => [u.id, u.email]));
+  const ids = new Map(all.users.map((u) => [u.email, u.id]));
+  const shops = new Set(all.shops.map((s) => s.id));
+  return sample.stopped_customers.flatMap((st) => {
+    const customer = ids.get(emails.get(st.customer_id));
+    return customer != null && shops.has(st.shop_id) ? [{ ...st, customer_id: customer }] : [];
+  });
+}
+
 /** What the sample data has in a column for a row; null for rows people added. */
 function sampleValue(table: TableName, rowId: unknown, column: string): unknown {
   return sampleTables()[table].find((r) => r.id === rowId)?.[column] ?? null;
@@ -842,6 +882,7 @@ export function tables(): Tables {
       const hadQueue = Array.isArray(parsed.tables.queue_entries);
       const hadPhotos = Array.isArray(parsed.tables.shop_photos);
       const hadReports = Array.isArray(parsed.tables.review_reports);
+      const hadStops = Array.isArray(parsed.tables.stopped_customers);
       const version = Number(parsed.version) || 0;
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn, version);
       // A demo saved before a table was added has no list for it yet,
@@ -856,6 +897,7 @@ export function tables(): Tables {
       }
       recountReviews(current);
       if (!hadPhotos) current.shop_photos = samplePhotos(current);
+      if (!hadStops) current.stopped_customers = sampleStops(current);
       seededOn = today();
       if (parsed.seededOn !== seededOn || !hadReviews || !hadQueue || !hadPhotos || !hadReports || version < VERSION) {
         save();

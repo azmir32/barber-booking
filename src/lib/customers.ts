@@ -19,6 +19,8 @@ export type ShopCustomer = {
   phone: string | null;
   visits: number;
   no_shows: number;
+  /** The shop has stopped this online customer booking in the app (stop_online_bookings). */
+  stopped: boolean;
   last_visit_at: string | null;
   next_booking_at: string | null;
   usual_gap_days: number;

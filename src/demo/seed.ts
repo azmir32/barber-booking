@@ -747,6 +747,41 @@ function seed() {
   for (const [at, service, guest] of fadeRoomDay) {
     book(f.shop, { barber: f.barbers[0], day: 0, at, service, guest: [guest] });
   }
+
+  // Azlan booked at Ali's three times in the last month and never turned up,
+  // the last time yesterday, so Ali has stopped him booking in the app: he
+  // WhatsApps the shop instead. Jason, with two no-shows (one when Danial
+  // works on the day before), can still book. Each no-show takes the first
+  // time on its days that a barber works and nobody else has, and keeps its
+  // id whichever that is. Added last, so every id above stays as it was; a
+  // demo saved before he came gets him too (CAME_IN in db.ts).
+  const azlan = user('azlan@demo.potongku.my', 'customer', 'Azlan', '013-918 2207');
+  const missed = (days: number[], service: Row) => {
+    const id = `${HISTORY_ID}${String(900_000 + ++nextRated).padStart(12, '0')}`;
+    for (const day of days) {
+      for (const at of ['14:30', '11:30', '16:30', '18:30', '12:30']) {
+        for (const barber of [aliChair, danial]) {
+          const start = startOf(day, at);
+          const end = start + (service.duration_min as number) * 60_000;
+          const taken = tables().bookings.some(
+            (x) => x.barber_id === barber.row.id && Date.parse(String(x.starts_at)) < end && start < Date.parse(String(x.ends_at)),
+          );
+          const cut = taken ? null : book(sa, { barber, day, at, service, customer: azlan, status: 'no_show' }, id);
+          if (cut) return cut;
+        }
+      }
+    }
+    return null;
+  };
+  missed([-29, -30, -28, -31], fade);
+  missed([-15, -16, -14, -17], haircut);
+  const last = missed([-1], fade);
+  insertRow('stopped_customers', {
+    shop_id: sa.id,
+    customer_id: azlan.id,
+    // Soon after he missed yesterday's.
+    created_at: new Date(last ? Math.min(now(), Date.parse(String(last.ends_at)) + 2 * HOUR) : now() - DAY).toISOString(),
+  });
 }
 
 setSeed(seed);

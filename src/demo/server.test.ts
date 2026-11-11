@@ -8,6 +8,7 @@ import { distanceText, kmBetween } from '../lib/distance.ts';
 import { firstName } from '../lib/reviews.ts';
 import type { MyShops } from '../lib/my-shops.ts';
 import { plannedReminders, reminderChanges, type ReminderBooking } from '../lib/phone-reminders.ts';
+import { BOOK_ON_WHATSAPP, MOVE_ON_WHATSAPP } from '../lib/online-stops.ts';
 import { MAX_PHOTOS, PHOTO_UPLOAD } from '../lib/photos.ts';
 import { REPORT_COLUMNS } from '../lib/review-reports.ts';
 import { canCompare, periodDays } from '../lib/summary.ts';
@@ -1858,6 +1859,7 @@ type Customer = {
   phone: string | null;
   visits: number;
   no_shows: number;
+  stopped: boolean;
   last_visit_at: string | null;
   next_booking_at: string | null;
   usual_gap_days: number;
@@ -2005,6 +2007,7 @@ test('the customer list works out visits, usual gaps and who is due, as the data
       phone: null,
       visits: 3,
       no_shows: 1,
+      stopped: false,
       last_visit_at: Date.parse(kajang(-28, '09:00')),
       next_booking_at: null,
       usual_gap_days: 21,
@@ -3301,6 +3304,8 @@ test('my_shops works out the last cut, visits and usual gap at each shop, as the
       barber_name: 'Rahman',
       visits: 1,
       usual_gap_days: 28,
+      book_on_whatsapp: false,
+      phone: '013-220 4411',
     },
   );
   assert.deepEqual(
@@ -4368,6 +4373,8 @@ async function shopPageBefore(c: Client, slug: string) {
     today: day,
     closed_days: closed.data,
     hours_today: (hours.data as Row[])[0],
+    // Before round 16 no shop stopped anyone booking in the app, and the sample's callers aren't.
+    book_on_whatsapp: false,
     queue: queue ? queue.data : null,
     photos: photos.data,
     reviews: reviews.data!.slice(0, 3),
@@ -4535,8 +4542,41 @@ async function shopDayBefore(c: Client, day: string, since: string | null = null
     tomorrow: unreminded ? byStart(unreminded.data as unknown as Row[]) : [],
     waiting: waitlist ? waitlist.data : [],
     queue: queued ? queued.data : [],
+    no_shows: await noShowsBefore(c, mine.id, list.data as Row[]),
     changes: changes.data,
   };
+}
+
+/**
+ * shop_day's no_shows as the owner could have asked for it: each online
+ * customer with a no-show in the day's bookings, their no-shows at the shop
+ * in the years the customer list counts, and whether the list says they are
+ * stopped from booking in the app.
+ */
+async function noShowsBefore(c: Client, shopId: unknown, day: Row[]) {
+  const ids = [...new Set(day.filter((b) => b.status === 'no_show' && b.customer_id).map((b) => String(b.customer_id)))];
+  const people = (await c.rpc('shop_customers', { p_search: null, p_limit: 50 })).data as Row[];
+  const years = (n: number) => {
+    const at = new Date(demoNow());
+    at.setUTCFullYear(at.getUTCFullYear() + n);
+    return at.toISOString();
+  };
+  return Promise.all(
+    ids.sort().map(async (id) => ({
+      customer_id: id,
+      no_shows: (
+        await c
+          .from('bookings')
+          .select('id', { count: 'exact', head: true })
+          .eq('shop_id', shopId)
+          .eq('customer_id', id)
+          .eq('status', 'no_show')
+          .gte('starts_at', years(-2))
+          .lt('starts_at', years(1))
+      ).count,
+      stopped: people.some((p) => p.customer_id === id && p.stopped === true),
+    })),
+  );
 }
 
 async function shopDay(c: Client, day: string, since: string | null = null, limit = 5) {
@@ -4886,6 +4926,271 @@ test('a demo saved before shops had photos gets the sample ones, without a barbe
     );
     assert.ok(Array.isArray(JSON.parse(saved.get(key)!).tables.shop_photos), 'saved with them');
   } finally {
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});
+
+// Stopping a customer booking online -------------------------------------------
+
+const userId = (email: string) => tables().users.find((u) => u.email === email)!.id as string;
+const errorOf = (r: { error: { code?: string; message: string } | null }) => (r.error ? [r.error.code, r.error.message] : null);
+
+/** The first free time at a shop for a service, from tomorrow. */
+async function freeAt(c: Client, serviceId: unknown, barberId: unknown = null) {
+  for (let d = 1; d < 14; d++) {
+    const { data } = await c.rpc('available_slots', { p_service_id: serviceId, p_day: addDays(today(), d), p_barber_id: barberId });
+    if (data?.[0]) return data[0] as { barber_id: string; starts_at: string };
+  }
+  throw new Error('no free time in two weeks');
+}
+
+test('Ali’s sample shop has stopped Azlan, who missed three cuts, and not Jason, who missed fewer', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const all = await customers(ali, null, 50);
+  const azlan = all.find((r) => r.name === 'Azlan')!;
+  assert.deepEqual(
+    [azlan.customer_id, azlan.visits, azlan.no_shows, azlan.stopped, azlan.is_due, azlan.next_booking_at],
+    [userId('azlan@demo.potongku.my'), 0, 3, true, false, null],
+  );
+  // Jason missed one yesterday when Danial worked then, and one 12 days ago.
+  const jason = all.find((r) => r.name === 'Jason')!;
+  assert.ok(jason.no_shows >= 1 && jason.no_shows <= 2 && !jason.stopped, `Jason has ${jason.no_shows}`);
+  assert.deepEqual(all.filter((r) => r.stopped).map((r) => r.name), ['Azlan']);
+  // He is still due nobody's count, and nobody else changed.
+  assert.equal(all[0].due_count, 4);
+
+  // Yesterday's day says how many each no-show has and whether they are stopped.
+  const yesterday = (await shopDay(ali, addDays(today(), -1))).no_shows as Row[];
+  assert.deepEqual(
+    yesterday.find((r) => r.customer_id === azlan.customer_id),
+    { customer_id: azlan.customer_id, no_shows: 3, stopped: true },
+  );
+  if (jason.no_shows === 2) {
+    assert.deepEqual(yesterday.find((r) => r.customer_id === jason.customer_id), {
+      customer_id: jason.customer_id,
+      no_shows: 2,
+      stopped: false,
+    });
+  }
+  assert.deepEqual((await shopDay(ali, today())).no_shows, []);
+
+  // Azlan's own page offers WhatsApp; nobody else's does.
+  const azlanApp = await signedIn('azlan@demo.potongku.my');
+  assert.equal((await shopPage(azlanApp, 'ali-barber')).book_on_whatsapp, true);
+  assert.equal((await shopPage(azlanApp, 'kemas-barber-kajang')).book_on_whatsapp, false);
+  for (const c of [client(), await signedIn(DEMO_CUSTOMER_EMAIL), ali]) {
+    assert.equal((await shopPage(c, 'ali-barber')).book_on_whatsapp, false);
+  }
+});
+
+test('an owner stops a customer who keeps not turning up from booking online, and they WhatsApp the shop instead', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const farid = await signedIn('farid@demo.potongku.my');
+  const hakimId = userId(DEMO_CUSTOMER_EMAIL);
+  const shop = await shopBySlug(ali, 'ali-barber');
+  const kemas = await shopBySlug(hakim, 'kemas-barber-kajang');
+  const service = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!;
+  const kemasCut = tables().services.find((v) => v.shop_id === kemas.id && v.name === 'Haircut')!;
+  const upcoming = tables().bookings.find(
+    (b) => b.customer_id === hakimId && b.shop_id === shop.id && b.status === 'confirmed' && Date.parse(String(b.starts_at)) > Date.now(),
+  )!;
+  assert.ok(upcoming, 'Hakim is booked at Ali’s tomorrow');
+  // A cut at Ali's two days ago, to rate.
+  const chair = tables().barbers.find((b) => b.shop_id === shop.id && b.name === 'Ali')!;
+  const done = insertRow('bookings', {
+    shop_id: shop.id,
+    barber_id: chair.id,
+    service_id: service.id,
+    customer_id: hakimId,
+    service_name: 'Haircut',
+    price: 20,
+    starts_at: kajang(-2, '07:00'),
+    ends_at: kajang(-2, '07:30'),
+    status: 'completed',
+  });
+
+  // Stopped, twice over: the second is fine and changes nothing.
+  assert.deepEqual(await ali.rpc('stop_online_bookings', { p_customer_id: hakimId }).then((r) => r.data), true);
+  assert.deepEqual(await ali.rpc('stop_online_bookings', { p_customer_id: hakimId, p_stop: true }).then((r) => r.data), true);
+  assert.equal(tables().stopped_customers.filter((st) => st.customer_id === hakimId).length, 1);
+  const row = (await customers(ali, null, 50)).find((r) => r.customer_id === hakimId)!;
+  assert.equal(row.stopped, true);
+
+  // Bookings already made stay.
+  const bookingsBefore = JSON.stringify(tables().bookings);
+  const waitlistBefore = tables().waitlist.length;
+  const queueBefore = tables().queue_entries.length;
+
+  // At Ali's he can't book, wait for a time, join the queue or move his booking, and is never told why.
+  const slot = await freeAt(farid, service.id);
+  const refusals = [
+    await hakim.rpc('book_appointment', { p_service_id: service.id, p_starts_at: slot.starts_at }),
+    await hakim.rpc('join_waitlist', { p_service_id: service.id, p_day: addDays(today(), 3) }),
+    await hakim.rpc('join_queue', { p_service_id: service.id }),
+  ];
+  for (const r of refusals) assert.deepEqual(errorOf(r), ['P0001', BOOK_ON_WHATSAPP]);
+  const move = await hakim.rpc('reschedule_booking', { p_booking_id: upcoming.id, p_starts_at: slot.starts_at });
+  assert.deepEqual(errorOf(move), ['P0001', MOVE_ON_WHATSAPP]);
+  for (const r of [...refusals, move]) assert.ok(!/block|stop|no-show/i.test(r.error!.message));
+  assert.equal(JSON.stringify(tables().bookings), bookingsBefore);
+  assert.equal(tables().waitlist.length, waitlistBefore);
+  assert.equal(tables().queue_entries.length, queueBefore);
+
+  // His page and Find a barber offer WhatsApp, with the shop's number; he still sees the shop, its photos and reviews.
+  const page = await shopPage(hakim, 'ali-barber');
+  assert.equal(page.book_on_whatsapp, true);
+  assert.ok(page.services.length > 0 && page.photos.length > 0 && page.reviews.length > 0);
+  assert.equal((await shopPage(hakim, 'kemas-barber-kajang')).book_on_whatsapp, false);
+  const mine = (await hakim.rpc('my_shops')).data as MyShops;
+  const atAli = mine.shops.find((s) => s.slug === 'ali-barber')!;
+  assert.deepEqual([atAli.book_on_whatsapp, atAli.phone], [true, '012-345 6789']);
+  assert.ok(mine.shops.filter((s) => s.slug !== 'ali-barber').every((s) => !s.book_on_whatsapp));
+  // The page, Find a barber and the refusals say nothing about anyone else.
+  const azlanId = userId('azlan@demo.potongku.my');
+  assert.ok(!JSON.stringify([page, mine]).includes(azlanId));
+
+  // He can still rate his cut, and the owner can still move his booking.
+  assert.equal((await hakim.rpc('rate_booking', { p_booking_id: done.id, p_rating: 5 })).error, null);
+  const ownerSlot = await freeAt(ali, upcoming.service_id, upcoming.barber_id);
+  const moved = await ali.rpc('reschedule_booking', { p_booking_id: upcoming.id, p_starts_at: ownerSlot.starts_at });
+  assert.equal(moved.error, null);
+  // He can cancel it.
+  const cancelled = await hakim.rpc('set_booking_status', { p_booking_id: upcoming.id, p_status: 'cancelled' });
+  assert.equal(cancelled.data?.status, 'cancelled');
+
+  // Other shops still take him, and other customers still book at Ali's.
+  const atKemas = await freeAt(hakim, kemasCut.id);
+  assert.equal((await hakim.rpc('book_appointment', { p_service_id: kemasCut.id, p_starts_at: atKemas.starts_at })).error, null);
+  assert.equal((await farid.rpc('book_appointment', { p_service_id: service.id, p_starts_at: slot.starts_at })).error, null);
+  assert.equal((await client().rpc('shop_page', { p_slug: 'ali-barber' })).data.book_on_whatsapp, false);
+
+  // Allowed again, he books online as before.
+  assert.equal((await ali.rpc('stop_online_bookings', { p_customer_id: hakimId, p_stop: false })).data, false);
+  assert.equal((await ali.rpc('stop_online_bookings', { p_customer_id: hakimId, p_stop: false })).data, false);
+  assert.equal((await customers(ali, null, 50)).find((r) => r.customer_id === hakimId)!.stopped, false);
+  assert.equal((await shopPage(hakim, 'ali-barber')).book_on_whatsapp, false);
+  const again = await freeAt(hakim, service.id);
+  assert.equal((await hakim.rpc('book_appointment', { p_service_id: service.id, p_starts_at: again.starts_at })).error, null);
+});
+
+test('only the owner reads or changes who their shop stopped, and only someone who booked there', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const rahman = await signedIn('rahman@demo.potongku.my');
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const azlan = await signedIn('azlan@demo.potongku.my');
+  const azlanId = userId('azlan@demo.potongku.my');
+  const aliShop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+
+  // Nobody reads or writes the list directly: not the owner, not the customer, not a guest.
+  for (const c of [ali, hakim, azlan, client()]) {
+    assert.equal((await c.from('stopped_customers').select('*')).error?.code, '42501');
+    assert.equal((await c.from('stopped_customers').select('shop_id')).error?.code, '42501');
+    assert.equal((await c.from('stopped_customers').insert({ shop_id: aliShop.id, customer_id: azlanId })).error?.code, '42501');
+    assert.equal((await c.from('stopped_customers').delete().eq('customer_id', azlanId)).error?.code, '42501');
+  }
+  // Only an owner stops anyone: a customer gets told to set up a shop, and a guest can't ask.
+  assert.deepEqual(errorOf(await azlan.rpc('stop_online_bookings', { p_customer_id: azlanId, p_stop: false })), [
+    'P0002',
+    'Set up your shop first.',
+  ]);
+  assert.equal((await client().rpc('stop_online_bookings', { p_customer_id: azlanId })).error?.code, '42501');
+
+  // Another owner can only stop someone who booked with them, and can't undo Ali's.
+  assert.deepEqual(errorOf(await rahman.rpc('stop_online_bookings', { p_customer_id: azlanId })), [
+    'P0002',
+    'Customer not found.',
+  ]);
+  assert.equal((await rahman.rpc('stop_online_bookings', { p_customer_id: azlanId, p_stop: false })).data, false);
+  assert.ok(tables().stopped_customers.some((st) => st.shop_id === aliShop.id && st.customer_id === azlanId));
+  assert.ok(!(await customers(rahman, null, 50)).some((r) => r.stopped));
+  // Nobody who never booked at Ali's: another owner's account, a made-up one or none.
+  for (const id of [userId('rahman@demo.potongku.my'), '00000000-0000-4000-8000-000000000000', null]) {
+    assert.deepEqual(errorOf(await ali.rpc('stop_online_bookings', { p_customer_id: id })), ['P0002', 'Customer not found.']);
+  }
+  // A walk-in known only by a number has no account to stop.
+  const walkIns = (await customers(ali, null, 50)).filter((r) => r.customer_id == null);
+  assert.ok(walkIns.length > 0 && walkIns.every((r) => r.stopped === false));
+  assert.equal(tables().stopped_customers.length, 1);
+
+  // A customer learns only their own: Hakim's page and Find a barber say nothing of Azlan.
+  const hakimSees = JSON.stringify([await shopPage(hakim, 'ali-barber'), (await hakim.rpc('my_shops')).data]);
+  assert.ok(!hakimSees.includes(azlanId));
+
+  // Deleting the account takes the row along, as deleting the shop does.
+  assert.equal((await azlan.rpc('delete_my_account')).error, null);
+  assert.deepEqual(tables().stopped_customers, []);
+  resetDemo();
+  assert.equal(tables().stopped_customers.length, 1);
+  deleteRows('shops', [tables().shops.find((s) => s.slug === 'ali-barber')!]);
+  assert.deepEqual(tables().stopped_customers, []);
+});
+
+test('a demo saved before shops could stop a customer gets Azlan, his no-shows and Ali’s stop, and keeps a stop lifted', async () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  const email = 'azlan@demo.potongku.my';
+  // The copy as a demo saved before round 16 has it: no Azlan, no bookings of his and no list.
+  const before = (json: string) => {
+    const old = JSON.parse(json);
+    old.version = 3;
+    const gone = old.tables.users.find((u: Row) => u.email === email).id;
+    old.tables.users = old.tables.users.filter((u: Row) => u.id !== gone);
+    old.tables.profiles = old.tables.profiles.filter((p: Row) => p.id !== gone);
+    old.tables.bookings = old.tables.bookings.filter((b: Row) => b.customer_id !== gone);
+    delete old.tables.stopped_customers;
+    return JSON.stringify(old);
+  };
+  const his = () => {
+    const id = userId(email);
+    const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+    const missed = tables().bookings.filter((b) => b.customer_id === id);
+    assert.deepEqual(
+      missed.map((b) => [b.shop_id, b.status]),
+      [
+        [shop.id, 'no_show'],
+        [shop.id, 'no_show'],
+        [shop.id, 'no_show'],
+      ],
+    );
+    assert.deepEqual(
+      tables().stopped_customers.map((st) => [st.shop_id, st.customer_id]),
+      [[shop.id, id]],
+    );
+  };
+  try {
+    resetDemo();
+    const [key, json] = [...saved.entries()][0];
+    saved.set(key, before(json));
+    reloadTables();
+    his();
+    assert.ok(Array.isArray(JSON.parse(saved.get(key)!).tables.stopped_customers));
+    // A day later, too.
+    setClock(() => Date.now() + 86_400_000);
+    saved.set(key, before(json));
+    reloadTables();
+    his();
+
+    // Ali lets him book again in it: that stays, the next day too.
+    setClock(() => Date.now());
+    resetDemo();
+    const ali = await signedIn(DEMO_BARBER_EMAIL);
+    const lifted = await ali.rpc('stop_online_bookings', { p_customer_id: userId(email), p_stop: false });
+    assert.equal(lifted.data, false);
+    save();
+    for (const later of [0, 86_400_000]) {
+      setClock(() => Date.now() + later);
+      reloadTables();
+      assert.deepEqual(tables().stopped_customers, []);
+    }
+  } finally {
+    setClock(() => Date.now());
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
     reloadTables();
   }
