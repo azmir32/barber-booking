@@ -547,7 +547,7 @@ rollback;
 
 set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000000c2';
 do $$ begin
-  assert my_bookings() = '{"bookings": [], "waitlist": [], "queue": []}', 'other customers see none of them';
+  assert my_bookings() = '{"bookings": [], "waitlist": [], "queue": [], "stamp_cards": []}', 'other customers see none of them';
 end $$;
 set role anon;
 do $$ begin
@@ -1982,8 +1982,8 @@ declare
   d date := (now() at time zone 'Asia/Kuala_Lumpur')::date - 20;
   s jsonb := shop_summary(d, d + 6);
 begin
-  assert s -> 'totals' = '{"done": 5, "takings": 138, "no_shows": 1, "no_show_value": 25, "cancelled": 1,
-                          "to_come": 0, "to_come_value": 0, "unmarked": 1, "unmarked_value": 25}'::jsonb,
+  assert s -> 'totals' = '{"done": 5, "takings": 138, "rewards": 0, "rewards_off": 0, "no_shows": 1,
+                          "no_show_value": 25, "cancelled": 1, "to_come": 0, "to_come_value": 0, "unmarked": 1, "unmarked_value": 25}'::jsonb,
     'totals should count this shop''s bookings at their booked price, without blocked time: ' || (s -> 'totals')::text;
   assert (s -> 'previous') - 'until' = jsonb_build_object(
       'from', d - 7, 'to', d - 1, 'done', 2, 'takings', 45, 'no_shows', 1, 'no_show_value', 30, 'cancelled', 1),
@@ -2105,8 +2105,8 @@ declare
   today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
   s jsonb := shop_summary(today - 1, today + 5);
 begin
-  assert s -> 'totals' = '{"done": 1, "takings": 18, "no_shows": 0, "no_show_value": 0, "cancelled": 0,
-                          "to_come": 2, "to_come_value": 55, "unmarked": 1, "unmarked_value": 20}'::jsonb,
+  assert s -> 'totals' = '{"done": 1, "takings": 18, "rewards": 0, "rewards_off": 0, "no_shows": 0,
+                          "no_show_value": 0, "cancelled": 0, "to_come": 2, "to_come_value": 55, "unmarked": 1, "unmarked_value": 20}'::jsonb,
     'to come includes the one in the chair; over and unmarked is counted apart: ' || (s -> 'totals')::text;
   assert (s #>> '{previous,until}')::timestamptz = now() - interval '7 days',
     'the week before is counted up to this time last week: ' || (s #>> '{previous,until}');
@@ -5304,7 +5304,9 @@ begin
   for part in select jsonb_object_keys(before) loop
     assert p -> part = before -> part, format('a guest''s %s: %s, not %s', part, p -> part, before -> part);
   end loop;
-  assert (select array_agg(k order by k) from jsonb_object_keys(p) k) = (select array_agg(k order by k) from jsonb_object_keys(before) k),
+  -- And the stamp card, new in round 16 (tested under "Stamp cards"): none while it is off.
+  assert (select array_agg(k order by k) from jsonb_object_keys(p - 'stamp_card') k) = (select array_agg(k order by k) from jsonb_object_keys(before) k)
+     and p -> 'stamp_card' = 'null',
     'the same parts: ' || p::text;
   -- What the page needs is all there.
   assert p #>> '{shop,name}' = 'Ali Cuts' and p -> 'status' is null, 'the shop: ' || (p -> 'shop')::text;
@@ -5377,7 +5379,7 @@ do $$
 declare
   p jsonb := shop_page('kemas-cuts');
 begin
-  assert p = test_shop_requests('kemas-cuts'), 'Kemas Cuts as before: ' || p::text;
+  assert p - 'stamp_card' = test_shop_requests('kemas-cuts'), 'Kemas Cuts as before: ' || p::text;
   assert p -> 'queue' = 'null' and p -> 'reviews' = '[]' and p -> 'more_reviews' = 'false', 'no queue, no reviews: ' || p::text;
 end $$;
 
@@ -5408,7 +5410,7 @@ do $$
 declare
   p jsonb := shop_page('ali-cuts');
 begin
-  assert p = test_shop_requests('ali-cuts') and p #>> '{shop,name}' = 'Ali Cuts', 'the owner''s paused shop: ' || p::text;
+  assert p - 'stamp_card' = test_shop_requests('ali-cuts') and p #>> '{shop,name}' = 'Ali Cuts', 'the owner''s paused shop: ' || p::text;
   assert p #> '{queue,open}' = 'false', 'with its queue shut while paused';
   assert jsonb_array_length(shop_cards(current_date, current_date) -> 'photos') = 4
      and shop_cards(current_date, current_date) -> 'photos' = test_owner_photos(), 'My shop still has its photos';
@@ -5434,8 +5436,9 @@ begin
     for part in select jsonb_object_keys(before) loop
       assert got -> part = before -> part, format('%s''s %s: %s, not %s', d, part, got -> part, before -> part);
     end loop;
-    assert (select count(*) from jsonb_object_keys(got)) = (select count(*) from jsonb_object_keys(before)),
-      'the same parts: ' || got::text;
+    assert (select count(*) from jsonb_object_keys(got - 'stamp_rewards')) = (select count(*) from jsonb_object_keys(before))
+       and got -> 'stamp_rewards' = '[]',
+      'the same parts, and no stamp card rewards while the card is off: ' || got::text;
   end loop;
   got := shop_day(today);
   assert jsonb_array_length(got -> 'bookings') = 3, 'today''s three: ' || (got -> 'bookings')::text;
@@ -5491,7 +5494,7 @@ declare
 begin
   foreach part in array array['-1', '0', '1', '2', '3', '5'] loop
     got := shop_day(today + part::int);
-    assert got = test_day_requests(today + part::int), 'Rahman''s own day: ' || got::text;
+    assert got - 'stamp_rewards' = test_day_requests(today + part::int), 'Rahman''s own day: ' || got::text;
     assert got -> 'bookings' = '[]' and got -> 'waiting' = '[]' and got -> 'queue' = '[]' and got -> 'closed' = '[]'
        and got #>> '{changes,count}' = '0' and got -> 'tomorrow' = '[]', 'nothing of Ali''s: ' || got::text;
     assert (select array_agg(b ->> 'name') from jsonb_array_elements(got -> 'barbers') b) = array['Rahman'],
@@ -5912,6 +5915,317 @@ end $$;
 rollback;
 reset role;
 drop function public.test_owner_photos();
+
+-- Stamp cards (round 16) -------------------------------------------------------
+-- A shop of its own, with one barber in all day every day and a RM 20
+-- haircut, and three customers: Hakim, Mei and Raju. Bookings from before
+-- today are put in by hand, as nobody can book the past; today's first is at
+-- midnight, so it has started and is today's whatever the time.
+reset role;
+begin;
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-0000000016b1', 'stamps-owner@test', '{"role":"barber","full_name":"Osman"}'),
+  ('00000000-0000-0000-0000-0000000016c1', 'stamps-hakim@test', '{"full_name":"Hakim","phone":"011-1600 1600"}'),
+  ('00000000-0000-0000-0000-0000000016c2', 'stamps-mei@test', '{"full_name":"Mei"}'),
+  ('00000000-0000-0000-0000-0000000016c3', 'stamps-raju@test', '{"full_name":"Raju"}');
+insert into shops (id, owner_id, name, slug, is_published, subscription_status)
+values ('00000000-0000-0000-0000-00000000165a', '00000000-0000-0000-0000-0000000016b1', 'Stamp Cuts', 'stamp-cuts',
+        true, 'active');
+insert into barbers (id, shop_id, name)
+values ('00000000-0000-0000-0000-0000000016a1', '00000000-0000-0000-0000-00000000165a', 'Osman');
+insert into services (id, shop_id, name, duration_min, price)
+values ('00000000-0000-0000-0000-0000000016e1', '00000000-0000-0000-0000-00000000165a', 'Haircut', 30, 20);
+insert into working_hours (barber_id, weekday, opens_at, closes_at)
+select '00000000-0000-0000-0000-0000000016a1', d, '00:00', '24:00' from generate_series(0, 6) d;
+
+-- Each booking is named by its note, so the checks below can find it.
+create function pg_temp.stamp_booking(p_note text, p_day int, p_at time, p_customer uuid default '00000000-0000-0000-0000-0000000016c1',
+                                      p_guest text default null, p_phone text default null)
+returns uuid language sql as $$
+  insert into bookings (shop_id, barber_id, service_id, customer_id, guest_name, guest_phone, service_name, price,
+                        starts_at, ends_at, customer_note)
+  select '00000000-0000-0000-0000-00000000165a', '00000000-0000-0000-0000-0000000016a1',
+         '00000000-0000-0000-0000-0000000016e1', p_customer, p_guest, p_phone, 'Haircut', 20, t, t + interval '30 minutes', p_note
+  from (select ((now() at time zone 'Asia/Kuala_Lumpur')::date + p_day + p_at) at time zone 'Asia/Kuala_Lumpur' as t) x
+  returning id;
+$$;
+create function pg_temp.bk(p_note text) returns uuid language sql as $$
+  select id from bookings where customer_note = p_note and shop_id = '00000000-0000-0000-0000-00000000165a';
+$$;
+-- As the database sees them, whoever asks.
+create function pg_temp.stamps(p_customer uuid default '00000000-0000-0000-0000-0000000016c1') returns int
+language sql security definer as $$
+  select coalesce((select stamps from stamp_cards where shop_id = '00000000-0000-0000-0000-00000000165a'
+                   and customer_id = p_customer), 0);
+$$;
+grant execute on all functions in schema pg_temp to authenticated, anon;
+do $$ begin
+  perform pg_temp.stamp_booking('past 1', -5, '10:00');
+  perform pg_temp.stamp_booking('past 2', -4, '10:00');
+  perform pg_temp.stamp_booking('past 3', -3, '10:00');
+  perform pg_temp.stamp_booking('past 4', -2, '10:00');
+  -- Added by the shop under Hakim's own number: the customer list counts it as his, stamps don't.
+  perform pg_temp.stamp_booking('by the shop', -2, '12:00', null, 'Hakim', '0111600 1600');
+  perform pg_temp.stamp_booking('yesterday', -1, '10:00');
+  perform pg_temp.stamp_booking('today', 0, '00:00');
+  perform pg_temp.stamp_booking('mei past', -2, '15:00', '00000000-0000-0000-0000-0000000016c2');
+end $$;
+
+-- Only the owner sets the card, and only to 4 to 12 cuts and RM 1 to 50 off.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016c1';
+do $$ begin
+  update shops set stamp_card_on = true where id = '00000000-0000-0000-0000-00000000165a';
+  assert not (select stamp_card_on from shops where id = '00000000-0000-0000-0000-00000000165a'),
+    'a customer can''t turn a shop''s card on';
+  assert shop_page('stamp-cuts') -> 'stamp_card' = 'null', 'off to start';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016b1';
+do $$
+declare
+  bad text;
+begin
+  foreach bad in array array['stamp_card_cuts = 3', 'stamp_card_cuts = 13', 'stamp_card_off = 0', 'stamp_card_off = 51'] loop
+    begin
+      execute 'update shops set ' || bad || ' where id = ''00000000-0000-0000-0000-00000000165a''';
+      raise exception 'the card can''t be set to %', bad;
+    exception when check_violation then null;
+    end;
+  end loop;
+  -- Done while the card is off earns nothing.
+  perform set_booking_status(pg_temp.bk('past 1'), 'completed');
+  assert pg_temp.stamps() = 0 and (select stamp_card is null from bookings where id = pg_temp.bk('past 1')),
+    'no stamp while the card is off';
+  update shops set stamp_card_on = true, stamp_card_cuts = 4 where id = '00000000-0000-0000-0000-00000000165a';
+end $$;
+
+-- Stamps follow done and taking it back. Cancelled and no-show never earn
+-- one, nor a booking the shop added, and customers can't mark their own.
+do $$ begin
+  perform set_booking_status(pg_temp.bk('past 2'), 'completed');
+  assert pg_temp.stamps() = 1 and (select stamp_card = 'stamp' from bookings where id = pg_temp.bk('past 2')),
+    'a cut marked done is a stamp: ' || pg_temp.stamps();
+  perform set_booking_status(pg_temp.bk('past 2'), 'confirmed');
+  assert pg_temp.stamps() = 0 and (select stamp_card is null from bookings where id = pg_temp.bk('past 2')),
+    'taking done back takes the stamp back';
+  perform set_booking_status(pg_temp.bk('past 2'), 'no_show');
+  perform set_booking_status(pg_temp.bk('past 3'), 'cancelled');
+  perform set_booking_status(pg_temp.bk('by the shop'), 'completed');
+  assert pg_temp.stamps() = 0, 'no-shows, cancellations and the shop''s own bookings earn nothing';
+  perform set_booking_status(pg_temp.bk('past 2'), 'completed');
+  perform set_booking_status(pg_temp.bk('past 3'), 'completed');
+  perform set_booking_status(pg_temp.bk('mei past'), 'completed');
+  assert pg_temp.stamps() = 2 and pg_temp.stamps('00000000-0000-0000-0000-0000000016c2') = 1,
+    'each customer''s own stamps: ' || pg_temp.stamps();
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016c1';
+do $$ begin
+  perform set_booking_status(pg_temp.bk('past 4'), 'completed');
+  raise exception 'a customer must not mark their own cut done';
+exception when sqlstate '42501' then
+  assert pg_temp.stamps() = 2, 'still two';
+end $$;
+-- Nobody reads the stamps themselves.
+do $$ begin
+  perform * from stamp_cards;
+  raise exception 'customers must not read stamp_cards';
+exception when insufficient_privilege then null;
+end $$;
+
+-- A booking yesterday nobody marked is never the reward: marked late, with
+-- the card full, it is a stamp. Which leaves Hakim with 3 of 4: his next
+-- cut is the reward.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016b1';
+do $$ begin
+  perform set_booking_status(pg_temp.bk('past 4'), 'completed');
+  assert pg_temp.stamps() = 3, 'three: ' || pg_temp.stamps();
+  perform set_booking_status(pg_temp.bk('yesterday'), 'completed');
+  assert pg_temp.stamps() = 4 and (select stamp_card = 'stamp' from bookings where id = pg_temp.bk('yesterday')),
+    'yesterday''s cut, marked today, is a stamp even with the card full';
+  perform set_booking_status(pg_temp.bk('yesterday'), 'confirmed');
+  assert pg_temp.stamps() = 3, 'back to three';
+end $$;
+
+-- The reward is his earliest booking from today on that is still confirmed:
+-- today's (in the chair since midnight), then each one to come in turn as
+-- the one before is a no-show, cancelled or moved later.
+reset role;
+do $$ begin
+  perform pg_temp.stamp_booking('next 1', 1, '10:00');
+  perform pg_temp.stamp_booking('next 2', 2, '10:00');
+  perform pg_temp.stamp_booking('next 3', 3, '10:00');
+  perform pg_temp.stamp_booking('mei next', 1, '11:00', '00000000-0000-0000-0000-0000000016c2');
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016c1';
+do $$
+declare
+  p jsonb := shop_page('stamp-cuts') -> 'stamp_card';
+  m jsonb := my_bookings() -> 'stamp_cards';
+begin
+  assert p = jsonb_build_object('cuts', 4, 'off', null, 'stamps', 3, 'reward', jsonb_build_object(
+               'id', pg_temp.bk('today'), 'starts_at', (select starts_at from bookings where id = pg_temp.bk('today')), 'off', 20)),
+    'his card on the shop''s page, with today''s cut his reward: ' || p::text;
+  assert m = jsonb_build_array(jsonb_build_object('shop_id', '00000000-0000-0000-0000-00000000165a', 'cuts', 4, 'off', null,
+                                                  'stamps', 3, 'reward_booking_id', pg_temp.bk('today'))),
+    'and on My bookings: ' || m::text;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016b1';
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+begin
+  assert shop_day(today) -> 'stamp_rewards' = jsonb_build_array(jsonb_build_object('booking_id', pg_temp.bk('today'), 'off', 20)),
+    'the barber''s day marks it: ' || (shop_day(today) -> 'stamp_rewards')::text;
+  assert shop_day(today + 1) -> 'stamp_rewards' = '[]', 'and only it';
+  perform set_booking_status(pg_temp.bk('today'), 'no_show');
+  assert shop_day(today) -> 'stamp_rewards' = '[]'
+     and shop_day(today + 1) -> 'stamp_rewards' = jsonb_build_array(jsonb_build_object('booking_id', pg_temp.bk('next 1'), 'off', 20)),
+    'a no-show passes it to the next: ' || (shop_day(today + 1) -> 'stamp_rewards')::text;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016c1';
+do $$
+declare
+  day4 date := (now() at time zone 'Asia/Kuala_Lumpur')::date + 4;
+begin
+  perform set_booking_status(pg_temp.bk('next 1'), 'cancelled');
+  assert shop_page('stamp-cuts') #>> '{stamp_card,reward,id}' = pg_temp.bk('next 2')::text, 'cancelled, it passes on';
+  perform reschedule_booking(pg_temp.bk('next 2'), (day4 + time '10:00') at time zone 'Asia/Kuala_Lumpur');
+  assert shop_page('stamp-cuts') #>> '{stamp_card,reward,id}' = pg_temp.bk('next 3')::text, 'moved later, it passes on';
+  assert pg_temp.stamps() = 3, 'and his stamps stay';
+end $$;
+
+-- Mei sees her own card, never Hakim's; a guest sees the card and nothing more.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016c2';
+do $$ begin
+  assert shop_page('stamp-cuts') -> 'stamp_card' = '{"cuts": 4, "off": null, "stamps": 1, "reward": null}',
+    'Mei''s own: ' || (shop_page('stamp-cuts') -> 'stamp_card')::text;
+  assert my_bookings() -> 'stamp_cards' = jsonb_build_array(jsonb_build_object('shop_id', '00000000-0000-0000-0000-00000000165a',
+           'cuts', 4, 'off', null, 'stamps', 1, 'reward_booking_id', null)), 'Mei''s My bookings: ' || (my_bookings() -> 'stamp_cards')::text;
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016c3';
+do $$ begin
+  assert shop_page('stamp-cuts') -> 'stamp_card' = '{"cuts": 4, "off": null, "stamps": 0, "reward": null}', 'Raju has none yet';
+  assert my_bookings() -> 'stamp_cards' = '[]', 'nor any on My bookings';
+end $$;
+set request.jwt.claim.sub = '';
+set role anon;
+do $$ begin
+  assert shop_page('stamp-cuts') -> 'stamp_card' = '{"cuts": 4, "off": null, "stamps": null, "reward": null}',
+    'a guest sees the card: ' || (shop_page('stamp-cuts') -> 'stamp_card')::text;
+  assert (select stamp_card from find_shops('stamp cuts')), 'Find a barber says it has one';
+end $$;
+do $$ begin
+  perform * from stamp_cards;
+  raise exception 'guests must not read stamp_cards';
+exception when insufficient_privilege then null;
+end $$;
+
+-- The owner sees each customer's stamps in Customers. The booking the shop
+-- added under Hakim's number is listed with his (one row), but earned nothing.
+set role authenticated;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016b1';
+do $$ begin
+  assert (select array_agg(name || ' ' || coalesce(stamps::text, '-') order by name) from shop_customers())
+         = array['Hakim 3', 'Mei 1'], 'stamps by customer: '
+           || (select array_agg(name || ' ' || coalesce(stamps::text, '-') order by name) from shop_customers())::text;
+end $$;
+
+-- Changing the number keeps the stamps: with 3, a card of 10 has no reward
+-- yet, and back on 4 it has. Turned off, it shows nowhere and cuts earn
+-- nothing; turned on again it carries on.
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+begin
+  update shops set stamp_card_cuts = 10 where id = '00000000-0000-0000-0000-00000000165a';
+  assert shop_day(today + 3) -> 'stamp_rewards' = '[]' and pg_temp.stamps() = 3, 'no reward on a card of 10';
+  update shops set stamp_card_cuts = 4, stamp_card_on = false where id = '00000000-0000-0000-0000-00000000165a';
+  assert shop_day(today + 3) -> 'stamp_rewards' = '[]', 'none while it is off';
+  perform set_booking_status(pg_temp.bk('yesterday'), 'completed');
+  assert pg_temp.stamps() = 3 and (select stamp_card is null from bookings where id = pg_temp.bk('yesterday')),
+    'nothing earned while off';
+  update shops set stamp_card_on = true where id = '00000000-0000-0000-0000-00000000165a';
+  assert shop_day(today + 3) -> 'stamp_rewards' = jsonb_build_array(jsonb_build_object('booking_id', pg_temp.bk('next 3'), 'off', 20)),
+    'on again, the reward is back where it was';
+end $$;
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016c1';
+do $$ begin
+  assert shop_page('stamp-cuts') #>> '{stamp_card,reward,id}' = pg_temp.bk('next 3')::text, 'his page says so too';
+end $$;
+
+-- Marked done, the reward earns no stamp and the card starts again. Today's
+-- no-show put right is today's earliest, so it is the reward; taking that
+-- back puts his stamps back.
+set request.jwt.claim.sub = '00000000-0000-0000-0000-0000000016b1';
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  s jsonb;
+begin
+  perform set_booking_status(pg_temp.bk('today'), 'completed');
+  assert pg_temp.stamps() = 0 and (select stamp_card = 'reward' and reward_off = 20 and reward_stamps = 3
+                                   from bookings where id = pg_temp.bk('today')),
+    'the reward used: ' || pg_temp.stamps();
+  assert shop_day(today + 3) -> 'stamp_rewards' = '[]', 'so next 3 isn''t one';
+  s := shop_summary(today - 6, today) -> 'totals';
+  -- Eight cuts done this week at RM 20, one of them free.
+  assert (s ->> 'takings')::numeric = 140 and s ->> 'rewards' = '1' and (s ->> 'rewards_off')::numeric = 20
+     and (s ->> 'done')::int = 8,
+    'Takings count the free cut as nothing: ' || s::text;
+  assert shop_cards(today - 6, today) -> 'takings' = s, 'My shop''s week agrees: ' || (shop_cards(today - 6, today) -> 'takings')::text;
+  assert (select (d ->> 'takings')::numeric from jsonb_array_elements(shop_summary(today, today) -> 'days') d) = 0
+     and (shop_summary(today, today) #>> '{barbers,0,takings}')::numeric = 0
+     and (shop_summary(today, today) #>> '{services,0,takings}')::numeric = 0,
+    'today''s day, barber and service at RM 0: ' || shop_summary(today, today)::text;
+  perform set_booking_status(pg_temp.bk('today'), 'confirmed');
+  assert pg_temp.stamps() = 3 and (select stamp_card is null and reward_off is null from bookings where id = pg_temp.bk('today')),
+    'taken back, his stamps come back: ' || pg_temp.stamps();
+  perform set_booking_status(pg_temp.bk('today'), 'completed');
+  assert pg_temp.stamps() = 0, 'and used again';
+end $$;
+
+-- An amount off takes off that much, never more than the price.
+reset role;
+do $$ begin
+  update stamp_cards set stamps = 3 where customer_id = '00000000-0000-0000-0000-0000000016c1';
+  update shops set stamp_card_off = 5 where id = '00000000-0000-0000-0000-00000000165a';
+  perform pg_temp.stamp_booking('later today', 0, '00:30');
+end $$;
+set role authenticated;
+do $$
+declare
+  today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+begin
+  assert shop_day(today) -> 'stamp_rewards' = jsonb_build_array(jsonb_build_object('booking_id', pg_temp.bk('later today'), 'off', 5)),
+    'RM 5 off: ' || (shop_day(today) -> 'stamp_rewards')::text;
+  perform set_booking_status(pg_temp.bk('later today'), 'completed');
+  assert (select reward_off = 5 from bookings where id = pg_temp.bk('later today')), 'RM 5 off it';
+  assert (shop_summary(today, today) #>> '{totals,takings}')::numeric = 15
+     and shop_summary(today, today) #>> '{totals,rewards}' = '2', 'Takings: RM 0 and RM 15';
+  perform set_booking_status(pg_temp.bk('later today'), 'confirmed');
+  update shops set stamp_card_off = 50 where id = '00000000-0000-0000-0000-00000000165a';
+  perform set_booking_status(pg_temp.bk('later today'), 'completed');
+  assert (select reward_off = 20 from bookings where id = pg_temp.bk('later today')), 'RM 50 off a RM 20 cut is RM 20 off';
+  assert (shop_summary(today, today) #>> '{totals,takings}')::numeric = 0, 'never below nothing';
+end $$;
+
+-- The lookups are each one index lookup by shop and customer.
+reset role;
+do $$
+declare
+  line text;
+  plan text := '';
+begin
+  set local enable_seqscan = off;
+  for line in execute format('explain select id from bookings b where b.customer_id = %L and b.shop_id = %L
+                              and b.starts_at >= now() and b.status = ''confirmed'' order by b.starts_at, b.id limit 1',
+                             '00000000-0000-0000-0000-0000000016c1', '00000000-0000-0000-0000-00000000165a') loop
+    plan := plan || line || E'\n';
+  end loop;
+  assert plan like '%Index Scan using bookings_customer_idx%', 'the reward booking off bookings_customer_idx: ' || plan;
+end $$;
+rollback;
 
 -- Deleting an account ------------------------------------------------------
 reset role;

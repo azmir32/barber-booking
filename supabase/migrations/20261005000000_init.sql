@@ -89,6 +89,13 @@ create table public.shops (
   -- Customers can join a queue for walk-ins from the shop's page while it
   -- is open (see the walk-in queue below). The owner's choice; off at first.
   queue_enabled boolean not null default false,
+  -- A stamp card customers fill by coming back (see "Stamp cards" below):
+  -- every stamp_card_cuts-th cut is the reward, the whole cut free, or
+  -- stamp_card_off ringgit off it. The owner's choice; off at first, and
+  -- turning it off hides it but keeps everyone's stamps.
+  stamp_card_on boolean not null default false,
+  stamp_card_cuts smallint not null default 10 check (stamp_card_cuts between 4 and 12),
+  stamp_card_off int check (stamp_card_off between 1 and 50),
   created_at timestamptz not null default now()
 );
 
@@ -280,6 +287,15 @@ create table public.bookings (
   -- can't miss a change saved after it with an earlier time.
   customer_changed_at timestamptz,
   customer_change text check (customer_change in ('booked', 'moved', 'cancelled')),
+  -- What the cut did to the customer's stamp card when the shop marked it
+  -- done (stamp_card_cut below): 'stamp', or 'reward', with the money it
+  -- took off the price and the stamps it used up, which come back if done
+  -- is taken back. Null for cuts that aren't done, and while the card is off.
+  stamp_card text check (stamp_card in ('stamp', 'reward')),
+  reward_off numeric(10, 2) check (reward_off >= 0),
+  reward_stamps int,
+  constraint bookings_reward_pair
+    check ((stamp_card is not distinct from 'reward') = (reward_off is not null and reward_stamps is not null)),
   created_at timestamptz not null default now(),
   check (ends_at > starts_at),
   check (is_block or customer_id is not null or guest_name is not null),
@@ -656,6 +672,160 @@ create trigger bookings_review_barber
   for each row when (new.barber_id <> old.barber_id)
   execute function public.bookings_review_barber();
 
+-- Stamp cards -----------------------------------------------------------------
+
+-- A shop's stamp card, like the paper ones: each cut the shop marks done
+-- earns the customer a stamp, and once they have one fewer than the card's
+-- cuts (9 on a card of 10), their next cut is the reward. Which booking that
+-- is, everywhere it shows and when it is marked done, is one rule
+-- (stamp_reward_booking below): their earliest booking at the shop from
+-- today on, by the shop's clock, that is still confirmed. So a reward
+-- booking cancelled, moved later or marked a no-show passes it to the next
+-- one, and one nobody marked passes it on at midnight; it is never lost.
+-- Marked done, the reward earns no stamp and the card starts again from
+-- nothing. Only the shop marks a cut done, and only a booking with the
+-- customer's account counts (booked online, or a queue place they took
+-- online), never one the shop added under a name and number: a number on
+-- a profile is whatever its owner typed. While the card is off, cuts earn
+-- nothing and no reward is used, and the stamps stay as they were.
+--
+-- stamps is kept by stamp_card_cut, so a customer's progress is one
+-- primary key lookup on every screen that shows it. Read only through the
+-- functions below: nobody sees anyone else's stamps.
+create table public.stamp_cards (
+  shop_id uuid not null references public.shops (id) on delete cascade,
+  customer_id uuid not null references public.profiles (id) on delete cascade,
+  stamps int not null default 0 check (stamps >= 0),
+  primary key (shop_id, customer_id)
+);
+-- So deleting an account finds its cards without reading every shop's.
+create index stamp_cards_customer_idx on public.stamp_cards (customer_id);
+
+-- Midnight today on the shop's clock, from which a booking can be a reward.
+create function public.shop_today_start(p_tz text)
+returns timestamptz
+language sql
+stable
+as $$
+  select (now() at time zone p_tz)::date::timestamp at time zone p_tz;
+$$;
+
+-- The customer's reward booking at a shop, or null: with the card on and
+-- at least one stamp fewer than its cuts, their earliest booking there from
+-- today on that is still confirmed. One lookup of stamp_cards' primary key
+-- and, with the card full, one of bookings_customer_idx (customer, shop,
+-- start), bounded by the two however long their history. plpgsql with a
+-- generic plan, so a connection plans it once.
+create function public.stamp_reward_booking(p_shop_id uuid, p_customer_id uuid)
+returns uuid
+language plpgsql
+stable
+security definer
+set search_path = public
+set plan_cache_mode = force_generic_plan
+as $$
+declare
+  v_shop shops;
+begin
+  select * into v_shop from shops where id = p_shop_id;
+  if not found or not v_shop.stamp_card_on or p_customer_id is null
+     or coalesce((select c.stamps from stamp_cards c where c.shop_id = p_shop_id and c.customer_id = p_customer_id), 0)
+        < v_shop.stamp_card_cuts - 1 then
+    return null;
+  end if;
+  return (
+    select b.id from bookings b
+    where b.customer_id = p_customer_id and b.shop_id = p_shop_id
+      and b.starts_at >= public.shop_today_start(v_shop.time_zone)
+      and b.status = 'confirmed'
+    order by b.starts_at, b.id
+    limit 1
+  );
+end;
+$$;
+revoke execute on function public.stamp_reward_booking(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public.shop_today_start(text) from public, anon, authenticated;
+
+-- What a reward takes off a booking's price: all of it for a free cut,
+-- else the card's amount, never more than the price.
+create function public.stamp_reward_off(p_off int, p_price numeric)
+returns numeric
+language sql
+immutable
+as $$
+  select case when p_off is null then p_price else least(p_off, p_price) end;
+$$;
+revoke execute on function public.stamp_reward_off(int, numeric) from public, anon, authenticated;
+
+-- Keeps stamp_cards in step as the shop marks cuts done or takes it back.
+-- Done: the reward booking (by the rule above, as if it were still
+-- confirmed, so a no-show put right counts too) uses the reward, else the
+-- cut earns a stamp, even with the card full. Done taken back: the stamp
+-- goes, or the stamps the reward used come back. Under the shop's diary
+-- lock, as set_booking_status takes it, so two phones marking at once
+-- count in turn.
+create function public.stamp_card_cut()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_shop shops;
+  v_stamps int;
+  v_today timestamptz;
+begin
+  if old.status = 'completed' then
+    if old.stamp_card = 'stamp' then
+      update stamp_cards set stamps = greatest(stamps - 1, 0)
+      where shop_id = old.shop_id and customer_id = old.customer_id;
+    elsif old.stamp_card = 'reward' then
+      update stamp_cards set stamps = stamps + old.reward_stamps
+      where shop_id = old.shop_id and customer_id = old.customer_id;
+    end if;
+    new.stamp_card := null;
+    new.reward_off := null;
+    new.reward_stamps := null;
+  end if;
+
+  if new.status = 'completed' and new.customer_id is not null then
+    select * into v_shop from shops where id = new.shop_id;
+    if v_shop.stamp_card_on then
+      insert into stamp_cards (shop_id, customer_id) values (new.shop_id, new.customer_id)
+      on conflict do nothing;
+      select c.stamps into v_stamps from stamp_cards c
+      where c.shop_id = new.shop_id and c.customer_id = new.customer_id
+      for update;
+      v_today := public.shop_today_start(v_shop.time_zone);
+      if v_stamps >= v_shop.stamp_card_cuts - 1
+         and new.starts_at >= v_today
+         and not exists (
+           select 1 from bookings b
+           where b.customer_id = new.customer_id and b.shop_id = new.shop_id
+             and b.starts_at >= v_today and b.starts_at <= new.starts_at
+             and b.status = 'confirmed' and b.id <> new.id
+             and (b.starts_at, b.id) < (new.starts_at, new.id)
+         ) then
+        new.stamp_card := 'reward';
+        new.reward_off := public.stamp_reward_off(v_shop.stamp_card_off, new.price);
+        new.reward_stamps := v_stamps;
+        update stamp_cards set stamps = 0 where shop_id = new.shop_id and customer_id = new.customer_id;
+      else
+        new.stamp_card := 'stamp';
+        update stamp_cards set stamps = stamps + 1 where shop_id = new.shop_id and customer_id = new.customer_id;
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+revoke execute on function public.stamp_card_cut() from public, anon, authenticated;
+
+create trigger bookings_stamp_card
+  before update of status on public.bookings
+  for each row when (old.status <> new.status and (old.status = 'completed' or new.status = 'completed'))
+  execute function public.stamp_card_cut();
+
 -- Row level security --------------------------------------------------------
 
 alter table public.profiles enable row level security;
@@ -671,6 +841,7 @@ alter table public.waitlist enable row level security;
 alter table public.queue_entries enable row level security;
 alter table public.shop_photos enable row level security;
 alter table public.review_reports enable row level security;
+alter table public.stamp_cards enable row level security;
 
 -- Policies wrap auth.uid() and my_shop_id() in (select ...) so they run once
 -- per query. Checked per row, a query over every booking took over a minute
@@ -757,7 +928,7 @@ revoke insert, update on public.shops from anon, authenticated;
 grant insert (owner_id, name, slug, about, address, area, latitude, longitude, phone, instagram)
   on public.shops to authenticated;
 grant update (name, slug, about, address, area, latitude, longitude, phone, instagram, is_published,
-              queue_enabled)
+              queue_enabled, stamp_card_on, stamp_card_cuts, stamp_card_off)
   on public.shops to authenticated;
 -- The review counts on barbers are the database's too.
 revoke insert, update on public.barbers from anon, authenticated;
@@ -786,6 +957,8 @@ grant select (booking_id, reason, note, outcome, decided_at, created_at) on publ
 revoke insert, update on public.shop_photos from anon, authenticated;
 grant insert (shop_id, barber_id, caption, path, thumb_path, width, height) on public.shop_photos to authenticated;
 grant update (barber_id, caption, sort_order) on public.shop_photos to authenticated;
+-- Stamps are the database's, read only through the functions that show them.
+revoke all on public.stamp_cards from anon, authenticated;
 
 -- Finding a barber ----------------------------------------------------------
 
@@ -1078,6 +1251,8 @@ returns table (
   queue_waiting int,
   -- Its first photo's thumbnail (a path in the shop-photos bucket); null without photos.
   photo_thumb text,
+  -- It has a stamp card on, from the shop's own row.
+  stamp_card boolean,
   -- With Open now or Free today: how many shops into the list this call
   -- looked, the same on every row, to send back as p_from for the next
   -- page; null once it reached the end of the list, and without them. A
@@ -1258,6 +1433,7 @@ begin
          s.latitude, s.longitude,
          case when s.queue_enabled then q.waiting end,
          ph.thumb_path,
+         s.stamp_card_on,
          v_next_from
   from unnest(v_page, v_opens, v_closes, v_next) with ordinality as page (id, opens_today, closes_today, next_free_at, n)
   join shops s on s.id = page.id
@@ -1284,7 +1460,7 @@ begin
     return query
     select null::uuid, null::text, null::text, null::text, null::text, null::text, null::numeric, null::int,
            null::time, null::time, null::timestamptz, null::int, null::numeric, null::double precision,
-           null::double precision, null::double precision, null::int, null::text, v_next_from;
+           null::double precision, null::double precision, null::int, null::text, null::boolean, v_next_from;
   end if;
 end;
 $$;
@@ -1987,8 +2163,9 @@ $$;
 -- compares with the whole month before. While the period is still running,
 -- the period before is only counted up to the same point, so a Monday
 -- morning isn't measured against all of last week.
--- Money is each booking's own price from when it was booked; blocked time is
--- left out. Only the caller's own shop, read through bookings_shop_starts_idx
+-- Money is each booking's own price from when it was booked, less what a
+-- stamp card reward took off it (a free cut brings in nothing); blocked
+-- time is left out. Only the caller's own shop, read through bookings_shop_starts_idx
 -- for both periods at once: for a shop with 30,000 bookings over two years
 -- (among the e2e/load data), a week takes 2 ms and the longest, 93 days with
 -- the 93 before, 15 ms.
@@ -2032,7 +2209,9 @@ begin
 
   return (
     with b as materialized (
-      select bk.barber_id, bk.service_name, bk.price, bk.status, bk.ends_at,
+      -- paid: what the cut brought in, less what a stamp card reward took off.
+      select bk.barber_id, bk.service_name, bk.price, bk.price - coalesce(bk.reward_off, 0) as paid,
+             bk.status, bk.ends_at, bk.stamp_card,
              bk.starts_at >= v_start as this_period,
              bk.starts_at at time zone v_shop.time_zone as local_start
       from bookings bk
@@ -2051,7 +2230,10 @@ begin
       'totals', (
         select jsonb_build_object(
           'done', count(*) filter (where status = 'completed'),
-          'takings', coalesce(sum(price) filter (where status = 'completed'), 0),
+          'takings', coalesce(sum(paid) filter (where status = 'completed'), 0),
+          -- Stamp card rewards given (done), and what they took off.
+          'rewards', count(*) filter (where status = 'completed' and stamp_card = 'reward'),
+          'rewards_off', coalesce(sum(price - paid) filter (where status = 'completed'), 0),
           'no_shows', count(*) filter (where status = 'no_show'),
           'no_show_value', coalesce(sum(price) filter (where status = 'no_show'), 0),
           'cancelled', count(*) filter (where status = 'cancelled'),
@@ -2070,7 +2252,7 @@ begin
           'to', p_from - 1,
           'until', v_prev_until,
           'done', count(*) filter (where status = 'completed'),
-          'takings', coalesce(sum(price) filter (where status = 'completed'), 0),
+          'takings', coalesce(sum(paid) filter (where status = 'completed'), 0),
           'no_shows', count(*) filter (where status = 'no_show'),
           'no_show_value', coalesce(sum(price) filter (where status = 'no_show'), 0),
           'cancelled', count(*) filter (where status = 'cancelled')
@@ -2091,7 +2273,7 @@ begin
           select local_start::date as day,
                  count(*) filter (where status <> 'cancelled') as bookings,
                  count(*) filter (where status = 'completed') as done,
-                 sum(price) filter (where status = 'completed') as takings
+                 sum(paid) filter (where status = 'completed') as takings
           from now_b
           group by 1
         ) x on x.day = d.day
@@ -2123,7 +2305,7 @@ begin
           select barber_id,
                  count(*) filter (where status <> 'cancelled') as bookings,
                  count(*) filter (where status = 'completed') as done,
-                 coalesce(sum(price) filter (where status = 'completed'), 0) as takings,
+                 coalesce(sum(paid) filter (where status = 'completed'), 0) as takings,
                  count(*) filter (where status = 'no_show') as no_shows
           from now_b
           group by barber_id
@@ -2136,11 +2318,11 @@ begin
         select coalesce(jsonb_agg(jsonb_build_object('name', name, 'done', done, 'takings', takings)
                                   order by done desc, takings desc, name), '[]')
         from (
-          select service_name as name, count(*) as done, sum(price) as takings
+          select service_name as name, count(*) as done, sum(paid) as takings
           from now_b
           where status = 'completed'
           group by service_name
-          order by count(*) desc, sum(price) desc, service_name
+          order by count(*) desc, sum(paid) desc, service_name
           limit 5
         ) s
       )
@@ -2190,6 +2372,8 @@ returns table (
   phone text,
   visits int,
   no_shows int,
+  -- Their stamps on the shop's card; null for guests and anyone without one.
+  stamps int,
   last_visit_at timestamptz,
   next_booking_at timestamptz,
   usual_gap_days int,
@@ -2322,7 +2506,10 @@ begin
        or strpos(lower(j.name), v_search) > 0
        or strpos(regexp_replace(regexp_replace(coalesce(j.phone, ''), '\D', '', 'g'), '^0', '60'), v_digits) > 0
   )
-  select f.key, f.customer_id, f.name, f.phone, f.visits, f.no_shows, f.last_visit_at, f.next_booking_at,
+  select f.key, f.customer_id, f.name, f.phone, f.visits, f.no_shows,
+         -- A primary key lookup per row, worked out after the limit, for the page only.
+         (select sc.stamps from stamp_cards sc where sc.shop_id = v_shop.id and sc.customer_id = f.customer_id),
+         f.last_visit_at, f.next_booking_at,
          f.gap, f.due, (count(*) over ())::int, (count(*) filter (where f.due) over ())::int
   from found f
   order by f.due desc,
@@ -2482,7 +2669,9 @@ begin
     'takings', (
       select jsonb_build_object(
         'done', count(*) filter (where status = 'completed'),
-        'takings', coalesce(sum(price) filter (where status = 'completed'), 0),
+        'takings', coalesce(sum(price - coalesce(reward_off, 0)) filter (where status = 'completed'), 0),
+        'rewards', count(*) filter (where status = 'completed' and stamp_card = 'reward'),
+        'rewards_off', coalesce(sum(reward_off) filter (where status = 'completed'), 0),
         'no_shows', count(*) filter (where status = 'no_show'),
         'no_show_value', coalesce(sum(price) filter (where status = 'no_show'), 0),
         'cancelled', count(*) filter (where status = 'cancelled'),
@@ -2692,7 +2881,24 @@ begin
       ) x
     ),
     'waitlist', public.my_waitlist(),
-    'queue', public.my_queue());
+    'queue', public.my_queue(),
+    -- The stamp card of each shop they have a booking still to come at,
+    -- while it is on: their stamps and which booking is the reward
+    -- (stamp_reward_booking). A primary key lookup and at most one index
+    -- lookup a shop.
+    'stamp_cards', (
+      select coalesce(jsonb_agg(jsonb_build_object(
+               'shop_id', s.id, 'cuts', s.stamp_card_cuts, 'off', s.stamp_card_off,
+               'stamps', coalesce(c.stamps, 0),
+               'reward_booking_id', public.stamp_reward_booking(s.id, auth.uid())
+             ) order by s.id), '[]'::jsonb)
+      from (
+        select distinct b.shop_id from bookings b
+        where b.customer_id = auth.uid() and b.status = 'confirmed' and b.starts_at >= now() - interval '1 day'
+      ) u
+      join shops s on s.id = u.shop_id and s.stamp_card_on
+      left join stamp_cards c on c.shop_id = s.id and c.customer_id = auth.uid()
+    ));
 end;
 $$;
 
@@ -3797,7 +4003,24 @@ begin
       ) ph
     ), '[]'::jsonb),
     'reviews', v_reviews,
-    'more_reviews', v_more
+    'more_reviews', v_more,
+    -- The shop's stamp card while it is on, for everyone; for a signed-in
+    -- customer also their stamps and the booking that is their reward, if
+    -- any (stamp_reward_booking): a primary key lookup of stamp_cards and,
+    -- with the card full, one of bookings_customer_idx. Never anyone else's.
+    'stamp_card', case when v_shop.stamp_card_on then jsonb_build_object(
+      'cuts', v_shop.stamp_card_cuts,
+      'off', v_shop.stamp_card_off,
+      'stamps', case when auth.uid() is not null then coalesce((
+        select c.stamps from stamp_cards c where c.shop_id = v_shop.id and c.customer_id = auth.uid()
+      ), 0) end,
+      'reward', case when auth.uid() is not null then (
+        select jsonb_build_object('id', b.id, 'starts_at', b.starts_at,
+                                  'off', public.stamp_reward_off(v_shop.stamp_card_off, b.price))
+        from bookings b
+        where b.id = public.stamp_reward_booking(v_shop.id, auth.uid())
+      ) end
+    ) end
   );
 end;
 $$;
@@ -3889,7 +4112,27 @@ begin
       select jsonb_agg(to_jsonb(q) - 'ordinality' order by q.ordinality)
       from public.shop_queue() with ordinality q
     ), '[]'::jsonb) else '[]'::jsonb end,
-    'changes', public.shop_changes(p_since, p_limit)
+    'changes', public.shop_changes(p_since, p_limit),
+    -- The day's bookings still to come that are a customer's stamp card
+    -- reward, with what each takes off: stamp_reward_booking for each
+    -- customer booked that day. One done as the reward says so itself
+    -- (stamp_card, reward_off). Only from today on, while the card is on.
+    'stamp_rewards', case when v_shop.stamp_card_on and p_day >= v_today then coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'booking_id', b.id, 'off', public.stamp_reward_off(v_shop.stamp_card_off, b.price)
+             ) order by b.starts_at, b.id)
+      from (
+        select distinct x.customer_id from bookings x
+        where x.shop_id = v_shop.id
+          and x.starts_at >= p_day::timestamp at time zone v_tz
+          and x.starts_at < (p_day + 1)::timestamp at time zone v_tz
+          and x.customer_id is not null and x.status = 'confirmed'
+      ) c
+      cross join lateral (select public.stamp_reward_booking(v_shop.id, c.customer_id) as id) r
+      join bookings b on b.id = r.id
+      where b.starts_at >= p_day::timestamp at time zone v_tz
+        and b.starts_at < (p_day + 1)::timestamp at time zone v_tz
+    ), '[]'::jsonb) else '[]'::jsonb end
   );
 end;
 $$;
