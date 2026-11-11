@@ -178,5 +178,16 @@ from generate_series(1, :shops) i,
      lateral generate_series(1, 4 + (i * 5) % 21) n
 where i % 3 <> 0;
 
+\echo › customers stopped from booking online
+-- Each shop has stopped three of the customers who didn't turn up there
+-- from booking in the app, so they WhatsApp it first.
+insert into public.stopped_customers (shop_id, customer_id, created_at)
+select x.shop_id, x.customer_id, now() - interval '3 days'
+from (
+  select b.shop_id, b.customer_id, row_number() over (partition by b.shop_id order by b.customer_id) as n
+  from (select distinct shop_id, customer_id from public.bookings where status = 'no_show' and customer_id is not null) b
+) x
+where x.n <= 3;
+
 analyze;
 \echo › done
