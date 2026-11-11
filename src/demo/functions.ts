@@ -22,6 +22,9 @@ import {
   PgError,
   pgTrim,
   shopIsLive,
+  stampRewardBooking,
+  stampRewardOff,
+  stampsAt,
   tables,
   toColumnValue,
   updateRows,
@@ -138,6 +141,7 @@ const LOOKED_ONLY = {
   longitude: null,
   queue_waiting: null,
   photo_thumb: null,
+  stamp_card: null,
 };
 
 /**
@@ -241,6 +245,7 @@ export function findShops(args: Record<string, unknown>) {
       longitude: s.longitude ?? null,
       queue_waiting: s.queue_enabled === true ? waitingAt(s.id, queueToday(s)).length : null,
       photo_thumb: firstPhoto(s.id)?.thumb_path ?? null,
+      stamp_card: s.stamp_card_on === true,
       // How far into the list this page looked, with Open now or Free today; else null.
       next_from: nextFrom,
     };
@@ -559,7 +564,36 @@ export function setBookingStatus(c: Caller, bookingId: unknown, status: unknown)
  * it; so My bookings is one request.
  */
 export function myBookings(c: Caller, limitArg: unknown = 100) {
-  return { bookings: myBookingList(c, limitArg), waitlist: myWaitlist(c), queue: myQueue(c) };
+  return {
+    bookings: myBookingList(c, limitArg),
+    waitlist: myWaitlist(c),
+    queue: myQueue(c),
+    stamp_cards: myStampCards(c),
+  };
+}
+
+/**
+ * The stamp card of each shop the caller has a booking still to come at, while it is on: their stamps
+ * and which booking is the reward (my_bookings' stamp_cards).
+ */
+function myStampCards(c: Caller) {
+  if (c.uid == null) return [];
+  const since = now() - 86_400_000;
+  const shopIds = new Set(
+    tables()
+      .bookings.filter((b) => b.customer_id === c.uid && b.status === 'confirmed' && ms(b.starts_at) >= since)
+      .map((b) => b.shop_id),
+  );
+  return tables()
+    .shops.filter((s) => shopIds.has(s.id) && s.stamp_card_on === true)
+    .sort((a, b) => (String(a.id) < String(b.id) ? -1 : 1))
+    .map((s) => ({
+      shop_id: s.id,
+      cuts: s.stamp_card_cuts,
+      off: s.stamp_card_off ?? null,
+      stamps: stampsAt(s.id, c.uid),
+      reward_booking_id: stampRewardBooking(s.id, c.uid)?.id ?? null,
+    }));
 }
 
 function myBookingList(c: Caller, limitArg: unknown) {
@@ -979,6 +1013,10 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
   const count = (list: Row[], status: string) => list.filter((b) => b.status === status).length;
   const sum = (list: Row[], keep: (b: Row) => boolean = () => true) =>
     money(list.filter(keep).reduce((n, b) => n + Number(b.price), 0));
+  // What a cut brought in, less what a stamp card reward took off.
+  const paid = (b: Row) => Number(b.price) - Number(b.reward_off ?? 0);
+  const sumPaid = (list: Row[], keep: (b: Row) => boolean = () => true) =>
+    money(list.filter(keep).reduce((n, b) => n + paid(b), 0));
   const is = (status: string) => (b: Row) => b.status === status;
   const toCome = (b: Row) => b.status === 'confirmed' && ms(b.ends_at) > now();
   const unmarked = (b: Row) => b.status === 'confirmed' && ms(b.ends_at) <= now();
@@ -1000,7 +1038,7 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
   );
   const totals = (list: Row[]) => ({
     done: count(list, 'completed'),
-    takings: sum(list, is('completed')),
+    takings: sumPaid(list, is('completed')),
     no_shows: count(list, 'no_show'),
     no_show_value: sum(list, is('no_show')),
     cancelled: count(list, 'cancelled'),
@@ -1020,7 +1058,7 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
           name: barber.name,
           bookings: theirs.filter((b) => b.status !== 'cancelled').length,
           done: count(theirs, 'completed'),
-          takings: sum(theirs, is('completed')),
+          takings: sumPaid(theirs, is('completed')),
           no_shows: count(theirs, 'no_show'),
         },
       };
@@ -1038,7 +1076,7 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
   const services = new Map<string, { name: string; done: number; takings: number }>();
   for (const b of current.filter(is('completed'))) {
     const s = services.get(String(b.service_name)) ?? { name: String(b.service_name), done: 0, takings: 0 };
-    services.set(s.name, { ...s, done: s.done + 1, takings: money(s.takings + Number(b.price)) });
+    services.set(s.name, { ...s, done: s.done + 1, takings: money(s.takings + paid(b)) });
   }
 
   return {
@@ -1046,6 +1084,9 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
     to,
     totals: {
       ...totals(current),
+      // Stamp card rewards given (done), and what they took off.
+      rewards: current.filter((b) => b.status === 'completed' && b.stamp_card === 'reward').length,
+      rewards_off: money(current.filter(is('completed')).reduce((n, b) => n + Number(b.reward_off ?? 0), 0)),
       // Still to come, or in the chair now; and over, but nobody marked them.
       to_come: current.filter(toCome).length,
       to_come_value: sum(current, toCome),
@@ -1060,7 +1101,7 @@ export function shopSummary(c: Caller, fromArg: unknown, toArg: unknown) {
         day,
         bookings: that.filter((b) => b.status !== 'cancelled').length,
         done: count(that, 'completed'),
-        takings: sum(that, is('completed')),
+        takings: sumPaid(that, is('completed')),
       };
     }),
     hours: [...hours.entries()].sort((a, b) => a[0] - b[0]).map(([hour, bookings]) => ({ hour, bookings })),
@@ -1170,6 +1211,8 @@ function customersOf(shop: Row, search: string | null) {
           phone,
           visits: days.length,
           no_shows: bookings.filter((b) => b.status === 'no_show').length,
+          // Their stamps on the shop's card; null for guests and anyone without one.
+          stamps: customerId == null ? null : stampCardOf(shop.id, customerId),
           last_visit_at: visited.length ? String(visited.at(-1)!.starts_at) : null,
           next_booking_at: upcoming.length ? String(upcoming[0].starts_at) : null,
           usual_gap_days: gap,
@@ -1181,6 +1224,12 @@ function customersOf(shop: Row, search: string | null) {
     ];
   });
   return found;
+}
+
+/** A customer's stamps on a shop's card, or null without a row. */
+function stampCardOf(shopId: unknown, customerId: unknown): number | null {
+  const card = tables().stamp_cards.find((sc) => sc.shop_id === shopId && sc.customer_id === customerId);
+  return card ? Number(card.stamps) : null;
 }
 
 export function shopCustomers(c: Caller, args: Record<string, unknown>) {
@@ -2061,7 +2110,22 @@ export function shopPage(c: Caller, slug: unknown) {
     }),
     reviews: reviews.slice(0, 3),
     more_reviews: reviews.length > 3,
+    // The card while it is on, for everyone; a signed-in customer's stamps and reward booking, never anyone else's.
+    stamp_card:
+      shop.stamp_card_on === true
+        ? {
+            cuts: shop.stamp_card_cuts,
+            off: shop.stamp_card_off ?? null,
+            stamps: c.uid == null ? null : stampsAt(shop.id, c.uid),
+            reward: c.uid == null ? null : rewardPart(shop),
+          }
+        : null,
   };
+
+  function rewardPart(s: Row) {
+    const b = stampRewardBooking(s.id, c.uid);
+    return b ? { id: b.id, starts_at: b.starts_at, off: stampRewardOff(s.stamp_card_off, b.price) } : null;
+  }
 }
 
 /**
@@ -2120,7 +2184,27 @@ export function shopDay(c: Caller, dayArg: unknown, sinceArg: unknown = null, li
     waiting: day ? shopWaitlist(c, day) : [],
     queue: day === today ? shopQueue(c) : [],
     changes: shopChanges(c, sinceArg, limitArg),
+    stamp_rewards: day && shop.stamp_card_on === true && day >= today ? stampRewardsOn(shop, day) : [],
   };
+}
+
+/** The day's bookings still to come that are a customer's stamp card reward, with what each takes off. */
+function stampRewardsOn(shop: Row, day: string) {
+  const tz = String(shop.time_zone);
+  const [from, until] = [dayBounds(day, tz).start.getTime(), dayBounds(addDays(day, 1), tz).start.getTime()];
+  const during = (b: Row) => ms(b.starts_at) >= from && ms(b.starts_at) < until;
+  const customers = new Set(
+    tables()
+      .bookings.filter((b) => b.shop_id === shop.id && during(b) && b.customer_id != null && b.status === 'confirmed')
+      .map((b) => b.customer_id),
+  );
+  return [...customers]
+    .flatMap((customer) => {
+      const b = stampRewardBooking(shop.id, customer);
+      return b && during(b) ? [b] : [];
+    })
+    .sort((a, b) => ms(a.starts_at) - ms(b.starts_at) || (String(a.id) < String(b.id) ? -1 : 1))
+    .map((b) => ({ booking_id: b.id, off: stampRewardOff(shop.stamp_card_off, b.price) }));
 }
 
 /** Who may call what: the migration revokes these from anonymous callers. */

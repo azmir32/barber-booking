@@ -177,6 +177,9 @@ function seed() {
       trial_ends_at: new Date(now() + 23 * DAY).toISOString(),
       // Takes walk-ins in turn, with a queue customers can join from its page.
       queue_enabled: true,
+      // Every 10th cut free, on a stamp card (stamps are worked out at the end).
+      stamp_card_on: true,
+      stamp_card_cuts: 10,
     },
     barbers: [
       ['Ali', week([1, 2, 3, 4, 5, 6], '10:00', '20:00'), 'Skin fades and beard trims, cutting since 2015'],
@@ -747,6 +750,25 @@ function seed() {
   for (const [at, service, guest] of fadeRoomDay) {
     book(f.shop, { barber: f.barbers[0], day: 0, at, service, guest: [guest] });
   }
+
+  // Hakim has been coming to Ali's every four weeks or so since well before
+  // the eight weeks above, so his stamp card at Ali's has 9 of 10 and his
+  // cut tomorrow is free. Mornings at 11 before those weeks, which nobody
+  // else has; added last, so every id above stays as it was.
+  for (const day of [-253, -225, -197, -169, -141, -113, -85, -57]) {
+    const cut = { day, at: '11:00', service: haircut, customer: hakim, status: 'completed' };
+    book(sa, { barber: aliChair, ...cut }) || book(sa, { barber: danial, ...cut });
+  }
+  // Ali's card has been on all along: every cut done there by an online
+  // customer is a stamp, as the database would have counted them. Nobody
+  // has had ten yet.
+  const stamps = new Map<unknown, number>();
+  for (const b of tables().bookings) {
+    if (b.shop_id !== sa.id || b.customer_id == null || b.status !== 'completed') continue;
+    b.stamp_card = 'stamp';
+    stamps.set(b.customer_id, (stamps.get(b.customer_id) ?? 0) + 1);
+  }
+  for (const [customer_id, count] of stamps) insertRow('stamp_cards', { shop_id: sa.id, customer_id, stamps: count });
 }
 
 setSeed(seed);

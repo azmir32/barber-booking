@@ -1715,6 +1715,8 @@ test('the owner sees a week’s takings and the week before, and nobody else doe
   assert.deepEqual(s.totals, {
     done: 5,
     takings: 138,
+    rewards: 0,
+    rewards_off: 0,
     no_shows: 1,
     no_show_value: 25,
     cancelled: 1,
@@ -1832,6 +1834,8 @@ test('a week still running counts what is to come, and the week before only up t
     assert.deepEqual(s.totals, {
       done: 1,
       takings: 18,
+      rewards: 0,
+      rewards_off: 0,
       no_shows: 0,
       no_show_value: 0,
       cancelled: 0,
@@ -1894,7 +1898,9 @@ test('the customer list works out visits, usual gaps and who is due, as the data
   // A father and daughter on one phone.
   const ahSeng = Object.assign(profile('aiman@demo.potongku.my'), { full_name: 'Ah Seng', phone: '019-888 7777' });
   const meiLing = Object.assign(profile('syafiq@demo.potongku.my'), { full_name: 'Mei Ling', phone: '019-888 7777' });
+  // The sample's bookings go, and the stamps they earned.
   tables().bookings.splice(0);
+  tables().stamp_cards.splice(0);
   const diary: [Row | null, string | null, string | null, boolean, number, string, string][] = [
     [ben, null, null, false, -70, '09:00', 'completed'],
     [ben, null, null, false, -49, '09:00', 'completed'],
@@ -2005,6 +2011,7 @@ test('the customer list works out visits, usual gaps and who is due, as the data
       phone: null,
       visits: 3,
       no_shows: 1,
+      stamps: null,
       last_visit_at: Date.parse(kajang(-28, '09:00')),
       next_booking_at: null,
       usual_gap_days: 21,
@@ -3196,13 +3203,14 @@ test('Find a barber gives Hakim his next cut and his barbers, with what Book aga
   );
   assert.equal(Date.parse(ali.last_visit_at), Date.parse(kajang(-26, '11:00')));
   assert.ok([kajang(-61, '15:00'), kajang(-60, '15:00')].some((at) => Date.parse(at) === Date.parse(fadeRoom.last_visit_at)));
-  // One visit each so far, so four weeks between cuts; each live, with today's hours and next free time as listed.
+  // Nine visits to Ali's, every four weeks (his stamp card there has 9 of 10), and one each elsewhere, so four
+  // weeks between cuts; each live, with today's hours and next free time as listed.
   const { data: listed } = await client().rpc('find_shops', { p_limit: 50 });
   for (const s of mine.shops) {
     const l = (listed as Row[]).find((x) => x.id === s.shop_id)!;
     assert.deepEqual(
       [s.is_live, s.visits, s.usual_gap_days, s.time_zone, s.opens_today, s.closes_today, s.next_free_at],
-      [true, 1, 28, TZ, l.opens_today, l.closes_today, l.next_free_at],
+      [true, s.shop_id === ali.shop_id ? 9 : 1, 28, TZ, l.opens_today, l.closes_today, l.next_free_at],
     );
   }
 
@@ -4378,6 +4386,8 @@ async function shopPageBefore(c: Client, slug: string) {
 async function shopPage(c: Client, slug: string) {
   const { data, error } = await c.rpc('shop_page', { p_slug: slug });
   assert.equal(error, null);
+  // The stamp card came in round 16 with no request before it; its own tests check it.
+  delete data.stamp_card;
   return data;
 }
 
@@ -4542,6 +4552,8 @@ async function shopDayBefore(c: Client, day: string, since: string | null = null
 async function shopDay(c: Client, day: string, since: string | null = null, limit = 5) {
   const { data, error } = await c.rpc('shop_day', { p_day: day, p_since: since, p_limit: limit });
   assert.equal(error, null);
+  // As the shop page's stamp card: new in round 16, and checked in its own tests.
+  delete data.stamp_rewards;
   return data;
 }
 
@@ -4885,6 +4897,226 @@ test('a demo saved before shops had photos gets the sample ones, without a barbe
       sample.map((p) => (p.barber_id === danial.id ? null : p.barber_id)),
     );
     assert.ok(Array.isArray(JSON.parse(saved.get(key)!).tables.shop_photos), 'saved with them');
+  } finally {
+    Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
+    reloadTables();
+  }
+});
+
+// Stamp cards (round 16) ---------------------------------------------------------
+
+test('Ali’s sample shop has a stamp card, and Hakim’s cut tomorrow is his free one', async () => {
+  const guest = client();
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const farid = await signedIn('farid@demo.potongku.my');
+  const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+  const hakimId = tables().users.find((u) => u.email === DEMO_CUSTOMER_EMAIL)!.id;
+  const tomorrow = tables().bookings.find(
+    (b) => b.shop_id === shop.id && b.customer_id === hakimId && b.status === 'confirmed',
+  )!;
+  assert.equal(localDateString(new Date(String(tomorrow.starts_at)), TZ), addDays(today(), 1));
+
+  // A guest sees the card; Hakim sees his 9 of 10 and that tomorrow's skin fade is free; Farid only his own.
+  const card = async (c: ReturnType<typeof client>) => (await c.rpc('shop_page', { p_slug: 'ali-barber' })).data.stamp_card;
+  assert.deepEqual(await card(guest), { cuts: 10, off: null, stamps: null, reward: null });
+  assert.deepEqual(await card(hakim), {
+    cuts: 10,
+    off: null,
+    stamps: 9,
+    reward: { id: tomorrow.id, starts_at: tomorrow.starts_at, off: 25 },
+  });
+  const faridStamps = (await card(farid)).stamps;
+  assert.ok(faridStamps > 0 && faridStamps < 9, `Farid has a few of his own: ${faridStamps}`);
+  assert.equal((await card(farid)).reward, null);
+  assert.equal((await card(client())).stamps, null);
+  // Only Ali's shop has one.
+  assert.equal((await guest.rpc('shop_page', { p_slug: 'kemas-barber-kajang' })).data.stamp_card, null);
+  const { data: listed } = await guest.rpc('find_shops', { p_limit: 50 });
+  assert.deepEqual(
+    (listed as Row[]).map((s) => [s.slug, s.stamp_card]),
+    [
+      ['ali-barber', true],
+      ['gunting-pak-mat', false],
+      ['kemas-barber-kajang', false],
+      ['the-fade-room', false],
+    ],
+  );
+
+  // My bookings has his card with the booking it makes free.
+  const { data: mine } = await hakim.rpc('my_bookings');
+  assert.deepEqual(mine.stamp_cards, [{ shop_id: shop.id, cuts: 10, off: null, stamps: 9, reward_booking_id: tomorrow.id }]);
+  // Ali's day tomorrow marks it, and Customers shows Hakim's stamps.
+  const { data: day } = await ali.rpc('shop_day', { p_day: addDays(today(), 1) });
+  assert.deepEqual(day.stamp_rewards, [{ booking_id: tomorrow.id, off: 25 }]);
+  assert.deepEqual((await ali.rpc('shop_day', { p_day: today() })).data.stamp_rewards, []);
+  const { data: people } = await ali.rpc('shop_customers', { p_search: 'hakim' });
+  assert.deepEqual(
+    (people as Row[]).map((p) => [p.name, p.stamps, p.visits]).sort(),
+    [
+      ['Hakim', 9, 9],
+      ['Izzat Hakimi', 1, 1],
+    ],
+  );
+  // Nobody reads the stamps themselves.
+  for (const c of [guest, hakim, ali]) {
+    const { data, error } = await c.from('stamp_cards').select('*');
+    assert.equal(data, null);
+    assert.equal(error?.code, '42501');
+  }
+});
+
+test('stamps follow done and taking it back, the reward passes on and starts the card again, as the database does', async () => {
+  const ali = await signedIn(DEMO_BARBER_EMAIL);
+  const hakim = await signedIn(DEMO_CUSTOMER_EMAIL);
+  const shop = tables().shops.find((s) => s.slug === 'ali-barber')!;
+  const hakimId = tables().users.find((u) => u.email === DEMO_CUSTOMER_EMAIL)!.id;
+  const aliChair = tables().barbers.find((b) => b.shop_id === shop.id && b.name === 'Ali')!;
+  const haircut = tables().services.find((v) => v.shop_id === shop.id && v.name === 'Haircut')!;
+  // The same diary as booking_test.sql, on a card of 4: Ali's sample bookings and stamps go.
+  tables().bookings = tables().bookings.filter((b) => b.shop_id !== shop.id);
+  tables().reviews = tables().reviews.filter((r) => r.shop_id !== shop.id);
+  tables().stamp_cards.splice(0);
+  const stamps = () => (tables().stamp_cards.find((c) => c.customer_id === hakimId)?.stamps as number | undefined) ?? 0;
+  const ids: Record<string, string> = {};
+  const add = (note: string, day: number, clock: string, customer: unknown = hakimId, guest: string | null = null) => {
+    const at = kajang(day, clock);
+    ids[note] = String(
+      insertRow('bookings', {
+        shop_id: shop.id,
+        barber_id: aliChair.id,
+        service_id: haircut.id,
+        customer_id: customer,
+        guest_name: guest,
+        guest_phone: guest ? '011-2233 4455' : null,
+        service_name: 'Haircut',
+        price: 20,
+        starts_at: at,
+        ends_at: new Date(Date.parse(at) + 30 * 60_000).toISOString(),
+        customer_note: note,
+      }).id,
+    );
+  };
+  for (const [note, day] of [['past 1', -5], ['past 2', -4], ['past 3', -3], ['past 4', -2], ['yesterday', -1]] as const) {
+    add(note, day, '10:00');
+  }
+  add('by the shop', -2, '12:00', null, 'Hakim');
+  add('today', 0, '00:00');
+  const status = async (c: ReturnType<typeof client>, note: string, s: string) =>
+    (await c.rpc('set_booking_status', { p_booking_id: ids[note], p_status: s })).error;
+  const row = (note: string) => tables().bookings.find((b) => b.id === ids[note])!;
+
+  // Only the owner sets the card, within its limits.
+  await hakim.from('shops').update({ stamp_card_on: false }).eq('id', shop.id);
+  assert.equal(tables().shops.find((s) => s.id === shop.id)!.stamp_card_on, true, 'a customer can’t turn it off');
+  for (const bad of [{ stamp_card_cuts: 3 }, { stamp_card_cuts: 13 }, { stamp_card_off: 0 }, { stamp_card_off: 51 }]) {
+    assert.equal((await ali.from('shops').update(bad).eq('id', shop.id)).error?.code, '23514', JSON.stringify(bad));
+  }
+  assert.equal((await ali.from('shops').update({ stamp_card_cuts: 4 }).eq('id', shop.id)).error, null);
+
+  // Done earns a stamp and taking it back takes it; no-shows, cancellations and the shop's own bookings earn none.
+  assert.equal(await status(ali, 'past 1', 'completed'), null);
+  assert.deepEqual([stamps(), row('past 1').stamp_card], [1, 'stamp']);
+  await status(ali, 'past 1', 'confirmed');
+  assert.deepEqual([stamps(), row('past 1').stamp_card], [0, null]);
+  await status(ali, 'past 1', 'no_show');
+  await status(ali, 'past 2', 'cancelled');
+  await status(ali, 'by the shop', 'completed');
+  assert.equal(stamps(), 0);
+  for (const note of ['past 1', 'past 2', 'past 3']) await status(ali, note, 'completed');
+  assert.equal(stamps(), 3);
+  assert.equal((await status(hakim, 'past 4', 'completed'))?.code, '42501', 'customers can’t mark their own');
+  // Yesterday's cut marked late is a stamp, even with the card full.
+  await status(ali, 'yesterday', 'completed');
+  assert.deepEqual([stamps(), row('yesterday').stamp_card], [4, 'stamp']);
+  await status(ali, 'yesterday', 'confirmed');
+
+  // The reward is today's cut, then each one to come in turn.
+  add('next 1', 1, '11:00');
+  add('next 2', 2, '11:00');
+  add('next 3', 3, '11:00');
+  const rewardId = async () => (await hakim.rpc('shop_page', { p_slug: 'ali-barber' })).data.stamp_card.reward?.id ?? null;
+  assert.equal(await rewardId(), ids.today);
+  assert.equal((await hakim.rpc('my_bookings')).data.stamp_cards[0].reward_booking_id, ids.today);
+  assert.deepEqual((await ali.rpc('shop_day', { p_day: today() })).data.stamp_rewards, [{ booking_id: ids.today, off: 20 }]);
+  await status(ali, 'today', 'no_show');
+  assert.equal(await rewardId(), ids['next 1'], 'a no-show passes it on');
+  await status(hakim, 'next 1', 'cancelled');
+  assert.equal(await rewardId(), ids['next 2'], 'so does cancelling');
+  const later = kajang(4, '11:00');
+  assert.equal((await hakim.rpc('reschedule_booking', { p_booking_id: ids['next 2'], p_starts_at: later })).error, null);
+  assert.equal(await rewardId(), ids['next 3'], 'and moving it later');
+
+  // Changing the number keeps the stamps; off, nothing shows or is earned; on again it carries on.
+  await ali.from('shops').update({ stamp_card_cuts: 10 }).eq('id', shop.id);
+  assert.equal(await rewardId(), null);
+  await ali.from('shops').update({ stamp_card_cuts: 4, stamp_card_on: false }).eq('id', shop.id);
+  assert.equal((await hakim.rpc('shop_page', { p_slug: 'ali-barber' })).data.stamp_card, null);
+  assert.deepEqual((await hakim.rpc('my_bookings')).data.stamp_cards, []);
+  await status(ali, 'yesterday', 'completed');
+  assert.deepEqual([stamps(), row('yesterday').stamp_card], [3, null]);
+  await ali.from('shops').update({ stamp_card_on: true }).eq('id', shop.id);
+  assert.equal(await rewardId(), ids['next 3']);
+
+  // Today's no-show put right is the reward: no stamp, the card starts again, Takings count it as nothing.
+  await status(ali, 'today', 'completed');
+  assert.deepEqual([stamps(), row('today').stamp_card, row('today').reward_off, row('today').reward_stamps], [0, 'reward', 20, 3]);
+  assert.equal(await rewardId(), null);
+  const totals = async (from: string, to: string) =>
+    (await ali.rpc('shop_summary', { p_from: from, p_to: to })).data.totals;
+  const week = await totals(addDays(today(), -6), today());
+  assert.deepEqual([week.done, week.takings, week.rewards, week.rewards_off], [6, 100, 1, 20]);
+  assert.deepEqual((await ali.rpc('shop_cards', { p_from: addDays(today(), -6), p_to: today() })).data.takings, week);
+  const day = (await ali.rpc('shop_summary', { p_from: today(), p_to: today() })).data;
+  assert.deepEqual([day.days[0].takings, day.services[0].takings, day.barbers[0].takings], [0, 0, 0]);
+  // Taken back, his stamps come back; done again, used again.
+  await status(ali, 'today', 'confirmed');
+  assert.deepEqual([stamps(), row('today').stamp_card, row('today').reward_off], [3, null, null]);
+  await status(ali, 'today', 'completed');
+  assert.equal(stamps(), 0);
+
+  // An amount off takes that much, never more than the price.
+  tables().stamp_cards.find((c) => c.customer_id === hakimId)!.stamps = 3;
+  await ali.from('shops').update({ stamp_card_off: 5 }).eq('id', shop.id);
+  add('later today', 0, '00:30');
+  assert.deepEqual((await ali.rpc('shop_day', { p_day: today() })).data.stamp_rewards, [
+    { booking_id: ids['later today'], off: 5 },
+  ]);
+  await status(ali, 'later today', 'completed');
+  assert.equal(row('later today').reward_off, 5);
+  assert.deepEqual([(await totals(today(), today())).takings, (await totals(today(), today())).rewards], [15, 2]);
+  await status(ali, 'later today', 'confirmed');
+  await ali.from('shops').update({ stamp_card_off: 50 }).eq('id', shop.id);
+  await status(ali, 'later today', 'completed');
+  assert.equal(row('later today').reward_off, 20);
+  assert.equal((await totals(today(), today())).takings, 0);
+});
+
+test('a demo saved before stamp cards gets Ali’s card and the sample stamps', () => {
+  const saved = new Map<string, string>();
+  const fake = {
+    getItem: (k: string) => saved.get(k) ?? null,
+    setItem: (k: string, v: string) => void saved.set(k, v),
+    removeItem: (k: string) => void saved.delete(k),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: fake, configurable: true });
+  try {
+    resetDemo();
+    const ali = tables().shops.find((s) => s.slug === 'ali-barber')!;
+    const expected = JSON.stringify(tables().stamp_cards);
+    const [key, json] = [...saved.entries()][0];
+    const old = JSON.parse(json);
+    delete old.tables.stamp_cards;
+    for (const s of old.tables.shops) for (const k of ['stamp_card_on', 'stamp_card_cuts', 'stamp_card_off']) delete s[k];
+    for (const b of old.tables.bookings) for (const k of ['stamp_card', 'reward_off', 'reward_stamps']) delete b[k];
+    saved.set(key, JSON.stringify(old));
+    reloadTables();
+    assert.equal(JSON.stringify(tables().stamp_cards), expected);
+    const shop = tables().shops.find((s) => s.id === ali.id)!;
+    assert.deepEqual([shop.stamp_card_on, shop.stamp_card_cuts, shop.stamp_card_off], [true, 10, null]);
+    assert.ok(tables().bookings.some((b) => b.shop_id === ali.id && b.stamp_card === 'stamp'));
+    assert.ok(tables().shops.filter((s) => s.id !== ali.id).every((s) => s.stamp_card_on === false && s.stamp_card_cuts === 10));
+    assert.ok(Array.isArray(JSON.parse(saved.get(key)!).tables.stamp_cards), 'saved with them');
   } finally {
     Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true });
     reloadTables();

@@ -3,7 +3,7 @@
 // in a browser with no server. Rows live in memory and are saved to
 // localStorage, so a demo survives a reload on the same phone.
 
-import { addDays, localDateString } from '../lib/time.ts';
+import { addDays, dayBounds, localDateString } from '../lib/time.ts';
 
 export type Row = Record<string, unknown>;
 export type TableName =
@@ -19,7 +19,8 @@ export type TableName =
   | 'review_reports'
   | 'waitlist'
   | 'queue_entries'
-  | 'shop_photos';
+  | 'shop_photos'
+  | 'stamp_cards';
 export type Tables = Record<TableName, Row[]>;
 type ColumnType = 'uuid' | 'text' | 'int' | 'numeric' | 'float' | 'bool' | 'timestamptz' | 'date' | 'time' | 'jsonb';
 type Column = {
@@ -117,6 +118,11 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     rating_sum: req('int', () => 0),
     // A demo saved before the walk-in queue gets the sample shops' own setting.
     queue_enabled: { ...req('bool', () => false), backfill: (r) => sampleValue('shops', r.id, 'queue_enabled') === true },
+    // The stamp card: every stamp_card_cuts-th cut free, or stamp_card_off ringgit off it. A demo saved
+    // before stamp cards gets the sample shops' own.
+    stamp_card_on: { ...req('bool', () => false), backfill: (r) => sampleValue('shops', r.id, 'stamp_card_on') === true },
+    stamp_card_cuts: { ...req('int', () => 10), backfill: (r) => sampleValue('shops', r.id, 'stamp_card_cuts') ?? 10 },
+    stamp_card_off: { ...opt('int'), backfill: (r) => sampleValue('shops', r.id, 'stamp_card_off') },
     created_at: createdAt,
   },
   barbers: {
@@ -167,6 +173,10 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     reminded_at: opt('timestamptz'),
     customer_changed_at: opt('timestamptz'),
     customer_change: opt('text'),
+    // What the cut did to the customer's stamp card when marked done (stampCardCut below).
+    stamp_card: { ...opt('text'), backfill: (r) => sampleValue('bookings', r.id, 'stamp_card') },
+    reward_off: { ...opt('numeric'), backfill: (r) => sampleValue('bookings', r.id, 'reward_off') },
+    reward_stamps: { ...opt('int'), backfill: (r) => sampleValue('bookings', r.id, 'reward_stamps') },
     created_at: createdAt,
   },
   shop_closures: {
@@ -243,6 +253,12 @@ export const COLUMNS: Record<TableName, Record<string, Column>> = {
     sort_order: req('int', () => 0),
     created_at: createdAt,
   },
+  // Each customer's stamps on a shop's card, kept by stampCardCut; read only through the functions.
+  stamp_cards: {
+    shop_id: req('uuid'),
+    customer_id: req('uuid'),
+    stamps: req('int', () => 0),
+  },
 };
 
 /** Tables keyed by something other than id. */
@@ -250,6 +266,7 @@ const PRIMARY_KEY: Partial<Record<TableName, string[]>> = {
   shop_closures: ['shop_id', 'day'],
   reviews: ['booking_id'],
   review_reports: ['booking_id'],
+  stamp_cards: ['shop_id', 'customer_id'],
 };
 
 /** Postgres trim(): spaces only, unlike String.prototype.trim. */
@@ -283,6 +300,8 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['shops_location_pair', (r) => (r.latitude == null) === (r.longitude == null)],
     ['shops_phone_check', (r) => atMost(r.phone, 20)],
     ['shops_instagram_check', (r) => atMost(r.instagram, 60)],
+    ['shops_stamp_card_cuts_check', (r) => between(r.stamp_card_cuts as number, 4, 12)],
+    ['shops_stamp_card_off_check', (r) => between(r.stamp_card_off as number | null, 1, 50)],
   ],
   barbers: [
     ['barbers_name_check', (r) => between(len(pgTrim(String(r.name))), 1, 40)],
@@ -313,6 +332,9 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
       (r) => r.customer_change == null || ['booked', 'moved', 'cancelled'].includes(String(r.customer_change)),
     ],
     ['bookings_customer_change_pair', (r) => (r.customer_changed_at == null) === (r.customer_change == null)],
+    ['bookings_stamp_card_check', (r) => r.stamp_card == null || ['stamp', 'reward'].includes(String(r.stamp_card))],
+    ['bookings_reward_off_check', (r) => r.reward_off == null || Number(r.reward_off) >= 0],
+    ['bookings_reward_pair', (r) => (r.stamp_card === 'reward') === (r.reward_off != null && r.reward_stamps != null)],
   ],
   shop_closures: [['shop_closures_reason_check', (r) => atMost(r.reason, 80)]],
   reviews: [
@@ -338,6 +360,7 @@ const CHECKS: Partial<Record<TableName, [string, (r: Row) => boolean][]>> = {
     ['queue_entries_gone_reason', (r) => (r.state === 'gone') === (r.gone_reason != null)],
     ['queue_entries_called_at', (r) => r.state !== 'called' || r.called_at != null],
   ],
+  stamp_cards: [['stamp_cards_stamps_check', (r) => (r.stamps as number) >= 0]],
   shop_photos: [
     [
       'shop_photos_caption_check',
@@ -519,6 +542,14 @@ export const FOREIGN_KEYS: ForeignKey[] = [
     column: 'barber_id',
     references: 'barbers',
     onDelete: 'set null',
+  },
+  { name: 'stamp_cards_shop_id_fkey', table: 'stamp_cards', column: 'shop_id', references: 'shops', onDelete: 'cascade' },
+  {
+    name: 'stamp_cards_customer_id_fkey',
+    table: 'stamp_cards',
+    column: 'customer_id',
+    references: 'profiles',
+    onDelete: 'cascade',
   },
 ];
 
@@ -827,6 +858,22 @@ function samplePhotos(all: Tables): Row[] {
     .map((p) => ({ ...p, barber_id: barbers.has(p.barber_id) ? p.barber_id : null }));
 }
 
+/**
+ * For a demo saved before stamp cards: the sample customers' stamps at the
+ * shops it still has, for the customers it still has (found by their email,
+ * as their ids may differ).
+ */
+function sampleStamps(all: Tables): Row[] {
+  const sample = sampleTables();
+  const emails = new Map(sample.users.map((u) => [u.id, u.email]));
+  const ids = new Map(all.users.map((u) => [u.email, u.id]));
+  const shops = new Set(all.shops.map((s) => s.id));
+  return sample.stamp_cards.flatMap((c) => {
+    const customer = ids.get(emails.get(c.customer_id));
+    return shops.has(c.shop_id) && customer != null ? [{ ...c, customer_id: customer }] : [];
+  });
+}
+
 /** What the sample data has in a column for a row; null for rows people added. */
 function sampleValue(table: TableName, rowId: unknown, column: string): unknown {
   return sampleTables()[table].find((r) => r.id === rowId)?.[column] ?? null;
@@ -842,6 +889,7 @@ export function tables(): Tables {
       const hadQueue = Array.isArray(parsed.tables.queue_entries);
       const hadPhotos = Array.isArray(parsed.tables.shop_photos);
       const hadReports = Array.isArray(parsed.tables.review_reports);
+      const hadStamps = Array.isArray(parsed.tables.stamp_cards);
       const version = Number(parsed.version) || 0;
       if (parsed.seededOn) moveToToday(parsed.tables, parsed.seededOn, version);
       // A demo saved before a table was added has no list for it yet,
@@ -856,8 +904,17 @@ export function tables(): Tables {
       }
       recountReviews(current);
       if (!hadPhotos) current.shop_photos = samplePhotos(current);
+      if (!hadStamps) current.stamp_cards = sampleStamps(current);
       seededOn = today();
-      if (parsed.seededOn !== seededOn || !hadReviews || !hadQueue || !hadPhotos || !hadReports || version < VERSION) {
+      if (
+        parsed.seededOn !== seededOn ||
+        !hadReviews ||
+        !hadQueue ||
+        !hadPhotos ||
+        !hadReports ||
+        !hadStamps ||
+        version < VERSION
+      ) {
         save();
       }
     }
@@ -1123,6 +1180,12 @@ function recountReviews(all: Tables) {
  */
 function beforeWrite(table: TableName, row: Row, before?: Row) {
   if (table === 'shop_photos') return shopPhotosCheck(row, before);
+  if (table === 'bookings') {
+    if (before && before.status !== row.status && (before.status === 'completed' || row.status === 'completed')) {
+      stampCardCut(row, before);
+    }
+    return;
+  }
   // review_reports_decided: decided_at follows the outcome.
   if (table === 'review_reports') {
     if (row.outcome == null) row.decided_at = null;
@@ -1132,6 +1195,83 @@ function beforeWrite(table: TableName, row: Row, before?: Row) {
   if (table !== 'shops') return;
   if (row.is_published === true && row.published_at == null) row.published_at = nowIso();
   if (before && row.is_published === true && before.is_published !== true) readyToGoLive(row);
+}
+
+/** Midnight today on the shop's clock, from which a booking can be a stamp card reward (shop_today_start). */
+export function shopTodayStart(tz: string): number {
+  return dayBounds(localDateString(new Date(clock()), tz), tz).start.getTime();
+}
+
+/** What a stamp card reward takes off a booking's price: all of it, or the card's amount at most (stamp_reward_off). */
+export const stampRewardOff = (off: unknown, price: unknown) =>
+  off == null ? Number(price) : Math.min(Number(off), Number(price));
+
+/** A customer's stamps on a shop's card (stamp_cards), 0 without a row. */
+export function stampsAt(shopId: unknown, customerId: unknown): number {
+  const card = tables().stamp_cards.find((c) => c.shop_id === shopId && c.customer_id === customerId);
+  return card ? Number(card.stamps) : 0;
+}
+
+/**
+ * The customer's reward booking at a shop, or undefined (stamp_reward_booking): with the card on and
+ * at least one stamp fewer than its cuts, their earliest booking there from today on that is still confirmed.
+ */
+export function stampRewardBooking(shopId: unknown, customerId: unknown): Row | undefined {
+  const shop = findById('shops', shopId);
+  if (!shop || shop.stamp_card_on !== true || customerId == null) return undefined;
+  if (stampsAt(shopId, customerId) < Number(shop.stamp_card_cuts) - 1) return undefined;
+  const from = shopTodayStart(String(shop.time_zone));
+  return tables()
+    .bookings.filter(
+      (b) => b.customer_id === customerId && b.shop_id === shopId && ms(b.starts_at) >= from && b.status === 'confirmed',
+    )
+    .sort((a, b) => ms(a.starts_at) - ms(b.starts_at) || (String(a.id) < String(b.id) ? -1 : 1))[0];
+}
+
+/**
+ * The stamp_card_cut trigger, as a booking's status goes to or from done: done takes the reward if
+ * this is the reward booking (as if still confirmed), else earns a stamp; done taken back takes the
+ * stamp back, or gives back the stamps the reward used.
+ */
+function stampCardCut(row: Row, before: Row) {
+  const all = tables();
+  const cardOf = (b: Row) => all.stamp_cards.find((c) => c.shop_id === b.shop_id && c.customer_id === b.customer_id);
+  if (before.status === 'completed') {
+    const card = cardOf(before);
+    if (card && before.stamp_card === 'stamp') {
+      updateRows('stamp_cards', [card], { stamps: Math.max(Number(card.stamps) - 1, 0) });
+    } else if (card && before.stamp_card === 'reward') {
+      updateRows('stamp_cards', [card], { stamps: Number(card.stamps) + Number(before.reward_stamps) });
+    }
+    row.stamp_card = null;
+    row.reward_off = null;
+    row.reward_stamps = null;
+  }
+  if (row.status !== 'completed' || row.customer_id == null) return;
+  const shop = findById('shops', row.shop_id);
+  if (!shop || shop.stamp_card_on !== true) return;
+  const card = cardOf(row) ?? insertRow('stamp_cards', { shop_id: row.shop_id, customer_id: row.customer_id });
+  const stamps = Number(card.stamps);
+  const from = shopTodayStart(String(shop.time_zone));
+  const at = ms(row.starts_at);
+  const earlier = all.bookings.some(
+    (b) =>
+      b.customer_id === row.customer_id &&
+      b.shop_id === row.shop_id &&
+      b.status === 'confirmed' &&
+      b.id !== row.id &&
+      ms(b.starts_at) >= from &&
+      (ms(b.starts_at) < at || (ms(b.starts_at) === at && String(b.id) < String(row.id))),
+  );
+  if (stamps >= Number(shop.stamp_card_cuts) - 1 && at >= from && !earlier) {
+    row.stamp_card = 'reward';
+    row.reward_off = stampRewardOff(shop.stamp_card_off, row.price);
+    row.reward_stamps = stamps;
+    updateRows('stamp_cards', [cardOf(row)!], { stamps: 0 });
+  } else {
+    row.stamp_card = 'stamp';
+    updateRows('stamp_cards', [cardOf(row)!], { stamps: stamps + 1 });
+  }
 }
 
 /** The most photos a shop keeps (max_shop_photos). */

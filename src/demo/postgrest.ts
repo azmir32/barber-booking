@@ -89,6 +89,8 @@ const POLICIES: Record<Exclude<TableName, 'users'>, Policy> = {
   waitlist: { select: () => false },
   // The same for the walk-in queue: customers see counts and their own place, and only the shop sees names.
   queue_entries: { select: () => false },
+  // And for stamps: only the functions that show them read them, so nobody sees anyone else's.
+  stamp_cards: { select: () => false },
   // Anyone sees a live shop's photos, and its owner all of theirs. Only the owner adds, changes or removes them.
   shop_photos: {
     select: (r, c) => shopVisible(r.shop_id, c.uid),
@@ -116,6 +118,9 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
       'instagram',
       'is_published',
       'queue_enabled',
+      'stamp_card_on',
+      'stamp_card_cuts',
+      'stamp_card_off',
     ],
   },
   // Each barber's review count and total are the database's.
@@ -129,6 +134,7 @@ const GRANTS: Partial<Record<TableName, Partial<Record<'insert' | 'update' | 'de
   review_reports: { insert: [], update: [], delete: [] },
   waitlist: { insert: [], update: [], delete: [] },
   queue_entries: { insert: [], update: [], delete: [] },
+  stamp_cards: { insert: [], update: [], delete: [] },
   // A photo's files and shop never change, and its place is set on the way in.
   shop_photos: {
     insert: ['shop_id', 'barber_id', 'caption', 'path', 'thumb_path', 'width', 'height'],
@@ -146,6 +152,7 @@ const READABLE: Partial<Record<TableName, string[]>> = {
   review_reports: Object.keys(COLUMNS.review_reports).filter((c) => c !== 'shop_id'),
   waitlist: [],
   queue_entries: [],
+  stamp_cards: [],
 };
 /** Tables granted to signed-in callers only: guests may read none of them. */
 const SIGNED_IN_READ = new Set<TableName>(['review_reports']);
